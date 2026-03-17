@@ -2038,8 +2038,58 @@ export default function LittleFires() {
               <span className="badge home">{completedTasks.length}</span>
             </div>
             {completedTasks.length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted-text)', fontSize: '0.9rem' }}>
-                No completed tasks
+              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                <div style={{
+                  width: '120px',
+                  height: '120px',
+                  position: 'relative',
+                  display: 'inline-block'
+                }}>
+                  {/* Background circle */}
+                  <svg 
+                    style={{
+                      position: 'absolute',
+                      top: '-10px',
+                      left: '-10px',
+                      width: '140px',
+                      height: '140px',
+                      transform: 'rotate(-90deg)',
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="63"
+                      fill="none"
+                      stroke="rgba(58, 58, 74, 0.3)"
+                      strokeWidth="6"
+                    />
+                  </svg>
+                  
+                  {/* Dark Fire Icon */}
+                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 1280.000000 1280.000000"
+                    preserveAspectRatio="xMidYMid meet"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                    }}>
+                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                      fill="#3a3a4a" stroke="none">
+                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                      0 -151z"/>
+                    </g>
+                  </svg>
+                </div>
               </div>
             ) : (
               completedTasks.map((task) => {
@@ -5891,8 +5941,58 @@ export default function LittleFires() {
                               <span className="badge home">{completedTasks.length}</span>
                             </div>
                             {completedTasks.length === 0 ? (
-                              <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '0.9rem' }}>
-                                No completed tasks
+                              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                                <div style={{
+                                  width: '120px',
+                                  height: '120px',
+                                  position: 'relative',
+                                  display: 'inline-block'
+                                }}>
+                                  {/* Background circle */}
+                                  <svg 
+                                    style={{
+                                      position: 'absolute',
+                                      top: '-10px',
+                                      left: '-10px',
+                                      width: '140px',
+                                      height: '140px',
+                                      transform: 'rotate(-90deg)',
+                                      pointerEvents: 'none'
+                                    }}
+                                  >
+                                    <circle
+                                      cx="70"
+                                      cy="70"
+                                      r="63"
+                                      fill="none"
+                                      stroke="rgba(58, 58, 74, 0.3)"
+                                      strokeWidth="6"
+                                    />
+                                  </svg>
+                                  
+                                  {/* Dark Fire Icon */}
+                                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                                    viewBox="0 0 1280.000000 1280.000000"
+                                    preserveAspectRatio="xMidYMid meet"
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                                    }}>
+                                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                                      fill="#3a3a4a" stroke="none">
+                                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                                      0 -151z"/>
+                                    </g>
+                                  </svg>
+                                </div>
                               </div>
                             ) : (
                               completedTasks.map((task) => (
@@ -7757,9 +7857,72 @@ export default function LittleFires() {
 
                 if (tasksToShow.length === 0) {
                   return (
-                    <div className="empty-state">
-                      <div className="empty-state-icon">📦</div>
-                      <div className="empty-state-text">No archived tasks</div>
+                    <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                      <div style={{
+                        width: '180px',
+                        height: '180px',
+                        position: 'relative',
+                        display: 'inline-block'
+                      }}>
+                        {/* Background circle */}
+                        <svg 
+                          style={{
+                            position: 'absolute',
+                            top: '-15px',
+                            left: '-15px',
+                            width: '210px',
+                            height: '210px',
+                            transform: 'rotate(-90deg)',
+                            pointerEvents: 'none'
+                          }}
+                        >
+                          <circle
+                            cx="105"
+                            cy="105"
+                            r="95"
+                            fill="none"
+                            stroke="rgba(58, 58, 74, 0.3)"
+                            strokeWidth="8"
+                          />
+                        </svg>
+                        
+                        {/* Dark Fire Icon */}
+                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 1280.000000 1280.000000"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                          }}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill="#3a3a4a" stroke="none">
+                            <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                            -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                            -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                            17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                            -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                            132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                            680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                            -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                            -1 -56z"/>
+                            <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                            -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                            -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                            -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                            289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                            553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                            -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                            <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                            -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                            -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                            -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                            36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                            -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                            95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                          </g>
+                        </svg>
+                      </div>
                     </div>
                   );
                 }

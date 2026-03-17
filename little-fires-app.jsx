@@ -16,8 +16,15 @@ export default function LittleFires() {
   useEffect(() => {
     if (!window.Tesseract) {
       const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js';
+      script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
       script.async = true;
+      script.crossOrigin = 'anonymous';
+      script.onload = () => {
+        console.log('Tesseract.js loaded successfully');
+      };
+      script.onerror = () => {
+        console.error('Failed to load Tesseract.js from CDN');
+      };
       document.body.appendChild(script);
     }
   }, []);
@@ -105,6 +112,7 @@ export default function LittleFires() {
   });
 
   const [selectedGoal, setSelectedGoal] = useState(null);
+  const [timeLoggerContext, setTimeLoggerContext] = useState(null); // { type: 'goal' | 'note', id, listName? }
   const [currentGoalList, setCurrentGoalList] = useState('master');
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [editingGoal, setEditingGoal] = useState(null);
@@ -118,6 +126,7 @@ export default function LittleFires() {
   const [showTimeLogger, setShowTimeLogger] = useState(false);
   const [isLogging, setIsLogging] = useState(false);
   const [loggedMinutes, setLoggedMinutes] = useState(0);
+  const [timerDuration, setTimerDuration] = useState(''); // Duration in seconds for progress ring, blank by default
   const [logStartTime, setLogStartTime] = useState(null);
   const [editingTimeLog, setEditingTimeLog] = useState(null);
   const [timeLogFocus, setTimeLogFocus] = useState('');
@@ -129,6 +138,7 @@ export default function LittleFires() {
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState(false);
+  const [editingTaskName, setEditingTaskName] = useState(null); // stores taskId when editing
   const [projectTaskInput, setProjectTaskInput] = useState('');
   const [projectTaskList, setProjectTaskList] = useState('personal');
   const [projectTaskSection, setProjectTaskSection] = useState('todo');
@@ -485,9 +495,9 @@ export default function LittleFires() {
       // Perform OCR
       console.log('Starting OCR...');
       try {
-        // Wait for Tesseract to load if needed
+        // Wait for Tesseract to load if needed (up to 15 seconds)
         let attempts = 0;
-        while (!window.Tesseract && attempts < 10) {
+        while (!window.Tesseract && attempts < 30) {
           await new Promise(resolve => setTimeout(resolve, 500));
           attempts++;
         }
@@ -515,7 +525,7 @@ export default function LittleFires() {
             return note;
           }));
         } else {
-          console.error('Tesseract failed to load');
+          console.error('Tesseract failed to load after waiting');
           // OCR library not loaded
           setNotes(prev => prev.map(note => {
             if (note.id === noteId) {
@@ -523,7 +533,7 @@ export default function LittleFires() {
                 ...note,
                 images: (note.images || []).map(img => 
                   img.id === imageId 
-                    ? { ...img, extractedText: 'OCR library failed to load', isProcessing: false }
+                    ? { ...img, extractedText: 'OCR library failed to load. Try refreshing the page.', isProcessing: false }
                     : img
                 )
               };
@@ -540,7 +550,7 @@ export default function LittleFires() {
               ...note,
               images: (note.images || []).map(img => 
                 img.id === imageId 
-                  ? { ...img, extractedText: `OCR not available in this environment`, isProcessing: false }
+                  ? { ...img, extractedText: `OCR error: ${error.message || 'Unknown error'}. Try refreshing the page.`, isProcessing: false }
                   : img
               )
             };
@@ -1083,9 +1093,50 @@ export default function LittleFires() {
             />
           </div>
           <div className="task-content">
-            <div className="task-text">
-              {task.text}
-            </div>
+            {isExpanded && editingTaskName === `${listName}-${index}` ? (
+              <input
+                type="text"
+                value={task.text}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  const updatedLists = { ...allLists };
+                  updatedLists[listName][index] = { ...task, text: e.target.value };
+                  setAllLists(updatedLists);
+                }}
+                onBlur={() => setEditingTaskName(null)}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter') {
+                    setEditingTaskName(null);
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  background: 'rgba(42, 42, 62, 0.8)',
+                  border: '2px solid rgba(125, 211, 192, 0.3)',
+                  borderRadius: '8px',
+                  color: '#f4e8d8',
+                  fontSize: '1rem',
+                  fontFamily: 'Quicksand, sans-serif',
+                  fontWeight: '600'
+                }}
+              />
+            ) : (
+              <div 
+                className="task-text"
+                onClick={(e) => {
+                  if (isExpanded) {
+                    e.stopPropagation();
+                    setEditingTaskName(`${listName}-${index}`);
+                  }
+                }}
+                style={{cursor: isExpanded ? 'text' : 'pointer'}}
+              >
+                {task.text}
+              </div>
+            )}
             <div className="task-meta">
               {dueDate && !task.completed && (
                 <span className={`task-due-date ${isOverdue ? 'overdue' : ''}`}>📅 {dueDateText}</span>
@@ -1698,7 +1749,13 @@ export default function LittleFires() {
       let hasAnyTasks = false;
       const sections = listNames.map(listName => {
         if (!allLists[listName]) return null;
-        const tasks = applyFilters(allLists[listName].filter(t => t.section === 'todo' && !t.completed));
+        const tasks = applyFilters(allLists[listName].filter(t => t.section === 'todo' && !t.completed))
+          .sort((a, b) => {
+            // Sort by priority first (high priority first)
+            if (a.priority === 'high' && b.priority !== 'high') return -1;
+            if (a.priority !== 'high' && b.priority === 'high') return 1;
+            return 0;
+          });
         if (tasks.length === 0) return null;
         hasAnyTasks = true;
 
@@ -1722,7 +1779,7 @@ export default function LittleFires() {
                     task={task}
                     listName={listName}
                     index={actualIndex}
-                    showMoveButtons={false}
+                    showMoveButtons={true}
                   />
                 </div>
               );
@@ -1733,9 +1790,72 @@ export default function LittleFires() {
 
       if (!hasAnyTasks) {
         return (
-          <div className="empty-state">
-            <div className="empty-state-icon">☕</div>
-            <div className="empty-state-text">No tasks match your filter.</div>
+          <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+            <div style={{
+              width: '180px',
+              height: '180px',
+              position: 'relative',
+              display: 'inline-block'
+            }}>
+              {/* Background circle */}
+              <svg 
+                style={{
+                  position: 'absolute',
+                  top: '-15px',
+                  left: '-15px',
+                  width: '210px',
+                  height: '210px',
+                  transform: 'rotate(-90deg)',
+                  pointerEvents: 'none'
+                }}
+              >
+                <circle
+                  cx="105"
+                  cy="105"
+                  r="95"
+                  fill="none"
+                  stroke="rgba(58, 58, 74, 0.3)"
+                  strokeWidth="8"
+                />
+              </svg>
+              
+              {/* Dark Fire Icon */}
+              <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 1280.000000 1280.000000"
+                preserveAspectRatio="xMidYMid meet"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                }}>
+                <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                  fill="#3a3a4a" stroke="none">
+                  <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                  -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                  -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                  17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                  -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                  132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                  680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                  -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                  -1 -56z"/>
+                  <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                  -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                  -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                  -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                  289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                  553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                  -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                  <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                  -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                  -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                  -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                  36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                  -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                  95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                </g>
+              </svg>
+            </div>
           </div>
         );
       }
@@ -1749,7 +1869,12 @@ export default function LittleFires() {
         if (a.priority !== 'high' && b.priority === 'high') return 1;
         return 0;
       });
-      const backlogTasks = allTasks.filter(t => t.section === 'backlog' && !t.completed);
+      const backlogTasks = allTasks.filter(t => t.section === 'backlog' && !t.completed).sort((a, b) => {
+        // Pin high priority (fire flag) tasks to the top
+        if (a.priority === 'high' && b.priority !== 'high') return -1;
+        if (a.priority !== 'high' && b.priority === 'high') return 1;
+        return 0;
+      });
       const completedTasks = allTasks.filter(t => t.completed);
 
       return (
@@ -1761,8 +1886,58 @@ export default function LittleFires() {
               <span className="badge work">{todoTasks.length}</span>
             </div>
             {todoTasks.length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted-text)', fontSize: '0.9rem' }}>
-                No tasks in To Do
+              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                <div style={{
+                  width: '120px',
+                  height: '120px',
+                  position: 'relative',
+                  display: 'inline-block'
+                }}>
+                  {/* Background circle */}
+                  <svg 
+                    style={{
+                      position: 'absolute',
+                      top: '-10px',
+                      left: '-10px',
+                      width: '140px',
+                      height: '140px',
+                      transform: 'rotate(-90deg)',
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="63"
+                      fill="none"
+                      stroke="rgba(58, 58, 74, 0.3)"
+                      strokeWidth="6"
+                    />
+                  </svg>
+                  
+                  {/* Dark Fire Icon */}
+                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 1280.000000 1280.000000"
+                    preserveAspectRatio="xMidYMid meet"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                    }}>
+                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                      fill="#3a3a4a" stroke="none">
+                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                      0 -151z"/>
+                    </g>
+                  </svg>
+                </div>
               </div>
             ) : (
               todoTasks.map((task) => {
@@ -1787,8 +1962,58 @@ export default function LittleFires() {
               <span className="badge personal">{backlogTasks.length}</span>
             </div>
             {backlogTasks.length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted-text)', fontSize: '0.9rem' }}>
-                No tasks in Backlog
+              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                <div style={{
+                  width: '120px',
+                  height: '120px',
+                  position: 'relative',
+                  display: 'inline-block'
+                }}>
+                  {/* Background circle */}
+                  <svg 
+                    style={{
+                      position: 'absolute',
+                      top: '-10px',
+                      left: '-10px',
+                      width: '140px',
+                      height: '140px',
+                      transform: 'rotate(-90deg)',
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="63"
+                      fill="none"
+                      stroke="rgba(58, 58, 74, 0.3)"
+                      strokeWidth="6"
+                    />
+                  </svg>
+                  
+                  {/* Dark Fire Icon */}
+                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 1280.000000 1280.000000"
+                    preserveAspectRatio="xMidYMid meet"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                    }}>
+                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                      fill="#3a3a4a" stroke="none">
+                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                      0 -151z"/>
+                    </g>
+                  </svg>
+                </div>
               </div>
             ) : (
               backlogTasks.map((task) => {
@@ -1885,6 +2110,15 @@ export default function LittleFires() {
           }
         }
 
+        @keyframes progressRing {
+          0% {
+            stroke-dashoffset: 754;
+          }
+          100% {
+            stroke-dashoffset: 0;
+          }
+        }
+
         .container {
           max-width: 800px;
           margin: 0 auto;
@@ -1956,6 +2190,12 @@ export default function LittleFires() {
         .menu-item.active {
           background: rgba(125, 211, 192, 0.2);
           color: #7dd3c0;
+        }
+
+        .menu-divider {
+          height: 1px;
+          background: rgba(244, 232, 216, 0.3);
+          margin: 8px 16px;
         }
 
         header {
@@ -3115,10 +3355,10 @@ export default function LittleFires() {
         }
 
         .goal-project-count {
-          color: #fbbf24;
+          color: #7dd3c0;
           font-size: 0.9rem;
           font-weight: 600;
-          background: rgba(251, 191, 36, 0.2);
+          background: rgba(125, 211, 192, 0.2);
           padding: 4px 12px;
           border-radius: 12px;
         }
@@ -4268,6 +4508,13 @@ export default function LittleFires() {
           {menuOpen && (
             <div className="menu-dropdown">
               <div 
+                className={`menu-item ${appMode === 'tasks' ? 'active' : ''}`}
+                onClick={() => { setAppMode('tasks'); setMenuOpen(false); }}
+              >
+                Tasks
+              </div>
+              <div className="menu-divider"></div>
+              <div 
                 className={`menu-item ${appMode === 'goals' ? 'active' : ''}`}
                 onClick={() => { setAppMode('goals'); setMenuOpen(false); }}
               >
@@ -4278,12 +4525,6 @@ export default function LittleFires() {
                 onClick={() => { setAppMode('projects'); setMenuOpen(false); }}
               >
                 Projects
-              </div>
-              <div 
-                className={`menu-item ${appMode === 'tasks' ? 'active' : ''}`}
-                onClick={() => { setAppMode('tasks'); setMenuOpen(false); }}
-              >
-                Tasks
               </div>
               <div 
                 className={`menu-item ${appMode === 'notes' ? 'active' : ''}`}
@@ -4297,6 +4538,7 @@ export default function LittleFires() {
               >
                 Calendar
               </div>
+              <div className="menu-divider"></div>
               <div 
                 className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}
                 onClick={() => { setAppMode('archive'); setMenuOpen(false); }}
@@ -4380,7 +4622,7 @@ export default function LittleFires() {
                 className={`tab master-tab ${currentList === 'master' ? 'active' : ''}`}
                 onClick={() => setCurrentList('master')}
               >
-                Master
+                All Tasks
               </button>
               <div className="tabs">
                 <button
@@ -4430,7 +4672,7 @@ export default function LittleFires() {
               <div className="task-input-wrapper">
                 <input
                   type="text"
-                  placeholder="What needs to be done?"
+                  placeholder="Task"
                   value={taskInput}
                   onChange={(e) => setTaskInput(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && addTask()}
@@ -4480,9 +4722,8 @@ export default function LittleFires() {
 
         {appMode === 'notes' && (
           <div className="notes-section">
-            <div className="notes-header">
-              <h2>Journal</h2>
-              <button className="add-task-btn" onClick={addNote}>New Entry</button>
+            <div className="notes-header" style={{display: 'block', textAlign: 'center'}}>
+              <button className="add-task-btn" onClick={addNote} style={{width: '70%', display: 'inline-block'}}>New Journal Entry</button>
             </div>
 
             {/* Search bar */}
@@ -4520,10 +4761,71 @@ export default function LittleFires() {
 
             <div className="notes-list">
               {filterNotes().length === 0 ? (
-                <div className="empty-state">
-                  <div className="empty-state-icon">📔</div>
-                  <div className="empty-state-text">
-                    {noteSearchQuery || selectedTag ? 'No entries match your search.' : 'No journal entries yet. Start writing!'}
+                <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                  <div style={{
+                    width: '180px',
+                    height: '180px',
+                    position: 'relative',
+                    display: 'inline-block'
+                  }}>
+                    {/* Background circle */}
+                    <svg 
+                      style={{
+                        position: 'absolute',
+                        top: '-15px',
+                        left: '-15px',
+                        width: '210px',
+                        height: '210px',
+                        transform: 'rotate(-90deg)',
+                        pointerEvents: 'none'
+                      }}
+                    >
+                      <circle
+                        cx="105"
+                        cy="105"
+                        r="95"
+                        fill="none"
+                        stroke="rgba(58, 58, 74, 0.3)"
+                        strokeWidth="8"
+                      />
+                    </svg>
+                    
+                    {/* Dark Fire Icon */}
+                    <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 1280.000000 1280.000000"
+                      preserveAspectRatio="xMidYMid meet"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                      }}>
+                      <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                        fill="#3a3a4a" stroke="none">
+                        <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                        -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                        -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                        17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                        -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                        132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                        680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                        -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                        -1 -56z"/>
+                        <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                        -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                        -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                        -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                        289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                        553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                        -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                        <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                        -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                        -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                        -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                        36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                        -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                        95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                      </g>
+                    </svg>
                   </div>
                 </div>
               ) : (
@@ -4798,6 +5100,63 @@ export default function LittleFires() {
                           )}
                         </div>
 
+                        {/* Time Logged Section */}
+                        <div style={{
+                          marginTop: '20px',
+                          padding: '20px',
+                          background: 'rgba(42, 42, 62, 0.8)',
+                          borderRadius: '15px',
+                          border: '2px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          <div style={{
+                            fontFamily: 'Quicksand, sans-serif',
+                            fontSize: '1.3rem',
+                            fontWeight: '700',
+                            color: '#f4e8d8',
+                            marginBottom: '15px',
+                            paddingBottom: '10px',
+                            borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                          }}>
+                            Time Logged
+                          </div>
+                          {(note.timeLogged || 0) > 0 && (
+                            <div style={{
+                              fontFamily: 'Quicksand, sans-serif',
+                              fontSize: '2rem',
+                              fontWeight: '700',
+                              color: '#f4e8d8',
+                              marginBottom: '15px',
+                              textAlign: 'center'
+                            }}>
+                              {(() => {
+                                const hours = Math.floor((note.timeLogged || 0) / 60);
+                                const minutes = (note.timeLogged || 0) % 60;
+                                if (hours > 0) {
+                                  return `${hours}h ${minutes}m`;
+                                } else {
+                                  return `${minutes}m`;
+                                }
+                              })()}
+                            </div>
+                          )}
+                          <div style={{textAlign: 'center'}}>
+                            <button 
+                              className="add-task-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setTimeLoggerContext({ type: 'note', id: note.id });
+                                setShowTimeLogger(true);
+                                setLoggedMinutes(0);
+                                setIsLogging(false);
+                                setLogStartTime(null);
+                              }}
+                              style={{width: 'auto', padding: '12px 30px'}}
+                            >
+                              Log Time
+                            </button>
+                          </div>
+                        </div>
+
                         <div style={{display: 'flex', gap: '15px', marginTop: '10px', justifyContent: 'flex-end'}}>
                           <button 
                             className="edit-btn"
@@ -4856,56 +5215,74 @@ export default function LittleFires() {
 
         {appMode === 'projects' && (
           <div className="projects-section">
+            {/* Project Tabs - Always visible */}
+            <div className="tabs-container">
+              <button
+                className={`tab master-tab ${currentProjectList === 'master' ? 'active' : ''}`}
+                onClick={() => {
+                  setCurrentProjectList('master');
+                  setSelectedProject(null);
+                }}
+              >
+                All Projects
+              </button>
+              <div className="tabs">
+                <button
+                  className={`tab ${currentProjectList === 'personal' ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentProjectList('personal');
+                    setSelectedProject(null);
+                  }}
+                >
+                  Personal
+                </button>
+                <button
+                  className={`tab ${currentProjectList === 'work' ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentProjectList('work');
+                    setSelectedProject(null);
+                  }}
+                >
+                  Work
+                </button>
+                <button
+                  className={`tab ${currentProjectList === 'home' ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentProjectList('home');
+                    setSelectedProject(null);
+                  }}
+                >
+                  Home
+                </button>
+                <button
+                  className={`tab ${currentProjectList === 'travel' ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentProjectList('travel');
+                    setSelectedProject(null);
+                  }}
+                >
+                  Travel
+                </button>
+                <button
+                  className={`tab ${currentProjectList === 'kids' ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentProjectList('kids');
+                    setSelectedProject(null);
+                  }}
+                >
+                  Kids
+                </button>
+              </div>
+            </div>
+
             {!selectedProject ? (
               <>
-                {/* Project Tabs */}
-                <div className="tabs-container">
-                  <button
-                    className={`tab master-tab ${currentProjectList === 'master' ? 'active' : ''}`}
-                    onClick={() => setCurrentProjectList('master')}
-                  >
-                    Master
-                  </button>
-                  <div className="tabs">
-                    <button
-                      className={`tab ${currentProjectList === 'personal' ? 'active' : ''}`}
-                      onClick={() => setCurrentProjectList('personal')}
-                    >
-                      Personal
-                    </button>
-                    <button
-                      className={`tab ${currentProjectList === 'work' ? 'active' : ''}`}
-                      onClick={() => setCurrentProjectList('work')}
-                    >
-                      Work
-                    </button>
-                    <button
-                      className={`tab ${currentProjectList === 'home' ? 'active' : ''}`}
-                      onClick={() => setCurrentProjectList('home')}
-                    >
-                      Home
-                    </button>
-                    <button
-                      className={`tab ${currentProjectList === 'travel' ? 'active' : ''}`}
-                      onClick={() => setCurrentProjectList('travel')}
-                    >
-                      Travel
-                    </button>
-                    <button
-                      className={`tab ${currentProjectList === 'kids' ? 'active' : ''}`}
-                      onClick={() => setCurrentProjectList('kids')}
-                    >
-                      Kids
-                    </button>
-                  </div>
-                </div>
-
-                {/* New Project Button */}
                 {currentProjectList !== 'master' && (
-                  <div className="projects-header">
+                  <div className="projects-header" style={{display: 'block', textAlign: 'center'}}>
                     <button 
                       className="add-task-btn" 
                       onClick={() => setShowProjectForm(true)}
+                      style={{width: '70%', display: 'inline-block'}}
                     >
                       New Project
                     </button>
@@ -4971,17 +5348,76 @@ export default function LittleFires() {
                 {/* Projects List */}
                 <div className="projects-list">
                   {getCurrentProjects().length === 0 ? (
-                    <div className="empty-state">
-                      <div className="empty-state-icon">📁</div>
-                      <div className="empty-state-text">
-                        {currentProjectList === 'master' 
-                          ? 'No projects yet. Select a list to create your first project!' 
-                          : 'No projects yet. Create your first project!'}
+                    <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                      <div style={{
+                        width: '180px',
+                        height: '180px',
+                        position: 'relative',
+                        display: 'inline-block'
+                      }}>
+                        {/* Background circle */}
+                        <svg 
+                          style={{
+                            position: 'absolute',
+                            top: '-15px',
+                            left: '-15px',
+                            width: '210px',
+                            height: '210px',
+                            transform: 'rotate(-90deg)',
+                            pointerEvents: 'none'
+                          }}
+                        >
+                          <circle
+                            cx="105"
+                            cy="105"
+                            r="95"
+                            fill="none"
+                            stroke="rgba(58, 58, 74, 0.3)"
+                            strokeWidth="8"
+                          />
+                        </svg>
+                        
+                        {/* Dark Fire Icon */}
+                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 1280.000000 1280.000000"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                          }}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill="#3a3a4a" stroke="none">
+                            <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                            -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                            -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                            17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                            -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                            132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                            680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                            -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                            -1 -56z"/>
+                            <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                            -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                            -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                            -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                            289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                            553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                            -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                            <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                            -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                            -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                            -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                            36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                            -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                            95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                          </g>
+                        </svg>
                       </div>
                     </div>
                   ) : currentProjectList === 'master' ? (
                     // Master view - group by list
-                    ['personal', 'work', 'home', 'travel'].map(listName => {
+                    ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
                       const listProjects = projects[listName] || [];
                       if (listProjects.length === 0) return null;
                       
@@ -5072,11 +5508,16 @@ export default function LittleFires() {
                   const completedTasks = tasks.filter(t => t.completed);
                   
                   return (
-                    <div className="project-detail">
+                    <div 
+                      className="project-detail"
+                      onClick={(e) => {
+                        // Close if clicking on the background (not the detail content)
+                        if (e.target.className === 'project-detail') {
+                          setSelectedProject(null);
+                        }
+                      }}
+                    >
                       <div className="project-detail-header">
-                        <button className="back-btn" onClick={() => setSelectedProject(null)}>
-                          ← Back to Projects
-                        </button>
                         {editingProjectName ? (
                           <input
                             type="text"
@@ -5120,9 +5561,35 @@ export default function LittleFires() {
                         </div>
                       </div>
 
-                      {project.description && (
-                        <p className="project-detail-description">{project.description}</p>
-                      )}
+                      {/* Description Field */}
+                      <div style={{marginTop: '20px', marginBottom: '20px'}}>
+                        <label style={{
+                          display: 'block',
+                          color: '#b8a99a',
+                          fontSize: '0.9rem',
+                          marginBottom: '8px',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}>
+                          Description:
+                        </label>
+                        <textarea
+                          value={project.description || ''}
+                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { description: e.target.value })}
+                          placeholder="Add project description..."
+                          style={{
+                            width: '100%',
+                            minHeight: '80px',
+                            padding: '12px',
+                            background: 'rgba(42, 42, 62, 0.8)',
+                            border: '2px solid rgba(125, 211, 192, 0.3)',
+                            borderRadius: '10px',
+                            color: '#f4e8d8',
+                            fontSize: '0.95rem',
+                            fontFamily: 'Quicksand, sans-serif',
+                            resize: 'vertical'
+                          }}
+                        />
+                      </div>
 
                       {/* Goal Assignment */}
                       <div className="project-dates-section" style={{marginTop: '20px'}}>
@@ -5152,6 +5619,25 @@ export default function LittleFires() {
                             ))}
                           </select>
                         </div>
+                      </div>
+
+                      {/* Tasks Divider */}
+                      <div style={{
+                        marginTop: '30px',
+                        marginBottom: '20px',
+                        paddingBottom: '10px',
+                        borderBottom: '4px solid rgba(125, 211, 192, 0.3)',
+                        display: 'flex',
+                        alignItems: 'center'
+                      }}>
+                        <span style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8'
+                        }}>
+                          Tasks
+                        </span>
                       </div>
 
                       {/* Add Task to Project */}
@@ -5218,86 +5704,213 @@ export default function LittleFires() {
                         </div>
                       </div>
 
-                      {/* To Do Section */}
-                      <div className="list-section">
-                        <div className="list-section-header">
-                          <span className="section-icon campfire-icon"><BurningCampfire /></span>
-                          <span>To Do</span>
-                          <span className="badge work">{todoTasks.length}</span>
-                        </div>
-                        {todoTasks.length === 0 ? (
-                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '0.9rem' }}>
-                            No tasks in To Do
+                      {/* Task Sections - Only show if tasks exist */}
+                      {tasks.length > 0 && (
+                        <>
+                          {/* To Do Section */}
+                          <div className="list-section">
+                            <div className="list-section-header">
+                              <span className="section-icon campfire-icon"><BurningCampfire /></span>
+                              <span>To Do</span>
+                              <span className="badge work">{todoTasks.length}</span>
+                            </div>
+                            {todoTasks.length === 0 ? (
+                              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                                <div style={{
+                                  width: '120px',
+                                  height: '120px',
+                                  position: 'relative',
+                                  display: 'inline-block'
+                                }}>
+                                  {/* Background circle */}
+                                  <svg 
+                                    style={{
+                                      position: 'absolute',
+                                      top: '-10px',
+                                      left: '-10px',
+                                      width: '140px',
+                                      height: '140px',
+                                      transform: 'rotate(-90deg)',
+                                      pointerEvents: 'none'
+                                    }}
+                                  >
+                                    <circle
+                                      cx="70"
+                                      cy="70"
+                                      r="63"
+                                      fill="none"
+                                      stroke="rgba(58, 58, 74, 0.3)"
+                                      strokeWidth="6"
+                                    />
+                                  </svg>
+                                  
+                                  {/* Dark Fire Icon */}
+                                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                                    viewBox="0 0 1280.000000 1280.000000"
+                                    preserveAspectRatio="xMidYMid meet"
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                                    }}>
+                                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                                      fill="#3a3a4a" stroke="none">
+                                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                      -1 -56z"/>
+                      <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                      -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                      -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                      -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                      289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                      553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                      -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                      <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                      -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                      -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                      -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                      36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                      -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                      95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                    </g>
+                                  </svg>
+                                </div>
+                              </div>
+                            ) : (
+                              todoTasks.map((task) => (
+                                <Task
+                                  key={task.id}
+                                  task={task}
+                                  listName={task.listName}
+                                  index={task.index}
+                                  showMoveButtons={true}
+                                />
+                              ))
+                            )}
                           </div>
-                        ) : (
-                          todoTasks.map((task) => (
-                            <Task
-                              key={task.id}
-                              task={task}
-                              listName={task.listName}
-                              index={task.index}
-                              showMoveButtons={true}
-                            />
-                          ))
-                        )}
-                      </div>
 
-                      {/* Backlog Section */}
-                      <div className="list-section">
-                        <div className="list-section-header">
-                          <span className="section-icon logs-icon"><CutLog /></span>
-                          <span>Backlog</span>
-                          <span className="badge personal">{backlogTasks.length}</span>
-                        </div>
-                        {backlogTasks.length === 0 ? (
-                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '0.9rem' }}>
-                            No tasks in Backlog
+                          {/* Backlog Section */}
+                          <div className="list-section">
+                            <div className="list-section-header">
+                              <span className="section-icon logs-icon"><CutLog /></span>
+                              <span>Backlog</span>
+                              <span className="badge personal">{backlogTasks.length}</span>
+                            </div>
+                            {backlogTasks.length === 0 ? (
+                              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                                <div style={{
+                                  width: '120px',
+                                  height: '120px',
+                                  position: 'relative',
+                                  display: 'inline-block'
+                                }}>
+                                  {/* Background circle */}
+                                  <svg 
+                                    style={{
+                                      position: 'absolute',
+                                      top: '-10px',
+                                      left: '-10px',
+                                      width: '140px',
+                                      height: '140px',
+                                      transform: 'rotate(-90deg)',
+                                      pointerEvents: 'none'
+                                    }}
+                                  >
+                                    <circle
+                                      cx="70"
+                                      cy="70"
+                                      r="63"
+                                      fill="none"
+                                      stroke="rgba(58, 58, 74, 0.3)"
+                                      strokeWidth="6"
+                                    />
+                                  </svg>
+                                  
+                                  {/* Dark Fire Icon */}
+                                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                                    viewBox="0 0 1280.000000 1280.000000"
+                                    preserveAspectRatio="xMidYMid meet"
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                                    }}>
+                                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                                      fill="#3a3a4a" stroke="none">
+                                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                      -1 -56z"/>
+                      <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                      -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                      -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                      -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                      289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                      553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                      -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                      <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                      -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                      -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                      -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                      36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                      -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                      95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                    </g>
+                                  </svg>
+                                </div>
+                              </div>
+                            ) : (
+                              backlogTasks.map((task) => (
+                                <Task
+                                  key={task.id}
+                                  task={task}
+                                  listName={task.listName}
+                                  index={task.index}
+                                  showMoveButtons={true}
+                                />
+                              ))
+                            )}
                           </div>
-                        ) : (
-                          backlogTasks.map((task) => (
-                            <Task
-                              key={task.id}
-                              task={task}
-                              listName={task.listName}
-                              index={task.index}
-                              showMoveButtons={true}
-                            />
-                          ))
-                        )}
-                      </div>
 
-                      {/* Complete Section */}
-                      <div className="list-section">
-                        <div className="list-section-header">
-                          <span className="section-icon checkbox-icon"><CheckedBox /></span>
-                          <span>Complete</span>
-                          <span className="badge home">{completedTasks.length}</span>
-                        </div>
-                        {completedTasks.length === 0 ? (
-                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '0.9rem' }}>
-                            No completed tasks
+                          {/* Complete Section */}
+                          <div className="list-section">
+                            <div className="list-section-header">
+                              <span className="section-icon checkbox-icon"><CheckedBox /></span>
+                              <span>Complete</span>
+                              <span className="badge home">{completedTasks.length}</span>
+                            </div>
+                            {completedTasks.length === 0 ? (
+                              <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '0.9rem' }}>
+                                No completed tasks
+                              </div>
+                            ) : (
+                              completedTasks.map((task) => (
+                                <Task
+                                  key={task.id}
+                                  task={task}
+                                  listName={task.listName}
+                                  index={task.index}
+                                  showMoveButtons={true}
+                                />
+                              ))
+                            )}
                           </div>
-                        ) : (
-                          completedTasks.map((task) => (
-                            <Task
-                              key={task.id}
-                              task={task}
-                              listName={task.listName}
-                              index={task.index}
-                              showMoveButtons={true}
-                            />
-                          ))
-                        )}
-                      </div>
+                        </>
+                      )}
 
                       {/* Project Actions */}
                       <div className="project-actions">
-                        <button 
-                          className="cancel-project-btn"
-                          onClick={() => setSelectedProject(null)}
-                        >
-                          Cancel
-                        </button>
                         <button 
                           className="delete-project-btn"
                           onClick={() => {
@@ -5780,7 +6393,6 @@ export default function LittleFires() {
 
         {appMode === 'goals' && (
           <div className="goals-section">
-            <h2>Goals</h2>
             
             <div className="tabs-container">
               <button
@@ -5790,7 +6402,7 @@ export default function LittleFires() {
                   setSelectedGoal(null);
                 }}
               >
-                All
+                All Goals
               </button>
             </div>
 
@@ -5845,7 +6457,7 @@ export default function LittleFires() {
             {currentGoalList !== 'master' && (
               <button 
                 className="add-task-btn" 
-                style={{marginTop: '20px', marginBottom: '20px'}}
+                style={{marginTop: '20px', marginBottom: '20px', width: '70%', display: 'block', margin: '20px auto'}}
                 onClick={() => {
                   setShowGoalForm(true);
                   setEditingGoal(null);
@@ -5861,10 +6473,71 @@ export default function LittleFires() {
                 {/* Goals List View */}
                 <div className="goals-container">
                   {getCurrentGoals().length === 0 ? (
-                    <div className="empty-state">
-                      <div className="empty-state-icon">⭐</div>
-                      <div className="empty-state-text">
-                        {currentGoalList === 'master' ? 'No goals yet' : 'No goals in this list'}
+                    <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                      <div style={{
+                        width: '180px',
+                        height: '180px',
+                        position: 'relative',
+                        display: 'inline-block'
+                      }}>
+                        {/* Background circle */}
+                        <svg 
+                          style={{
+                            position: 'absolute',
+                            top: '-15px',
+                            left: '-15px',
+                            width: '210px',
+                            height: '210px',
+                            transform: 'rotate(-90deg)',
+                            pointerEvents: 'none'
+                          }}
+                        >
+                          <circle
+                            cx="105"
+                            cy="105"
+                            r="95"
+                            fill="none"
+                            stroke="rgba(58, 58, 74, 0.3)"
+                            strokeWidth="8"
+                          />
+                        </svg>
+                        
+                        {/* Dark Fire Icon */}
+                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 1280.000000 1280.000000"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                          }}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill="#3a3a4a" stroke="none">
+                            <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                            -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                            -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                            17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                            -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                            132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                            680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                            -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                            -1 -56z"/>
+                            <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                            -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                            -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                            -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                            289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                            553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                            -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                            <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                            -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                            -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                            -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                            36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                            -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                            95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                          </g>
+                        </svg>
                       </div>
                     </div>
                   ) : currentGoalList === 'master' ? (
@@ -6042,8 +6715,12 @@ export default function LittleFires() {
                         <h3 style={{
                           fontFamily: 'Quicksand, sans-serif',
                           fontSize: '1.3rem',
+                          fontWeight: '700',
                           color: '#f4e8d8',
-                          marginBottom: '15px'
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
                         }}>
                           Projects ({goalProjects.length})
                         </h3>
@@ -6111,40 +6788,56 @@ export default function LittleFires() {
                       <div style={{
                         marginTop: '30px',
                         padding: '20px',
-                        background: 'rgba(251, 191, 36, 0.1)',
+                        background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(251, 191, 36, 0.3)',
-                        textAlign: 'center'
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
-                          fontSize: '0.9rem',
-                          color: '#b8a99a',
-                          marginBottom: '10px'
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
                         }}>
                           Time Logged
                         </div>
-                        <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
-                          fontSize: '2.5rem',
-                          fontWeight: '700',
-                          color: '#fbbf24',
-                          marginBottom: '15px'
-                        }}>
-                          {Math.floor((goal.timeLogged || 0) / 60)}h {(goal.timeLogged || 0) % 60}m
+                        {(goal.timeLogged || 0) > 0 && (
+                          <div style={{
+                            fontFamily: 'Quicksand, sans-serif',
+                            fontSize: '2.5rem',
+                            fontWeight: '700',
+                            color: '#f4e8d8',
+                            marginBottom: '15px',
+                            textAlign: 'center'
+                          }}>
+                            {(() => {
+                              const hours = Math.floor((goal.timeLogged || 0) / 60);
+                              const minutes = (goal.timeLogged || 0) % 60;
+                              if (hours > 0) {
+                                return `${hours}h ${minutes}m`;
+                              } else {
+                                return `${minutes}m`;
+                              }
+                            })()}
+                          </div>
+                        )}
+                        <div style={{textAlign: 'center'}}>
+                          <button 
+                            className="add-task-btn"
+                            onClick={() => {
+                              setTimeLoggerContext({ type: 'goal', id: selectedGoal.id, listName: selectedGoal.listName });
+                              setShowTimeLogger(true);
+                              setLoggedMinutes(0);
+                              setIsLogging(false);
+                              setLogStartTime(null);
+                            }}
+                            style={{width: 'auto', padding: '12px 30px'}}
+                          >
+                            Log Time
+                          </button>
                         </div>
-                        <button 
-                          className="add-task-btn"
-                          onClick={() => {
-                            setShowTimeLogger(true);
-                            setLoggedMinutes(0);
-                            setIsLogging(false);
-                            setLogStartTime(null);
-                          }}
-                          style={{width: 'auto', padding: '12px 30px'}}
-                        >
-                          Log Time
-                        </button>
                       </div>
 
                       {/* Time Log Records */}
@@ -6152,16 +6845,19 @@ export default function LittleFires() {
                         <div style={{
                           marginTop: '20px',
                           padding: '20px',
-                          background: 'rgba(42, 42, 62, 0.4)',
+                          background: 'rgba(42, 42, 62, 0.8)',
                           borderRadius: '15px',
-                          border: '2px solid rgba(100, 116, 139, 0.2)'
+                          border: '2px solid rgba(125, 211, 192, 0.3)'
                         }}>
                           <h3 style={{
                             fontFamily: 'Quicksand, sans-serif',
-                            fontSize: '1.2rem',
+                            fontSize: '1.3rem',
+                            fontWeight: '700',
                             color: '#f4e8d8',
                             marginBottom: '15px',
-                            marginTop: 0
+                            marginTop: 0,
+                            paddingBottom: '10px',
+                            borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
                           }}>
                             Time Log History
                           </h3>
@@ -6181,17 +6877,17 @@ export default function LittleFires() {
                                 background: 'rgba(52, 52, 72, 0.6)',
                                 borderRadius: '10px',
                                 marginBottom: '10px',
-                                border: '2px solid rgba(251, 191, 36, 0.2)',
+                                border: '2px solid rgba(125, 211, 192, 0.3)',
                                 cursor: 'pointer',
                                 transition: 'all 0.2s ease'
                               }}
                               onMouseEnter={(e) => {
                                 e.currentTarget.style.background = 'rgba(52, 52, 72, 0.8)';
-                                e.currentTarget.style.borderColor = 'rgba(251, 191, 36, 0.4)';
+                                e.currentTarget.style.borderColor = 'rgba(125, 211, 192, 0.5)';
                               }}
                               onMouseLeave={(e) => {
                                 e.currentTarget.style.background = 'rgba(52, 52, 72, 0.6)';
-                                e.currentTarget.style.borderColor = 'rgba(251, 191, 36, 0.2)';
+                                e.currentTarget.style.borderColor = 'rgba(125, 211, 192, 0.3)';
                               }}
                             >
                               <div style={{
@@ -6204,7 +6900,7 @@ export default function LittleFires() {
                                   fontFamily: 'Quicksand, sans-serif',
                                   fontSize: '1rem',
                                   fontWeight: '600',
-                                  color: '#fbbf24'
+                                  color: '#f4e8d8'
                                 }}>
                                   {log.minutes} min
                                 </div>
@@ -6246,21 +6942,22 @@ export default function LittleFires() {
                               {log.takeAway && (
                                 <div style={{
                                   fontSize: '0.95rem',
-                                  color: '#fbbf24',
+                                  color: '#f4e8d8',
                                   lineHeight: '1.5',
                                   marginTop: '10px',
                                   padding: '12px',
-                                  background: 'rgba(251, 191, 36, 0.1)',
+                                  background: 'rgba(125, 211, 192, 0.1)',
                                   borderRadius: '8px',
-                                  border: '1px solid rgba(251, 191, 36, 0.2)',
+                                  border: '1px solid rgba(125, 211, 192, 0.3)',
                                   fontWeight: '500'
                                 }}>
                                   <div style={{
                                     fontSize: '0.75rem',
-                                    color: '#b8a99a',
+                                    color: '#7dd3c0',
                                     marginBottom: '5px',
                                     textTransform: 'uppercase',
-                                    letterSpacing: '0.5px'
+                                    letterSpacing: '0.5px',
+                                    fontWeight: '600'
                                   }}>
                                     Take Away
                                   </div>
@@ -6279,21 +6976,6 @@ export default function LittleFires() {
                           onClick={() => setSelectedGoal(null)}
                         >
                           Close
-                        </button>
-                        <button 
-                          className="edit-btn"
-                          onClick={() => {
-                            setEditingGoal({ id: goal.id, listName: selectedGoal.listName });
-                            setGoalFormData({
-                              name: goal.name,
-                              description: goal.description || '',
-                              startDate: goal.startDate || '',
-                              endDate: goal.endDate || ''
-                            });
-                            setShowGoalForm(true);
-                          }}
-                        >
-                          Edit
                         </button>
                         <button 
                           className="delete-btn"
@@ -6450,8 +7132,11 @@ export default function LittleFires() {
               </div>
             )}
 
+          </div>
+        )}
+
             {/* Time Logger Modal */}
-            {showTimeLogger && selectedGoal && (
+            {showTimeLogger && timeLoggerContext && (
               <div className="modal-overlay" onClick={() => {
                 setShowTimeLogger(false);
                 setIsLogging(false);
@@ -6460,12 +7145,15 @@ export default function LittleFires() {
                 setTimeLogFocus('');
                 setTimeLogDescription('');
                 setTimeLogTakeAway('');
+                setTimeLoggerContext(null);
               }}>
                 <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
                   minWidth: '450px',
                   maxWidth: '500px',
                   textAlign: 'center',
-                  padding: '40px'
+                  padding: '20px 40px 40px 40px',
+                  maxHeight: '90vh',
+                  overflowY: 'auto'
                 }}>
                   {/* Fire Logo */}
                   <div 
@@ -6483,23 +7171,71 @@ export default function LittleFires() {
                     }}
                     style={{
                       cursor: 'pointer',
+                      marginTop: '60px',
                       marginBottom: '15px',
                       display: 'inline-block',
                       transition: 'transform 0.2s ease'
                     }}
                   >
                     <div style={{
-                      width: '180px',
-                      height: '180px',
-                      filter: isLogging ? 'drop-shadow(0 0 25px rgba(255, 69, 0, 0.8))' : 'drop-shadow(0 0 15px rgba(251, 191, 36, 0.5))',
-                      animation: isLogging ? 'flameGlow 10s ease-in-out infinite' : 'none'
+                      width: '240px',
+                      height: '240px',
+                      position: 'relative',
+                      display: 'inline-block'
                     }}>
-                      <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 1280.000000 1280.000000"
-                        preserveAspectRatio="xMidYMid meet"
-                        style={{width: '100%', height: '100%'}}>
-                        <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                          fill={isLogging ? '#FF4500' : '#fbbf24'} stroke="none">
+                      {/* Circular Progress Ring */}
+                      <svg 
+                        style={{
+                          position: 'absolute',
+                          top: '-15px',
+                          left: '-15px',
+                          width: '270px',
+                          height: '270px',
+                          transform: 'rotate(-90deg)',
+                          pointerEvents: 'none'
+                        }}
+                      >
+                        {/* Background circle */}
+                        <circle
+                          cx="135"
+                          cy="135"
+                          r="120"
+                          fill="none"
+                          stroke="rgba(58, 58, 74, 0.3)"
+                          strokeWidth="8"
+                        />
+                        {/* Progress circle */}
+                        {isLogging && (
+                          <circle
+                            cx="135"
+                            cy="135"
+                            r="120"
+                            fill="none"
+                            stroke="#7dd3c0"
+                            strokeWidth="8"
+                            strokeDasharray="754"
+                            strokeDashoffset="754"
+                            strokeLinecap="round"
+                            style={{
+                              animation: `progressRing ${timerDuration || 60}s linear infinite`
+                            }}
+                          />
+                        )}
+                      </svg>
+                      
+                      {/* Fire Icon */}
+                      <div style={{
+                        width: '100%',
+                        height: '100%',
+                        filter: isLogging ? 'drop-shadow(0 0 25px rgba(255, 69, 0, 0.8))' : 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))',
+                        animation: isLogging ? 'flameGlow 10s ease-in-out infinite' : 'none'
+                      }}>
+                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 1280.000000 1280.000000"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{width: '100%', height: '100%'}}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill={isLogging ? '#FF4500' : '#3a3a4a'} stroke="none">
                           <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
                           -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
                           -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
@@ -6525,19 +7261,59 @@ export default function LittleFires() {
                           95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
                         </g>
                       </svg>
+                      </div>
                     </div>
                   </div>
 
                   {/* Timer Display */}
-                  <div style={{
-                    fontFamily: 'Quicksand, sans-serif',
-                    fontSize: '3.5rem',
-                    fontWeight: '700',
-                    color: isLogging ? '#FF4500' : '#fbbf24',
-                    marginBottom: '30px',
-                    letterSpacing: '0.05em'
-                  }}>
-                    {loggedMinutes} min
+                  {loggedMinutes >= 1 && (
+                    <div style={{
+                      fontFamily: 'Quicksand, sans-serif',
+                      fontSize: '2rem',
+                      fontWeight: '600',
+                      color: isLogging ? '#7dd3c0' : '#64748b',
+                      marginBottom: '15px',
+                      letterSpacing: '0.05em'
+                    }}>
+                      {loggedMinutes} min
+                    </div>
+                  )}
+
+                  {/* Timer Duration Selector */}
+                  <div style={{textAlign: 'left', marginBottom: '30px'}}>
+                    <label style={{
+                      display: 'block',
+                      color: '#b8a99a',
+                      fontSize: '0.9rem',
+                      marginBottom: '5px',
+                      fontFamily: 'Quicksand, sans-serif'
+                    }}>
+                      Duration:
+                    </label>
+                    <select
+                      value={timerDuration}
+                      onChange={(e) => setTimerDuration(e.target.value === '' ? '' : Number(e.target.value))}
+                      disabled={isLogging}
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.3)',
+                        borderRadius: '8px',
+                        color: '#f4e8d8',
+                        fontSize: '1rem',
+                        fontFamily: 'Quicksand, sans-serif',
+                        cursor: isLogging ? 'not-allowed' : 'pointer',
+                        opacity: isLogging ? 0.6 : 1
+                      }}
+                    >
+                      <option value="">Timer</option>
+                      <option value={300}>5 Minutes</option>
+                      <option value={420}>7 Minutes</option>
+                      <option value={600}>10 Minutes</option>
+                      <option value={1800}>30 Minutes</option>
+                      <option value={3600}>60 Minutes</option>
+                    </select>
                   </div>
 
                   {/* Focus and Description Fields */}
@@ -6646,8 +7422,7 @@ export default function LittleFires() {
                     <button 
                       className="edit-btn"
                       onClick={() => {
-                        const goal = goals[selectedGoal.listName]?.find(g => g.id === selectedGoal.id);
-                        if (goal && loggedMinutes > 0) {
+                        if (loggedMinutes > 0 && timeLoggerContext) {
                           const newTimeLog = {
                             id: Date.now(),
                             minutes: loggedMinutes,
@@ -6657,10 +7432,30 @@ export default function LittleFires() {
                             date: new Date().toISOString()
                           };
                           
-                          updateGoal(selectedGoal.listName, selectedGoal.id, {
-                            timeLogged: (goal.timeLogged || 0) + loggedMinutes,
-                            timeLogs: [...(goal.timeLogs || []), newTimeLog]
-                          });
+                          if (timeLoggerContext.type === 'note') {
+                            // Update note
+                            const note = notes.find(n => n.id === timeLoggerContext.id);
+                            if (note) {
+                              setNotes(prev => prev.map(n => 
+                                n.id === timeLoggerContext.id 
+                                  ? {
+                                      ...n,
+                                      timeLogged: (n.timeLogged || 0) + loggedMinutes,
+                                      timeLogs: [...(n.timeLogs || []), newTimeLog]
+                                    }
+                                  : n
+                              ));
+                            }
+                          } else if (timeLoggerContext.type === 'goal') {
+                            // Update goal
+                            const goal = goals[timeLoggerContext.listName]?.find(g => g.id === timeLoggerContext.id);
+                            if (goal) {
+                              updateGoal(timeLoggerContext.listName, timeLoggerContext.id, {
+                                timeLogged: (goal.timeLogged || 0) + loggedMinutes,
+                                timeLogs: [...(goal.timeLogs || []), newTimeLog]
+                              });
+                            }
+                          }
                         }
                         setShowTimeLogger(false);
                         setIsLogging(false);
@@ -6669,6 +7464,7 @@ export default function LittleFires() {
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
+                        setTimeLoggerContext(null);
                       }}
                       style={{width: 'auto', padding: '10px 30px'}}
                     >
@@ -6684,6 +7480,7 @@ export default function LittleFires() {
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
+                        setTimeLoggerContext(null);
                       }}
                       style={{width: 'auto', padding: '10px 30px'}}
                     >
@@ -6905,8 +7702,7 @@ export default function LittleFires() {
                 </div>
               </div>
             )}
-          </div>
-        )}
+
 
         {appMode === 'archive' && (
           <div className="archive-section">

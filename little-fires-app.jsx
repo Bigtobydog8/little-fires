@@ -138,6 +138,7 @@ export default function LittleFires() {
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState(false);
+  const [editingGoalName, setEditingGoalName] = useState(false);
   const [editingTaskName, setEditingTaskName] = useState(null); // stores taskId when editing
   const [projectTaskInput, setProjectTaskInput] = useState('');
   const [projectTaskList, setProjectTaskList] = useState('personal');
@@ -154,7 +155,6 @@ export default function LittleFires() {
   const [noteSearchQuery, setNoteSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState(null);
   const [noteToDelete, setNoteToDelete] = useState(null);
-  const [showTagInput, setShowTagInput] = useState({});
   const [projectToDelete, setProjectToDelete] = useState(null);
   
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
@@ -572,6 +572,168 @@ export default function LittleFires() {
     ));
   };
 
+  const addGalleryPhotoToNote = async (noteId, file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    
+    // Compress image before storing
+    const compressImage = (file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            
+            // Max dimensions to reduce size
+            const maxDimension = 1200;
+            if (width > maxDimension || height > maxDimension) {
+              if (width > height) {
+                height = (height / width) * maxDimension;
+                width = maxDimension;
+              } else {
+                width = (width / height) * maxDimension;
+                height = maxDimension;
+              }
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            
+            // Convert to compressed JPEG with 0.7 quality
+            resolve(canvas.toDataURL('image/jpeg', 0.7));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+    
+    try {
+      const compressedImage = await compressImage(file);
+      
+      // Check if adding this image would exceed storage
+      const currentSize = JSON.stringify(notes).length;
+      const imageSize = compressedImage.length;
+      
+      if (currentSize + imageSize > 4000000) {
+        alert('Storage limit approaching! Consider removing old images or notes to free up space.');
+        return;
+      }
+      
+      const photoId = Date.now();
+      
+      // Add photo to gallery (without OCR processing)
+      setNotes(prev => prev.map(note => {
+        if (note.id === noteId) {
+          const gallery = note.gallery || [];
+          return { 
+            ...note, 
+            gallery: [...gallery, { id: photoId, data: compressedImage }]
+          };
+        }
+        return note;
+      }));
+    } catch (error) {
+      console.error('Error adding gallery photo:', error);
+    }
+  };
+
+  const removeGalleryPhotoFromNote = (noteId, photoId) => {
+    setNotes(prev => prev.map(note =>
+      note.id === noteId 
+        ? { ...note, gallery: (note.gallery || []).filter(photo => photo.id !== photoId) }
+        : note
+    ));
+  };
+
+  const fetchLocationForNote = async (noteId) => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser');
+      return;
+    }
+
+    // Set a temporary "loading" message
+    setNotes(prev => prev.map(note =>
+      note.id === noteId ? { ...note, location: 'Detecting location...' } : note
+    ));
+
+    try {
+      const position = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          resolve, 
+          reject,
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      });
+
+      const { latitude, longitude } = position.coords;
+
+      // Reverse geocode using Nominatim (OpenStreetMap)
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=10`,
+          {
+            headers: {
+              'User-Agent': 'LittleFiresApp/1.0'
+            }
+          }
+        );
+        const data = await response.json();
+
+        // Extract city and state/country
+        const address = data.address || {};
+        const city = address.city || address.town || address.village || address.suburb || '';
+        const state = address.state || '';
+        const country = address.country || '';
+
+        let locationString = '';
+        if (city && state) {
+          locationString = `${city}, ${state}`;
+        } else if (city && country) {
+          locationString = `${city}, ${country}`;
+        } else if (state && country) {
+          locationString = `${state}, ${country}`;
+        } else {
+          locationString = city || state || country || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+        }
+
+        // Update note with location
+        setNotes(prev => prev.map(note =>
+          note.id === noteId ? { ...note, location: locationString } : note
+        ));
+      } catch (geoError) {
+        // If geocoding fails, just show coordinates
+        console.error('Geocoding error:', geoError);
+        setNotes(prev => prev.map(note =>
+          note.id === noteId ? { ...note, location: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}` } : note
+        ));
+      }
+    } catch (error) {
+      console.error('Error fetching location:', error);
+      let errorMessage = 'Location unavailable';
+      if (error.code === 1) {
+        errorMessage = 'Location permission denied';
+      } else if (error.code === 2) {
+        errorMessage = 'Location unavailable';
+      } else if (error.code === 3) {
+        errorMessage = 'Location timeout';
+      }
+      setNotes(prev => prev.map(note =>
+        note.id === noteId ? { ...note, location: errorMessage } : note
+      ));
+    }
+  };
+
+  const updateNoteLocation = (noteId, location) => {
+    setNotes(prev => prev.map(note =>
+      note.id === noteId ? { ...note, location } : note
+    ));
+  };
+
   const addTagToNote = (noteId, tag) => {
     if (!tag.trim()) return;
     setNotes(prev => prev.map(note => {
@@ -874,6 +1036,76 @@ export default function LittleFires() {
     }));
   };
 
+  const addPhotoToProject = async (listName, projectId, file, photoType) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    
+    const compressImage = (file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            
+            const maxDimension = 1200;
+            if (width > maxDimension || height > maxDimension) {
+              if (width > height) {
+                height = (height / width) * maxDimension;
+                width = maxDimension;
+              } else {
+                width = (width / height) * maxDimension;
+                height = maxDimension;
+              }
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            
+            resolve(canvas.toDataURL('image/jpeg', 0.7));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+    
+    try {
+      const compressedImage = await compressImage(file);
+      const photoId = Date.now();
+      
+      setProjects(prev => ({
+        ...prev,
+        [listName]: (prev[listName] || []).map(project => {
+          if (project.id === projectId) {
+            const photoArray = project[photoType] || [];
+            return { 
+              ...project, 
+              [photoType]: [...photoArray, { id: photoId, data: compressedImage }]
+            };
+          }
+          return project;
+        })
+      }));
+    } catch (error) {
+      console.error('Error adding photo to project:', error);
+    }
+  };
+
+  const removePhotoFromProject = (listName, projectId, photoId, photoType) => {
+    setProjects(prev => ({
+      ...prev,
+      [listName]: (prev[listName] || []).map(project =>
+        project.id === projectId 
+          ? { ...project, [photoType]: (project[photoType] || []).filter(photo => photo.id !== photoId) }
+          : project
+      )
+    }));
+  };
+
   const deleteProject = (listName, id) => {
     // Also remove project assignment from all tasks
     const allTaskLists = ['personal', 'work', 'home', 'travel', 'kids'];
@@ -918,6 +1150,76 @@ export default function LittleFires() {
       ...prev,
       [listName]: (prev[listName] || []).map(goal =>
         goal.id === id ? { ...goal, ...updates } : goal
+      )
+    }));
+  };
+
+  const addPhotoToGoal = async (listName, goalId, file, photoType) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    
+    const compressImage = (file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            
+            const maxDimension = 1200;
+            if (width > maxDimension || height > maxDimension) {
+              if (width > height) {
+                height = (height / width) * maxDimension;
+                width = maxDimension;
+              } else {
+                width = (width / height) * maxDimension;
+                height = maxDimension;
+              }
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            
+            resolve(canvas.toDataURL('image/jpeg', 0.7));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+    
+    try {
+      const compressedImage = await compressImage(file);
+      const photoId = Date.now();
+      
+      setGoals(prev => ({
+        ...prev,
+        [listName]: (prev[listName] || []).map(goal => {
+          if (goal.id === goalId) {
+            const photoArray = goal[photoType] || [];
+            return { 
+              ...goal, 
+              [photoType]: [...photoArray, { id: photoId, data: compressedImage }]
+            };
+          }
+          return goal;
+        })
+      }));
+    } catch (error) {
+      console.error('Error adding photo to goal:', error);
+    }
+  };
+
+  const removePhotoFromGoal = (listName, goalId, photoId, photoType) => {
+    setGoals(prev => ({
+      ...prev,
+      [listName]: (prev[listName] || []).map(goal =>
+        goal.id === goalId 
+          ? { ...goal, [photoType]: (goal[photoType] || []).filter(photo => photo.id !== photoId) }
+          : goal
       )
     }));
   };
@@ -1616,7 +1918,7 @@ export default function LittleFires() {
       viewBox="0 0 1280.000000 1280.000000"
       preserveAspectRatio="xMidYMid meet">
       <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-        fill="#000000" stroke="none">
+        fill="#3a3a4a" stroke="none">
         <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
         -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
         -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
@@ -2162,7 +2464,7 @@ export default function LittleFires() {
 
         @keyframes progressRing {
           0% {
-            stroke-dashoffset: 754;
+            stroke-dashoffset: 597;
           }
           100% {
             stroke-dashoffset: 0;
@@ -3418,8 +3720,52 @@ export default function LittleFires() {
           gap: 10px;
         }
 
+        .project-detail {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          display: flex;
+          justify-content: center;
+          align-items: flex-start;
+          overflow-y: auto;
+          z-index: 1000;
+          padding: 40px 20px;
+        }
+
+        .project-detail-content {
+          max-width: 800px;
+          width: 100%;
+          background: #1e1e2e;
+          border-radius: 20px;
+          padding: 30px;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
         .goal-detail {
-          margin-top: 20px;
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          display: flex;
+          justify-content: center;
+          align-items: flex-start;
+          overflow-y: auto;
+          z-index: 1000;
+          padding: 40px 20px;
+        }
+
+        .goal-detail-content {
+          max-width: 800px;
+          width: 100%;
+          background: #1e1e2e;
+          border-radius: 20px;
+          padding: 30px;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
         }
 
         .goal-projects-section {
@@ -3776,6 +4122,8 @@ export default function LittleFires() {
           display: flex;
           flex-direction: column;
           gap: 20px;
+          padding: 20px 40px;
+          min-height: 400px;
         }
 
         .note-entry {
@@ -3989,55 +4337,6 @@ export default function LittleFires() {
         }
 
         .calendar-checkbox input[type="checkbox"]:checked::after {
-          content: '✓';
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          color: #fff;
-          font-size: 12px;
-          font-weight: bold;
-        }
-
-        .tag-checkbox-wrapper {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          cursor: pointer;
-          color: #f4e8d8;
-          font-size: 0.9rem;
-          font-weight: 600;
-          padding: 8px 16px;
-          background: rgba(42, 42, 62, 0.6);
-          border-radius: 12px;
-          border: 2px solid rgba(100, 116, 139, 0.3);
-          transition: all 0.3s ease;
-          width: fit-content;
-        }
-
-        .tag-checkbox-wrapper:hover {
-          border-color: rgba(100, 116, 139, 0.6);
-          background: rgba(52, 52, 72, 0.8);
-        }
-
-        .tag-checkbox-wrapper input[type="checkbox"] {
-          appearance: none;
-          width: 18px;
-          height: 18px;
-          border: 2px solid rgba(125, 211, 192, 0.4);
-          border-radius: 4px;
-          cursor: pointer;
-          position: relative;
-          background: rgba(30, 30, 46, 0.6);
-          transition: all 0.3s ease;
-        }
-
-        .tag-checkbox-wrapper input[type="checkbox"]:checked {
-          background: linear-gradient(135deg, #5ab9a8, #7dd3c0);
-          border-color: #7dd3c0;
-        }
-
-        .tag-checkbox-wrapper input[type="checkbox"]:checked::after {
           content: '✓';
           position: absolute;
           top: 50%;
@@ -4602,66 +4901,73 @@ export default function LittleFires() {
         <header>
           <h1>Little Fires</h1>
           <div className="subtitle">
-            <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-              width="80px" height="80px" viewBox="0 0 1280.000000 1280.000000"
-              preserveAspectRatio="xMidYMid meet">
-              <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                fill="#000000" stroke="none">
-                <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-                -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-                -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-                17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-                -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-                132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-                680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-                -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-                -1 -56z"/>
-                <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
-                -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
-                -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
-                -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
-                289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
-                553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
-                -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
-                <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
-                -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
-                -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
-                -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
-                36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
-                -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
-                95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
-                <path d="M9665 3254 c-346 -57 -781 -124 -965 -149 -677 -92 -1035 -163 -1440
-                -284 -192 -58 -422 -143 -413 -152 11 -10 304 -98 529 -159 507 -136 1295
-                -295 1634 -331 l105 -11 850 186 c468 102 857 190 865 195 22 12 59 123 66
-                199 8 79 -12 168 -54 246 -38 72 -154 182 -249 238 -74 44 -269 129 -289 127
-                -5 -1 -292 -48 -639 -105z"/>
-                <path d="M2494 3104 c-79 -59 -212 -194 -265 -268 -55 -77 -101 -188 -119
-                -290 -16 -84 -8 -247 17 -366 l18 -85 130 -12 c396 -37 672 -68 1166 -133 116
-                -16 431 -69 590 -100 301 -59 610 -153 1009 -305 412 -157 617 -225 855 -284
-                208 -51 314 -70 670 -115 349 -44 526 -68 582 -76 33 -6 94 -15 135 -20 40 -5
-                181 -25 313 -45 432 -64 653 -95 833 -115 217 -26 319 -50 627 -151 360 -119
-                665 -189 650 -151 -14 36 -55 193 -66 249 -18 97 -7 324 19 400 67 191 225
-                344 447 434 83 33 90 38 93 66 l3 30 -113 7 c-98 5 -295 26 -528 56 -89 11
-                -387 58 -485 75 -347 64 -588 110 -690 131 -66 13 -164 33 -217 44 -54 11
-                -117 24 -140 30 -24 5 -97 21 -163 35 -613 132 -855 195 -1360 350 -269 82
-                -575 163 -720 190 -104 20 -118 22 -450 69 -137 19 -297 42 -355 51 -159 23
-                -408 57 -770 105 -124 16 -274 37 -335 45 -115 16 -409 55 -750 100 -274 36
-                -547 75 -566 81 -9 2 -38 -11 -65 -32z"/>
-                <path d="M3290 1695 c-41 -13 -194 -58 -340 -100 -146 -42 -291 -83 -322 -93
-                -32 -9 -58 -20 -58 -24 0 -4 5 -8 10 -8 31 0 214 -124 293 -200 111 -104 175
-                -199 213 -316 27 -82 29 -100 29 -239 -1 -154 -13 -239 -56 -388 -11 -38 -19
-                -72 -17 -76 2 -4 515 197 1141 447 625 250 1135 457 1132 460 -11 11 -785 297
-                -965 356 -367 121 -624 176 -925 200 -45 3 -79 -2 -135 -19z"/>
-                <path d="M10462 1600 c-116 -31 -205 -84 -302 -180 -70 -69 -95 -101 -128
-                -170 -55 -112 -73 -185 -73 -297 -1 -177 42 -294 140 -385 89 -83 151 -103
-                321 -103 111 0 147 4 205 22 176 56 325 194 389 362 28 75 30 301 2 401 -42
-                154 -134 281 -243 335 -78 39 -202 45 -311 15z"/>
-                <path d="M2160 1293 c-261 -34 -422 -173 -485 -418 -19 -76 -20 -300 -1 -372
-                48 -178 160 -296 343 -360 74 -26 88 -27 253 -27 162 0 180 2 248 26 134 48
-                215 116 271 226 53 105 65 170 65 342 -1 139 -4 162 -27 227 -13 40 -36 92
-                -51 116 -62 106 -191 192 -331 222 -76 16 -229 26 -285 18z"/>
-              </g>
-            </svg>
+            <div style={{
+              width: '80px',
+              height: '80px',
+              position: 'relative',
+              display: 'inline-block'
+            }}>
+              {/* Circular Progress Ring */}
+              <svg 
+                style={{
+                  position: 'absolute',
+                  top: '-6px',
+                  left: '-6px',
+                  width: '92px',
+                  height: '92px',
+                  transform: 'rotate(-90deg)',
+                  pointerEvents: 'none'
+                }}
+              >
+                <circle
+                  cx="46"
+                  cy="46"
+                  r="40"
+                  fill="none"
+                  stroke="rgba(58, 58, 74, 0.3)"
+                  strokeWidth="4"
+                />
+              </svg>
+              
+              {/* Fire Icon */}
+              <div style={{
+                width: '100%',
+                height: '100%',
+                filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+              }}>
+                <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 1280.000000 1280.000000"
+                  preserveAspectRatio="xMidYMid meet"
+                  style={{width: '100%', height: '100%'}}>
+                  <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                    fill="#000000" stroke="none">
+                  <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                  -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                  -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                  17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                  -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                  132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                  680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                  -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                  -1 -56z"/>
+                  <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                  -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                  -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                  -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                  289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                  553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                  -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                  <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                  -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                  -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                  -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                  36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                  -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                  95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                </g>
+              </svg>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -4771,7 +5077,23 @@ export default function LittleFires() {
         )}
 
         {appMode === 'notes' && (
-          <div className="notes-section">
+          <div 
+            className="notes-section"
+            onClick={(e) => {
+              // Collapse expanded notes when clicking outside note entries
+              const clickedNoteEntry = e.target.closest('.note-entry');
+              if (!clickedNoteEntry) {
+                // Check if we clicked on certain interactive elements that should NOT collapse
+                const clickedButton = e.target.closest('button');
+                const clickedInput = e.target.closest('input');
+                const clickedSelect = e.target.closest('select');
+                
+                if (!clickedButton && !clickedInput && !clickedSelect) {
+                  setNotes(notes.map(note => ({ ...note, expanded: false })));
+                }
+              }
+            }}
+          >
             <div className="notes-header" style={{display: 'block', textAlign: 'center'}}>
               <button className="add-task-btn" onClick={addNote} style={{width: '70%', display: 'inline-block'}}>New Journal Entry</button>
             </div>
@@ -4880,7 +5202,20 @@ export default function LittleFires() {
                 </div>
               ) : (
                 filterNotes().map(note => (
-                  <div key={note.id} className="note-entry" data-note-id={note.id}>
+                  <div 
+                    key={note.id} 
+                    className="note-entry" 
+                    data-note-id={note.id}
+                    onClick={(e) => {
+                      // If clicking directly on note-entry (padding area), collapse
+                      if (e.target.classList.contains('note-entry') && e.target === e.currentTarget) {
+                        setNotes(notes.map(n => ({ ...n, expanded: false })));
+                      } else {
+                        // Clicking on content - stop propagation to keep note open
+                        e.stopPropagation();
+                      }
+                    }}
+                  >
                     <div className="note-header" onClick={() => toggleNoteExpanded(note.id)}>
                       <span className="note-date">
                         {new Date(note.date).toLocaleDateString('en-US', { 
@@ -4894,6 +5229,27 @@ export default function LittleFires() {
                     </div>
                     {note.expanded && (
                       <>
+                        {/* Note Section */}
+                        <div style={{
+                          marginBottom: '20px',
+                          padding: '20px',
+                          background: 'rgba(42, 42, 62, 0.8)',
+                          borderRadius: '15px',
+                          border: '2px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          <div style={{
+                            fontFamily: 'Quicksand, sans-serif',
+                            fontSize: '1.3rem',
+                            fontWeight: '700',
+                            color: '#f4e8d8',
+                            marginBottom: '15px',
+                            marginTop: 0,
+                            paddingBottom: '10px',
+                            borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                          }}>
+                            Note
+                          </div>
+
                         <div className="richtext-toolbar" onClick={(e) => e.stopPropagation()}>
                           <button 
                             className="toolbar-btn"
@@ -5097,6 +5453,173 @@ export default function LittleFires() {
                           dangerouslySetInnerHTML={{ __html: note.content || '' }}
                         />
 
+                        {/* Photo Gallery Section */}
+                        <div style={{marginTop: '20px'}}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            marginBottom: '10px'
+                          }}>
+                            <label style={{
+                              color: '#b8a99a',
+                              fontSize: '0.9rem',
+                              fontFamily: 'Quicksand, sans-serif',
+                              fontWeight: '600'
+                            }}>
+                              Photos:
+                            </label>
+                            <button
+                              className="toolbar-btn"
+                              onClick={() => {
+                                const input = document.createElement('input');
+                                input.type = 'file';
+                                input.accept = 'image/*';
+                                input.multiple = true;
+                                input.onchange = (evt) => {
+                                  const files = Array.from(evt.target.files);
+                                  files.forEach(file => {
+                                    if (file) {
+                                      addGalleryPhotoToNote(note.id, file);
+                                    }
+                                  });
+                                };
+                                input.click();
+                              }}
+                              style={{
+                                padding: '6px 12px',
+                                fontSize: '0.85rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                              }}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                                <circle cx="12" cy="13" r="4"></circle>
+                                <line x1="17" y1="3" x2="17" y2="6"></line>
+                                <circle cx="17" cy="2" r="1"></circle>
+                              </svg>
+                              Add Photos
+                            </button>
+                          </div>
+                          
+                          {/* Display gallery photos */}
+                          {note.gallery && note.gallery.length > 0 && (
+                            <div style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                              gap: '10px',
+                              marginTop: '10px'
+                            }}>
+                              {note.gallery.map(photo => (
+                                <div 
+                                  key={photo.id} 
+                                  style={{
+                                    position: 'relative',
+                                    borderRadius: '8px',
+                                    overflow: 'hidden',
+                                    border: '2px solid rgba(125, 211, 192, 0.3)',
+                                    aspectRatio: '1',
+                                  }}
+                                >
+                                  <img 
+                                    src={photo.data} 
+                                    alt="Gallery" 
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      objectFit: 'cover',
+                                      display: 'block'
+                                    }}
+                                  />
+                                  <button 
+                                    onClick={() => removeGalleryPhotoFromNote(note.id, photo.id)}
+                                    style={{
+                                      position: 'absolute',
+                                      top: '5px',
+                                      right: '5px',
+                                      background: 'rgba(0, 0, 0, 0.7)',
+                                      color: '#fff',
+                                      border: 'none',
+                                      borderRadius: '50%',
+                                      width: '24px',
+                                      height: '24px',
+                                      cursor: 'pointer',
+                                      fontSize: '16px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      padding: 0,
+                                      lineHeight: 1
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Location Field */}
+                        <div style={{marginTop: '15px'}}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px'
+                          }}>
+                            <label style={{
+                              color: '#b8a99a',
+                              fontSize: '0.9rem',
+                              fontFamily: 'Quicksand, sans-serif',
+                              fontWeight: '600',
+                              minWidth: 'fit-content'
+                            }}>
+                              Location:
+                            </label>
+                            <input
+                              type="text"
+                              value={note.location || ''}
+                              onChange={(e) => updateNoteLocation(note.id, e.target.value)}
+                              onFocus={() => {
+                                // Auto-fetch location if empty
+                                if (!note.location || note.location === '') {
+                                  fetchLocationForNote(note.id);
+                                }
+                              }}
+                              placeholder="Click to auto-detect or type location..."
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                flex: 1,
+                                padding: '8px 12px',
+                                background: 'rgba(42, 42, 62, 0.8)',
+                                border: '2px solid rgba(125, 211, 192, 0.3)',
+                                borderRadius: '8px',
+                                color: '#f4e8d8',
+                                fontSize: '0.9rem',
+                                fontFamily: 'Quicksand, sans-serif'
+                              }}
+                            />
+                            {note.location && (
+                              <button
+                                onClick={() => updateNoteLocation(note.id, '')}
+                                style={{
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#b8a99a',
+                                  cursor: 'pointer',
+                                  fontSize: '1.2rem',
+                                  padding: '4px 8px'
+                                }}
+                                title="Clear location"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
                         {/* Tags section */}
                         <div style={{marginTop: '15px'}}>
                           <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px'}}>
@@ -5113,41 +5636,19 @@ export default function LittleFires() {
                             ))}
                           </div>
                           
-                          <div 
-                            className="tag-checkbox-wrapper"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowTagInput(prev => ({...prev, [note.id]: !prev[note.id]}));
+                          <input
+                            type="text"
+                            placeholder="Tags"
+                            className="tag-input"
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                addTagToNote(note.id, e.target.value);
+                                e.target.value = '';
+                              }
                             }}
-                          >
-                            <input
-                              type="checkbox"
-                              id={`tag-toggle-${note.id}`}
-                              checked={showTagInput[note.id] || false}
-                              onChange={(e) => e.stopPropagation()}
-                            />
-                            <label 
-                              htmlFor={`tag-toggle-${note.id}`}
-                              style={{cursor: 'pointer', userSelect: 'none'}}
-                            >
-                              Tag
-                            </label>
-                          </div>
-
-                          {showTagInput[note.id] && (
-                            <input
-                              type="text"
-                              placeholder="Tags"
-                              className="tag-input"
-                              onKeyPress={(e) => {
-                                if (e.key === 'Enter') {
-                                  addTagToNote(note.id, e.target.value);
-                                  e.target.value = '';
-                                }
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                          )}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </div>
                         </div>
 
                         {/* Time Logged Section */}
@@ -5567,30 +6068,112 @@ export default function LittleFires() {
                         }
                       }}
                     >
-                      <div className="project-detail-header">
-                        {editingProjectName ? (
-                          <input
-                            type="text"
-                            value={project.name}
-                            onChange={(e) => {
-                              updateProject(selectedProject.listName, selectedProject.id, { name: e.target.value });
-                            }}
-                            onBlur={() => setEditingProjectName(false)}
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') setEditingProjectName(false);
-                            }}
-                            autoFocus
-                            className="project-name-edit"
-                          />
-                        ) : (
-                          <h2 onClick={() => setEditingProjectName(true)} style={{cursor: 'pointer'}} className="project-detail-name">
-                            {project.name}
-                          </h2>
-                        )}
+                      <div className="project-detail-content">
+                      {/* Project Section */}
+                      <div style={{
+                        marginBottom: '30px',
+                        padding: '20px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        borderRadius: '15px',
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
+                      }}>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          Project
+                        </div>
+
+                        <div className="project-detail-header">
+                          {editingProjectName ? (
+                            <input
+                              type="text"
+                              value={project.name}
+                              onChange={(e) => {
+                                updateProject(selectedProject.listName, selectedProject.id, { name: e.target.value });
+                              }}
+                              onBlur={() => setEditingProjectName(false)}
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter') setEditingProjectName(false);
+                              }}
+                              autoFocus
+                              className="project-name-edit"
+                            />
+                          ) : (
+                            <h2 onClick={() => setEditingProjectName(true)} style={{cursor: 'pointer'}} className="project-detail-name">
+                              {project.name}
+                            </h2>
+                          )}
+                        </div>
+
+                        {/* Description Field */}
+                        <div style={{marginTop: '20px', marginBottom: '20px'}}>
+                          <label style={{
+                            display: 'block',
+                            color: '#b8a99a',
+                            fontSize: '0.9rem',
+                            marginBottom: '8px',
+                            fontFamily: 'Quicksand, sans-serif'
+                          }}>
+                            Description:
+                          </label>
+                          <textarea
+                            value={project.description || ''}
+                            onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { description: e.target.value })}
+                            placeholder="Add project description..."
+                            style={{
+                              width: '100%',
+                              minHeight: '80px',
+                              padding: '12px',
+                              background: 'rgba(42, 42, 62, 0.8)',
+                              border: '2px solid rgba(125, 211, 192, 0.3)',
+                              borderRadius: '10px',
+                              color: '#f4e8d8',
+                            fontSize: '0.95rem',
+                            fontFamily: 'Quicksand, sans-serif',
+                            resize: 'vertical'
+                          }}
+                        />
+                      </div>
+
+                      {/* Outcome Field */}
+                      <div style={{marginBottom: '20px'}}>
+                        <label style={{
+                          display: 'block',
+                          color: '#b8a99a',
+                          fontSize: '0.9rem',
+                          marginBottom: '8px',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}>
+                          Outcome:
+                        </label>
+                        <textarea
+                          value={project.outcome || ''}
+                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { outcome: e.target.value })}
+                          placeholder="What does success look like for this project?"
+                          style={{
+                            width: '100%',
+                            minHeight: '80px',
+                            padding: '12px',
+                            background: 'rgba(42, 42, 62, 0.8)',
+                            border: '2px solid rgba(125, 211, 192, 0.3)',
+                            borderRadius: '10px',
+                            color: '#f4e8d8',
+                            fontSize: '0.95rem',
+                            fontFamily: 'Quicksand, sans-serif',
+                            resize: 'vertical'
+                          }}
+                        />
                       </div>
 
                       {/* Project Dates */}
-                      <div className="project-dates-section">
+                      <div className="project-dates-section" style={{marginBottom: '20px'}}>
                         <div className="project-date-field">
                           <label className="project-date-label">Start Date:</label>
                           <input
@@ -5611,40 +6194,264 @@ export default function LittleFires() {
                         </div>
                       </div>
 
-                      {/* Description Field */}
-                      <div style={{marginTop: '20px', marginBottom: '20px'}}>
-                        <label style={{
-                          display: 'block',
-                          color: '#b8a99a',
-                          fontSize: '0.9rem',
-                          marginBottom: '8px',
-                          fontFamily: 'Quicksand, sans-serif'
+                      {/* Before Photos */}
+                      <div style={{
+                        marginBottom: '20px',
+                        padding: '20px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        borderRadius: '15px',
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
+                      }}>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
                         }}>
-                          Description:
-                        </label>
-                        <textarea
-                          value={project.description || ''}
-                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { description: e.target.value })}
-                          placeholder="Add project description..."
-                          style={{
-                            width: '100%',
-                            minHeight: '80px',
-                            padding: '12px',
-                            background: 'rgba(42, 42, 62, 0.8)',
-                            border: '2px solid rgba(125, 211, 192, 0.3)',
-                            borderRadius: '10px',
-                            color: '#f4e8d8',
-                            fontSize: '0.95rem',
-                            fontFamily: 'Quicksand, sans-serif',
-                            resize: 'vertical'
-                          }}
-                        />
+                          Before Photos
+                        </div>
+
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          marginBottom: '10px'
+                        }}>
+                          <button
+                            className="toolbar-btn"
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = 'image/*';
+                              input.multiple = true;
+                              input.onchange = (evt) => {
+                                const files = Array.from(evt.target.files);
+                                files.forEach(file => {
+                                  if (file) {
+                                    addPhotoToProject(selectedProject.listName, selectedProject.id, file, 'beforePhotos');
+                                  }
+                                });
+                              };
+                              input.click();
+                            }}
+                            style={{
+                              padding: '6px 12px',
+                              fontSize: '0.85rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                              <circle cx="12" cy="13" r="4"></circle>
+                              <line x1="17" y1="3" x2="17" y2="6"></line>
+                              <circle cx="17" cy="2" r="1"></circle>
+                            </svg>
+                            Add Photos
+                          </button>
+                        </div>
+                        
+                        {project.beforePhotos && project.beforePhotos.length > 0 && (
+                          <div style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                            gap: '10px'
+                          }}>
+                            {project.beforePhotos.map(photo => (
+                              <div 
+                                key={photo.id} 
+                                style={{
+                                  position: 'relative',
+                                  borderRadius: '8px',
+                                  overflow: 'hidden',
+                                  border: '2px solid rgba(125, 211, 192, 0.3)',
+                                  aspectRatio: '1',
+                                }}
+                              >
+                                <img 
+                                  src={photo.data} 
+                                  alt="Before" 
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    objectFit: 'cover',
+                                    display: 'block'
+                                  }}
+                                />
+                                <button 
+                                  onClick={() => removePhotoFromProject(selectedProject.listName, selectedProject.id, photo.id, 'beforePhotos')}
+                                  style={{
+                                    position: 'absolute',
+                                    top: '5px',
+                                    right: '5px',
+                                    background: 'rgba(0, 0, 0, 0.7)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '50%',
+                                    width: '24px',
+                                    height: '24px',
+                                    cursor: 'pointer',
+                                    fontSize: '16px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: 0,
+                                    lineHeight: 1
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* After Photos */}
+                      <div style={{
+                        marginBottom: '20px',
+                        padding: '20px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        borderRadius: '15px',
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
+                      }}>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          After Photos
+                        </div>
+
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          marginBottom: '10px'
+                        }}>
+                          <button
+                            className="toolbar-btn"
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = 'image/*';
+                              input.multiple = true;
+                              input.onchange = (evt) => {
+                                const files = Array.from(evt.target.files);
+                                files.forEach(file => {
+                                  if (file) {
+                                    addPhotoToProject(selectedProject.listName, selectedProject.id, file, 'afterPhotos');
+                                  }
+                                });
+                              };
+                              input.click();
+                            }}
+                            style={{
+                              padding: '6px 12px',
+                              fontSize: '0.85rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px'
+                            }}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                              <circle cx="12" cy="13" r="4"></circle>
+                              <line x1="17" y1="3" x2="17" y2="6"></line>
+                              <circle cx="17" cy="2" r="1"></circle>
+                            </svg>
+                            Add Photos
+                          </button>
+                        </div>
+                        
+                        {project.afterPhotos && project.afterPhotos.length > 0 && (
+                          <div style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                            gap: '10px'
+                          }}>
+                            {project.afterPhotos.map(photo => (
+                              <div 
+                                key={photo.id} 
+                                style={{
+                                  position: 'relative',
+                                  borderRadius: '8px',
+                                  overflow: 'hidden',
+                                  border: '2px solid rgba(125, 211, 192, 0.3)',
+                                  aspectRatio: '1',
+                                }}
+                              >
+                                <img 
+                                  src={photo.data} 
+                                  alt="After" 
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    objectFit: 'cover',
+                                    display: 'block'
+                                  }}
+                                />
+                                <button 
+                                  onClick={() => removePhotoFromProject(selectedProject.listName, selectedProject.id, photo.id, 'afterPhotos')}
+                                  style={{
+                                    position: 'absolute',
+                                    top: '5px',
+                                    right: '5px',
+                                    background: 'rgba(0, 0, 0, 0.7)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '50%',
+                                    width: '24px',
+                                    height: '24px',
+                                    cursor: 'pointer',
+                                    fontSize: '16px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: 0,
+                                    lineHeight: 1
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                       </div>
 
                       {/* Goal Assignment */}
-                      <div className="project-dates-section" style={{marginTop: '20px'}}>
+                      <div style={{
+                        marginBottom: '30px',
+                        padding: '20px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        borderRadius: '15px',
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
+                      }}>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          Goal
+                        </div>
                         <div className="project-date-field" style={{width: '100%'}}>
-                          <label className="project-date-label">Goal:</label>
                           <select
                             value={project.goalId || ''}
                             onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { 
@@ -5658,7 +6465,8 @@ export default function LittleFires() {
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
                               cursor: 'pointer',
-                              flex: 1
+                              flex: 1,
+                              width: '100%'
                             }}
                           >
                             <option value="">No Goal</option>
@@ -5671,24 +6479,26 @@ export default function LittleFires() {
                         </div>
                       </div>
 
-                      {/* Tasks Divider */}
+                      {/* Tasks Section */}
                       <div style={{
-                        marginTop: '30px',
-                        marginBottom: '20px',
-                        paddingBottom: '10px',
-                        borderBottom: '4px solid rgba(125, 211, 192, 0.3)',
-                        display: 'flex',
-                        alignItems: 'center'
+                        marginBottom: '30px',
+                        padding: '20px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        borderRadius: '15px',
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
                       }}>
-                        <span style={{
+                        <div style={{
                           fontFamily: 'Quicksand, sans-serif',
                           fontSize: '1.3rem',
                           fontWeight: '700',
-                          color: '#f4e8d8'
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
                         }}>
                           Tasks
-                        </span>
-                      </div>
+                        </div>
 
                       {/* Add Task to Project */}
                       <div className="project-task-input">
@@ -5804,7 +6614,7 @@ export default function LittleFires() {
                                       filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
                                     }}>
                                     <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                                      fill="#3a3a4a" stroke="none">
+                                      fill="#000000" stroke="none">
                                       <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
                       -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
                       -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
@@ -5902,20 +6712,6 @@ export default function LittleFires() {
                       680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
                       -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
                       -1 -56z"/>
-                      <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
-                      -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
-                      -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
-                      -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
-                      289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
-                      553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
-                      -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
-                      <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
-                      -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
-                      -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
-                      -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
-                      36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
-                      -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
-                      95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
                     </g>
                                   </svg>
                                 </div>
@@ -6008,6 +6804,7 @@ export default function LittleFires() {
                           </div>
                         </>
                       )}
+                      </div>
 
                       {/* Project Actions */}
                       <div className="project-actions">
@@ -6023,6 +6820,7 @@ export default function LittleFires() {
                         >
                           Delete
                         </button>
+                      </div>
                       </div>
                     </div>
                   );
@@ -6735,78 +7533,349 @@ export default function LittleFires() {
                   const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
                   
                   return (
-                    <div className="goal-detail">
-                      <div className="project-detail-header">
-                        <h2 className="project-detail-name">{goal.name}</h2>
-                      </div>
+                    <div 
+                      className="goal-detail"
+                      onClick={(e) => {
+                        // Close if clicking on the background (not the detail content)
+                        if (e.target.className === 'goal-detail') {
+                          setSelectedGoal(null);
+                        }
+                      }}
+                    >
+                      <div className="goal-detail-content">
+                      {/* Goal Section */}
+                      <div style={{
+                        marginBottom: '30px',
+                        padding: '20px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        borderRadius: '15px',
+                        border: '2px solid rgba(125, 211, 192, 0.3)'
+                      }}>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          marginTop: 0,
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          Goal
+                        </div>
 
-                      {/* Description Field */}
-                      <div style={{marginBottom: '20px'}}>
-                        <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
-                          Description:
-                        </label>
-                        <textarea
-                          value={goal.description || ''}
-                          onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { description: e.target.value })}
-                          placeholder="Add a description..."
-                          style={{
-                            width: '100%',
-                            minHeight: '100px',
-                            padding: '12px',
-                            background: 'rgba(42, 42, 62, 0.8)',
-                            border: '2px solid rgba(125, 211, 192, 0.3)',
-                            borderRadius: '10px',
-                            color: '#f4e8d8',
-                            fontSize: '0.95rem',
-                            fontFamily: 'inherit',
-                            resize: 'vertical'
-                          }}
-                        />
-                      </div>
+                        <div className="project-detail-header">
+                          {editingGoalName ? (
+                            <input
+                              type="text"
+                              value={goal.name}
+                              onChange={(e) => {
+                                updateGoal(selectedGoal.listName, selectedGoal.id, { name: e.target.value });
+                              }}
+                              onBlur={() => setEditingGoalName(false)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') setEditingGoalName(false);
+                              }}
+                              autoFocus
+                              className="project-name-edit"
+                            />
+                          ) : (
+                            <h2 onClick={() => setEditingGoalName(true)} style={{cursor: 'pointer'}} className="project-detail-name">
+                              {goal.name}
+                            </h2>
+                          )}
+                        </div>
 
-                      {/* Outcome Field */}
-                      <div style={{marginBottom: '20px'}}>
-                        <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
-                          Outcome:
-                        </label>
-                        <textarea
-                          value={goal.outcome || ''}
-                          onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { outcome: e.target.value })}
-                          placeholder="Add the desired outcome..."
-                          style={{
-                            width: '100%',
-                            minHeight: '100px',
-                            padding: '12px',
-                            background: 'rgba(42, 42, 62, 0.8)',
-                            border: '2px solid rgba(125, 211, 192, 0.3)',
-                            borderRadius: '10px',
-                            color: '#f4e8d8',
-                            fontSize: '0.95rem',
-                            fontFamily: 'inherit',
-                            resize: 'vertical'
-                          }}
-                        />
-                      </div>
-
-                      {/* Goal Dates */}
-                      <div className="project-dates-section">
-                        <div className="project-date-field">
-                          <label className="project-date-label">Start Date:</label>
-                          <input
-                            type="date"
-                            value={goal.startDate || ''}
-                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { startDate: e.target.value })}
-                            className="date-picker"
+                        {/* Description Field */}
+                        <div style={{marginBottom: '20px'}}>
+                          <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
+                            Description:
+                          </label>
+                          <textarea
+                            value={goal.description || ''}
+                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { description: e.target.value })}
+                            placeholder="Add a description..."
+                            style={{
+                              width: '100%',
+                              minHeight: '100px',
+                              padding: '12px',
+                              background: 'rgba(42, 42, 62, 0.8)',
+                              border: '2px solid rgba(125, 211, 192, 0.3)',
+                              borderRadius: '10px',
+                              color: '#f4e8d8',
+                              fontSize: '0.95rem',
+                              fontFamily: 'inherit',
+                              resize: 'vertical'
+                            }}
                           />
                         </div>
-                        <div className="project-date-field">
-                          <label className="project-date-label">End Date:</label>
-                          <input
-                            type="date"
-                            value={goal.endDate || ''}
-                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { endDate: e.target.value })}
-                            className="date-picker"
+
+                        {/* Outcome Field */}
+                        <div style={{marginBottom: '20px'}}>
+                          <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
+                            Outcome:
+                          </label>
+                          <textarea
+                            value={goal.outcome || ''}
+                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { outcome: e.target.value })}
+                            placeholder="Add the desired outcome..."
+                            style={{
+                              width: '100%',
+                              minHeight: '100px',
+                              padding: '12px',
+                              background: 'rgba(42, 42, 62, 0.8)',
+                              border: '2px solid rgba(125, 211, 192, 0.3)',
+                              borderRadius: '10px',
+                              color: '#f4e8d8',
+                              fontSize: '0.95rem',
+                              fontFamily: 'inherit',
+                              resize: 'vertical'
+                            }}
                           />
+                        </div>
+
+                        {/* Goal Dates */}
+                        <div className="project-dates-section">
+                          <div className="project-date-field">
+                            <label className="project-date-label">Start Date:</label>
+                            <input
+                              type="date"
+                              value={goal.startDate || ''}
+                              onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { startDate: e.target.value })}
+                              className="date-picker"
+                            />
+                          </div>
+                          <div className="project-date-field">
+                            <label className="project-date-label">End Date:</label>
+                            <input
+                              type="date"
+                              value={goal.endDate || ''}
+                              onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { endDate: e.target.value })}
+                              className="date-picker"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Before Photos */}
+                        <div style={{marginBottom: '20px'}}>
+                          <div style={{
+                            fontFamily: 'Quicksand, sans-serif',
+                            fontSize: '1.1rem',
+                            fontWeight: '700',
+                            color: '#f4e8d8',
+                            marginBottom: '10px',
+                            paddingBottom: '8px',
+                            borderBottom: '2px solid rgba(125, 211, 192, 0.2)'
+                          }}>
+                            Before Photos
+                          </div>
+
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            marginBottom: '10px'
+                          }}>
+                            <button
+                              className="toolbar-btn"
+                              onClick={() => {
+                                const input = document.createElement('input');
+                                input.type = 'file';
+                                input.accept = 'image/*';
+                                input.multiple = true;
+                                input.onchange = (evt) => {
+                                  const files = Array.from(evt.target.files);
+                                  files.forEach(file => {
+                                    if (file) {
+                                      addPhotoToGoal(selectedGoal.listName, selectedGoal.id, file, 'beforePhotos');
+                                    }
+                                  });
+                                };
+                                input.click();
+                              }}
+                              style={{
+                                padding: '6px 12px',
+                                fontSize: '0.85rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                              }}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                                <circle cx="12" cy="13" r="4"></circle>
+                                <line x1="17" y1="3" x2="17" y2="6"></line>
+                                <circle cx="17" cy="2" r="1"></circle>
+                              </svg>
+                              Add Photos
+                            </button>
+                          </div>
+                          
+                          {goal.beforePhotos && goal.beforePhotos.length > 0 && (
+                            <div style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                              gap: '10px'
+                            }}>
+                              {goal.beforePhotos.map(photo => (
+                                <div 
+                                  key={photo.id} 
+                                  style={{
+                                    position: 'relative',
+                                    borderRadius: '8px',
+                                    overflow: 'hidden',
+                                    border: '2px solid rgba(125, 211, 192, 0.3)',
+                                    aspectRatio: '1',
+                                  }}
+                                >
+                                  <img 
+                                    src={photo.data} 
+                                    alt="Before" 
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      objectFit: 'cover',
+                                      display: 'block'
+                                    }}
+                                  />
+                                  <button 
+                                    onClick={() => removePhotoFromGoal(selectedGoal.listName, selectedGoal.id, photo.id, 'beforePhotos')}
+                                    style={{
+                                      position: 'absolute',
+                                      top: '5px',
+                                      right: '5px',
+                                      background: 'rgba(0, 0, 0, 0.7)',
+                                      color: '#fff',
+                                      border: 'none',
+                                      borderRadius: '50%',
+                                      width: '24px',
+                                      height: '24px',
+                                      cursor: 'pointer',
+                                      fontSize: '16px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      padding: 0,
+                                      lineHeight: 1
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* After Photos */}
+                        <div style={{marginBottom: '20px'}}>
+                          <div style={{
+                            fontFamily: 'Quicksand, sans-serif',
+                            fontSize: '1.1rem',
+                            fontWeight: '700',
+                            color: '#f4e8d8',
+                            marginBottom: '10px',
+                            paddingBottom: '8px',
+                            borderBottom: '2px solid rgba(125, 211, 192, 0.2)'
+                          }}>
+                            After Photos
+                          </div>
+
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            marginBottom: '10px'
+                          }}>
+                            <button
+                              className="toolbar-btn"
+                              onClick={() => {
+                                const input = document.createElement('input');
+                                input.type = 'file';
+                                input.accept = 'image/*';
+                                input.multiple = true;
+                                input.onchange = (evt) => {
+                                  const files = Array.from(evt.target.files);
+                                  files.forEach(file => {
+                                    if (file) {
+                                      addPhotoToGoal(selectedGoal.listName, selectedGoal.id, file, 'afterPhotos');
+                                    }
+                                  });
+                                };
+                                input.click();
+                              }}
+                              style={{
+                                padding: '6px 12px',
+                                fontSize: '0.85rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                              }}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                                <circle cx="12" cy="13" r="4"></circle>
+                                <line x1="17" y1="3" x2="17" y2="6"></line>
+                                <circle cx="17" cy="2" r="1"></circle>
+                              </svg>
+                              Add Photos
+                            </button>
+                          </div>
+                          
+                          {goal.afterPhotos && goal.afterPhotos.length > 0 && (
+                            <div style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                              gap: '10px'
+                            }}>
+                              {goal.afterPhotos.map(photo => (
+                                <div 
+                                  key={photo.id} 
+                                  style={{
+                                    position: 'relative',
+                                    borderRadius: '8px',
+                                    overflow: 'hidden',
+                                    border: '2px solid rgba(125, 211, 192, 0.3)',
+                                    aspectRatio: '1',
+                                  }}
+                                >
+                                  <img 
+                                    src={photo.data} 
+                                    alt="After" 
+                                    style={{
+                                      width: '100%',
+                                      height: '100%',
+                                      objectFit: 'cover',
+                                      display: 'block'
+                                    }}
+                                  />
+                                  <button 
+                                    onClick={() => removePhotoFromGoal(selectedGoal.listName, selectedGoal.id, photo.id, 'afterPhotos')}
+                                    style={{
+                                      position: 'absolute',
+                                      top: '5px',
+                                      right: '5px',
+                                      background: 'rgba(0, 0, 0, 0.7)',
+                                      color: '#fff',
+                                      border: 'none',
+                                      borderRadius: '50%',
+                                      width: '24px',
+                                      height: '24px',
+                                      cursor: 'pointer',
+                                      fontSize: '16px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      padding: 0,
+                                      lineHeight: 1
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -6938,136 +8007,130 @@ export default function LittleFires() {
                             Log Time
                           </button>
                         </div>
-                      </div>
 
-                      {/* Time Log Records */}
-                      {(goal.timeLogs || []).length > 0 && (
-                        <div style={{
-                          marginTop: '20px',
-                          padding: '20px',
-                          background: 'rgba(42, 42, 62, 0.8)',
-                          borderRadius: '15px',
-                          border: '2px solid rgba(125, 211, 192, 0.3)'
-                        }}>
-                          <h3 style={{
-                            fontFamily: 'Quicksand, sans-serif',
-                            fontSize: '1.3rem',
-                            fontWeight: '700',
-                            color: '#f4e8d8',
-                            marginBottom: '15px',
-                            marginTop: 0,
-                            paddingBottom: '10px',
-                            borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
-                          }}>
-                            Time Log History
-                          </h3>
-                          
-                          {(goal.timeLogs || []).slice().reverse().map((log) => (
-                            <div 
-                              key={log.id}
-                              onClick={() => {
-                                setEditingTimeLog(log);
-                                setLoggedMinutes(log.minutes);
-                                setTimeLogFocus(log.focus || '');
-                                setTimeLogDescription(log.description || '');
-                                setTimeLogTakeAway(log.takeAway || '');
-                              }}
-                              style={{
-                                padding: '15px',
-                                background: 'rgba(52, 52, 72, 0.6)',
-                                borderRadius: '10px',
-                                marginBottom: '10px',
-                                border: '2px solid rgba(125, 211, 192, 0.3)',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease'
-                              }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.background = 'rgba(52, 52, 72, 0.8)';
-                                e.currentTarget.style.borderColor = 'rgba(125, 211, 192, 0.5)';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.background = 'rgba(52, 52, 72, 0.6)';
-                                e.currentTarget.style.borderColor = 'rgba(125, 211, 192, 0.3)';
-                              }}
-                            >
-                              <div style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                marginBottom: '8px'
-                              }}>
+                        {/* Time Log History */}
+                        {(goal.timeLogs || []).length > 0 && (
+                          <div style={{marginTop: '30px'}}>
+                            <h3 style={{
+                              fontFamily: 'Quicksand, sans-serif',
+                              fontSize: '1.1rem',
+                              fontWeight: '700',
+                              color: '#f4e8d8',
+                              marginBottom: '15px',
+                              marginTop: 0,
+                              paddingBottom: '10px',
+                              borderBottom: '2px solid rgba(125, 211, 192, 0.2)'
+                            }}>
+                              History
+                            </h3>
+                            
+                            {(goal.timeLogs || []).slice().reverse().map((log) => (
+                              <div 
+                                key={log.id}
+                                onClick={() => {
+                                  setEditingTimeLog(log);
+                                  setLoggedMinutes(log.minutes);
+                                  setTimeLogFocus(log.focus || '');
+                                  setTimeLogDescription(log.description || '');
+                                  setTimeLogTakeAway(log.takeAway || '');
+                                }}
+                                style={{
+                                  padding: '15px',
+                                  background: 'rgba(52, 52, 72, 0.6)',
+                                  borderRadius: '10px',
+                                  marginBottom: '10px',
+                                  border: '2px solid rgba(125, 211, 192, 0.3)',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.2s ease'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = 'rgba(52, 52, 72, 0.8)';
+                                  e.currentTarget.style.borderColor = 'rgba(125, 211, 192, 0.5)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = 'rgba(52, 52, 72, 0.6)';
+                                  e.currentTarget.style.borderColor = 'rgba(125, 211, 192, 0.3)';
+                                }}
+                              >
                                 <div style={{
-                                  fontFamily: 'Quicksand, sans-serif',
-                                  fontSize: '1rem',
-                                  fontWeight: '600',
-                                  color: '#f4e8d8'
-                                }}>
-                                  {log.minutes} min
-                                </div>
-                                <div style={{
-                                  fontSize: '0.85rem',
-                                  color: '#b8a99a'
-                                }}>
-                                  {new Date(log.date).toLocaleDateString('en-US', { 
-                                    month: 'short', 
-                                    day: 'numeric',
-                                    hour: 'numeric',
-                                    minute: '2-digit'
-                                  })}
-                                </div>
-                              </div>
-                              
-                              {log.focus && (
-                                <div style={{
-                                  fontSize: '0.95rem',
-                                  color: '#f4e8d8',
-                                  marginBottom: '5px',
-                                  fontWeight: '500'
-                                }}>
-                                  {log.focus}
-                                </div>
-                              )}
-                              
-                              {log.description && (
-                                <div style={{
-                                  fontSize: '0.9rem',
-                                  color: '#b8a99a',
-                                  lineHeight: '1.4',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
                                   marginBottom: '8px'
                                 }}>
-                                  {log.description}
-                                </div>
-                              )}
-
-                              {log.takeAway && (
-                                <div style={{
-                                  fontSize: '0.95rem',
-                                  color: '#f4e8d8',
-                                  lineHeight: '1.5',
-                                  marginTop: '10px',
-                                  padding: '12px',
-                                  background: 'rgba(125, 211, 192, 0.1)',
-                                  borderRadius: '8px',
-                                  border: '1px solid rgba(125, 211, 192, 0.3)',
-                                  fontWeight: '500'
-                                }}>
                                   <div style={{
-                                    fontSize: '0.75rem',
-                                    color: '#7dd3c0',
-                                    marginBottom: '5px',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.5px',
-                                    fontWeight: '600'
+                                    fontFamily: 'Quicksand, sans-serif',
+                                    fontSize: '1rem',
+                                    fontWeight: '600',
+                                    color: '#f4e8d8'
                                   }}>
-                                    Take Away
+                                    {log.minutes} min
                                   </div>
-                                  {log.takeAway}
+                                  <div style={{
+                                    fontSize: '0.85rem',
+                                    color: '#b8a99a'
+                                  }}>
+                                    {new Date(log.date).toLocaleDateString('en-US', { 
+                                      month: 'short', 
+                                      day: 'numeric',
+                                      hour: 'numeric',
+                                      minute: '2-digit'
+                                    })}
+                                  </div>
                                 </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                                
+                                {log.focus && (
+                                  <div style={{
+                                    fontSize: '0.95rem',
+                                    color: '#f4e8d8',
+                                    marginBottom: '5px',
+                                    fontWeight: '500'
+                                  }}>
+                                    {log.focus}
+                                  </div>
+                                )}
+                                
+                                {log.description && (
+                                  <div style={{
+                                    fontSize: '0.9rem',
+                                    color: '#b8a99a',
+                                    lineHeight: '1.4',
+                                    marginBottom: '8px'
+                                  }}>
+                                    {log.description}
+                                  </div>
+                                )}
+
+                                {log.takeAway && (
+                                  <div style={{
+                                    fontSize: '0.95rem',
+                                    color: '#f4e8d8',
+                                    lineHeight: '1.5',
+                                    marginTop: '10px',
+                                    padding: '12px',
+                                    background: 'rgba(125, 211, 192, 0.1)',
+                                    borderRadius: '8px',
+                                    border: '1px solid rgba(125, 211, 192, 0.3)',
+                                    fontWeight: '500'
+                                  }}>
+                                    <div style={{
+                                      fontSize: '0.75rem',
+                                      color: '#7dd3c0',
+                                      marginBottom: '5px',
+                                      textTransform: 'uppercase',
+                                      letterSpacing: '0.5px',
+                                      fontWeight: '600'
+                                    }}>
+                                      Take Away
+                                    </div>
+                                    {log.takeAway}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
 
                       {/* Goal Actions */}
                       <div className="project-actions">
@@ -7083,6 +8146,7 @@ export default function LittleFires() {
                         >
                           Delete
                         </button>
+                      </div>
                       </div>
                     </div>
                   );
@@ -7248,10 +8312,10 @@ export default function LittleFires() {
                 setTimeLoggerContext(null);
               }}>
                 <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
-                  minWidth: '450px',
+                  width: '90%',
                   maxWidth: '500px',
                   textAlign: 'center',
-                  padding: '20px 40px 40px 40px',
+                  padding: '20px',
                   maxHeight: '90vh',
                   overflowY: 'auto'
                 }}>
@@ -7271,15 +8335,15 @@ export default function LittleFires() {
                     }}
                     style={{
                       cursor: 'pointer',
-                      marginTop: '60px',
+                      marginTop: '40px',
                       marginBottom: '15px',
                       display: 'inline-block',
                       transition: 'transform 0.2s ease'
                     }}
                   >
                     <div style={{
-                      width: '240px',
-                      height: '240px',
+                      width: '180px',
+                      height: '180px',
                       position: 'relative',
                       display: 'inline-block'
                     }}>
@@ -7289,17 +8353,17 @@ export default function LittleFires() {
                           position: 'absolute',
                           top: '-15px',
                           left: '-15px',
-                          width: '270px',
-                          height: '270px',
+                          width: '210px',
+                          height: '210px',
                           transform: 'rotate(-90deg)',
                           pointerEvents: 'none'
                         }}
                       >
                         {/* Background circle */}
                         <circle
-                          cx="135"
-                          cy="135"
-                          r="120"
+                          cx="105"
+                          cy="105"
+                          r="95"
                           fill="none"
                           stroke="rgba(58, 58, 74, 0.3)"
                           strokeWidth="8"
@@ -7307,14 +8371,14 @@ export default function LittleFires() {
                         {/* Progress circle */}
                         {isLogging && (
                           <circle
-                            cx="135"
-                            cy="135"
-                            r="120"
+                            cx="105"
+                            cy="105"
+                            r="95"
                             fill="none"
                             stroke="#7dd3c0"
                             strokeWidth="8"
-                            strokeDasharray="754"
-                            strokeDashoffset="754"
+                            strokeDasharray="597"
+                            strokeDashoffset="597"
                             strokeLinecap="round"
                             style={{
                               animation: `progressRing ${timerDuration || 60}s linear infinite`
@@ -7380,7 +8444,7 @@ export default function LittleFires() {
                   )}
 
                   {/* Timer Duration Selector */}
-                  <div style={{textAlign: 'left', marginBottom: '30px'}}>
+                  <div style={{textAlign: 'left', marginBottom: '20px'}}>
                     <label style={{
                       display: 'block',
                       color: '#b8a99a',
@@ -7417,7 +8481,7 @@ export default function LittleFires() {
                   </div>
 
                   {/* Focus and Description Fields */}
-                  <div style={{textAlign: 'left', marginBottom: '25px'}}>
+                  <div style={{textAlign: 'left', marginBottom: '15px'}}>
                     <label style={{
                       display: 'block',
                       color: '#b8a99a',
@@ -7477,7 +8541,7 @@ export default function LittleFires() {
                   </div>
 
                   {/* Take Away Field */}
-                  <div style={{textAlign: 'left', marginBottom: '25px'}}>
+                  <div style={{textAlign: 'left', marginBottom: '15px'}}>
                     <label style={{
                       display: 'block',
                       color: '#b8a99a',
@@ -7601,11 +8665,11 @@ export default function LittleFires() {
                 setTimeLogTakeAway('');
               }}>
                 <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
-                  minWidth: '450px',
+                  width: '90%',
                   maxWidth: '500px',
-                  padding: '30px'
+                  padding: '20px'
                 }}>
-                  <h3 style={{marginTop: 0, marginBottom: '25px'}}>Edit Time Log</h3>
+                  <h3 style={{marginTop: 0, marginBottom: '15px'}}>Edit Time Log</h3>
                   
                   {/* Minutes Input */}
                   <div style={{marginBottom: '20px'}}>
@@ -7695,7 +8759,7 @@ export default function LittleFires() {
                   </div>
 
                   {/* Take Away Input */}
-                  <div style={{marginBottom: '25px'}}>
+                  <div style={{marginBottom: '15px'}}>
                     <label style={{
                       display: 'block',
                       color: '#b8a99a',

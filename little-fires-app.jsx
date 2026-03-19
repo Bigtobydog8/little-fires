@@ -9080,64 +9080,77 @@ export default function LittleFires() {
                                 
                                 {isExpanded && (
                                   <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(125, 211, 192, 0.2)'}}>
-                                    {log.focus && (
-                                      <div style={{marginBottom: '10px'}}>
-                                        <div style={{
-                                          color: '#b8a99a',
-                                          fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          marginBottom: '3px'
-                                        }}>
-                                          Focus:
+                                    <div 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setTimeLoggerContext({
+                                          type: 'goal',
+                                          id: log.sourceId,
+                                          listName: log.listName
+                                        });
+                                        setShowTimeLogger(true);
+                                      }}
+                                      style={{cursor: 'pointer'}}
+                                    >
+                                      {log.focus && (
+                                        <div style={{marginBottom: '10px'}}>
+                                          <div style={{
+                                            color: '#b8a99a',
+                                            fontSize: '0.8rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            marginBottom: '3px'
+                                          }}>
+                                            Focus:
+                                          </div>
+                                          <div style={{
+                                            color: '#d0c8c0',
+                                            fontSize: '0.9rem',
+                                            fontFamily: 'Quicksand, sans-serif'
+                                          }}>
+                                            {log.focus}
+                                          </div>
                                         </div>
-                                        <div style={{
-                                          color: '#d0c8c0',
-                                          fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif'
-                                        }}>
-                                          {log.focus}
+                                      )}
+                                      {log.description && (
+                                        <div style={{marginBottom: '10px'}}>
+                                          <div style={{
+                                            color: '#b8a99a',
+                                            fontSize: '0.8rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            marginBottom: '3px'
+                                          }}>
+                                            Description:
+                                          </div>
+                                          <div style={{
+                                            color: '#d0c8c0',
+                                            fontSize: '0.9rem',
+                                            fontFamily: 'Quicksand, sans-serif'
+                                          }}>
+                                            {log.description}
+                                          </div>
                                         </div>
-                                      </div>
-                                    )}
-                                    {log.description && (
-                                      <div style={{marginBottom: '10px'}}>
-                                        <div style={{
-                                          color: '#b8a99a',
-                                          fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          marginBottom: '3px'
-                                        }}>
-                                          Description:
+                                      )}
+                                      {log.takeAway && (
+                                        <div style={{marginBottom: '15px'}}>
+                                          <div style={{
+                                            color: '#b8a99a',
+                                            fontSize: '0.8rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            marginBottom: '3px'
+                                          }}>
+                                            Take Away:
+                                          </div>
+                                          <div style={{
+                                            color: '#d0c8c0',
+                                            fontSize: '0.9rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontStyle: 'italic'
+                                          }}>
+                                            {log.takeAway}
+                                          </div>
                                         </div>
-                                        <div style={{
-                                          color: '#d0c8c0',
-                                          fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif'
-                                        }}>
-                                          {log.description}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {log.takeAway && (
-                                      <div style={{marginBottom: '15px'}}>
-                                        <div style={{
-                                          color: '#b8a99a',
-                                          fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          marginBottom: '3px'
-                                        }}>
-                                          Take Away:
-                                        </div>
-                                        <div style={{
-                                          color: '#d0c8c0',
-                                          fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          fontStyle: 'italic'
-                                        }}>
-                                          {log.takeAway}
-                                        </div>
-                                      </div>
-                                    )}
+                                      )}
+                                    </div>
                                     
                                     {/* Add Time Button */}
                                     <div style={{display: 'flex', justifyContent: 'flex-end'}}>
@@ -9233,64 +9246,76 @@ export default function LittleFires() {
                                 
                                 {isExpanded && (
                                   <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(125, 211, 192, 0.2)'}}>
-                                    {log.focus && (
-                                      <div style={{marginBottom: '10px'}}>
-                                        <div style={{
-                                          color: '#b8a99a',
-                                          fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          marginBottom: '3px'
-                                        }}>
-                                          Focus:
+                                    <div 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setTimeLoggerContext({
+                                          type: 'note',
+                                          id: log.sourceId
+                                        });
+                                        setShowTimeLogger(true);
+                                      }}
+                                      style={{cursor: 'pointer'}}
+                                    >
+                                      {log.focus && (
+                                        <div style={{marginBottom: '10px'}}>
+                                          <div style={{
+                                            color: '#b8a99a',
+                                            fontSize: '0.8rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            marginBottom: '3px'
+                                          }}>
+                                            Focus:
+                                          </div>
+                                          <div style={{
+                                            color: '#d0c8c0',
+                                            fontSize: '0.9rem',
+                                            fontFamily: 'Quicksand, sans-serif'
+                                          }}>
+                                            {log.focus}
+                                          </div>
                                         </div>
-                                        <div style={{
-                                          color: '#d0c8c0',
-                                          fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif'
-                                        }}>
-                                          {log.focus}
+                                      )}
+                                      {log.description && (
+                                        <div style={{marginBottom: '10px'}}>
+                                          <div style={{
+                                            color: '#b8a99a',
+                                            fontSize: '0.8rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            marginBottom: '3px'
+                                          }}>
+                                            Description:
+                                          </div>
+                                          <div style={{
+                                            color: '#d0c8c0',
+                                            fontSize: '0.9rem',
+                                            fontFamily: 'Quicksand, sans-serif'
+                                          }}>
+                                            {log.description}
+                                          </div>
                                         </div>
-                                      </div>
-                                    )}
-                                    {log.description && (
-                                      <div style={{marginBottom: '10px'}}>
-                                        <div style={{
-                                          color: '#b8a99a',
-                                          fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          marginBottom: '3px'
-                                        }}>
-                                          Description:
+                                      )}
+                                      {log.takeAway && (
+                                        <div style={{marginBottom: '15px'}}>
+                                          <div style={{
+                                            color: '#b8a99a',
+                                            fontSize: '0.8rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            marginBottom: '3px'
+                                          }}>
+                                            Take Away:
+                                          </div>
+                                          <div style={{
+                                            color: '#d0c8c0',
+                                            fontSize: '0.9rem',
+                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontStyle: 'italic'
+                                          }}>
+                                            {log.takeAway}
+                                          </div>
                                         </div>
-                                        <div style={{
-                                          color: '#d0c8c0',
-                                          fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif'
-                                        }}>
-                                          {log.description}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {log.takeAway && (
-                                      <div style={{marginBottom: '15px'}}>
-                                        <div style={{
-                                          color: '#b8a99a',
-                                          fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          marginBottom: '3px'
-                                        }}>
-                                          Take Away:
-                                        </div>
-                                        <div style={{
-                                          color: '#d0c8c0',
-                                          fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif',
-                                          fontStyle: 'italic'
-                                        }}>
-                                          {log.takeAway}
-                                        </div>
-                                      </div>
-                                    )}
+                                      )}
+                                    </div>
                                     
                                     {/* Add Time Button */}
                                     <div style={{display: 'flex', justifyContent: 'flex-end'}}>
@@ -9773,23 +9798,25 @@ export default function LittleFires() {
                     {isLogging ? 'Click fire to stop timer' : 'Click fire to start logging'}
                   </p>
 
-                  {/* Save Button */}
-                  <button 
-                    className="edit-btn"
-                    onClick={() => {
-                      if (loggedMinutes > 0) {
-                        const newTimeLog = {
-                          id: Date.now(),
-                          minutes: loggedMinutes,
-                          focus: timeLogFocus,
-                          description: timeLogDescription,
-                          takeAway: timeLogTakeAway,
-                          date: new Date().toISOString()
-                        };
+                  {/* Action Buttons */}
+                  <div style={{display: 'flex', gap: '10px', justifyContent: 'center'}}>
+                    <button 
+                      className="edit-btn"
+                      onClick={() => {
+                        if (loggedMinutes > 0) {
+                          const newTimeLog = {
+                            id: Date.now(),
+                            minutes: loggedMinutes,
+                            focus: timeLogFocus,
+                            description: timeLogDescription,
+                            takeAway: timeLogTakeAway,
+                            date: new Date().toISOString()
+                          };
+                          
+                          setStandaloneTimeLogs(prev => [newTimeLog, ...prev]);
+                        }
                         
-                        setStandaloneTimeLogs(prev => [newTimeLog, ...prev]);
-                        
-                        // Close modal and reset
+                        // Close modal and reset (always, even if 0 minutes)
                         setShowTimeLogger(false);
                         setIsLogging(false);
                         setLoggedMinutes(0);
@@ -9798,16 +9825,28 @@ export default function LittleFires() {
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
                         setTimerDuration('');
-                      }
-                    }}
-                    disabled={loggedMinutes === 0}
-                    style={{
-                      opacity: loggedMinutes === 0 ? 0.5 : 1,
-                      cursor: loggedMinutes === 0 ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    Save Time Log
-                  </button>
+                      }}
+                      style={{width: 'auto', padding: '10px 30px'}}
+                    >
+                      Save
+                    </button>
+                    <button 
+                      className="delete-btn"
+                      onClick={() => {
+                        setShowTimeLogger(false);
+                        setIsLogging(false);
+                        setLoggedMinutes(0);
+                        setLogStartTime(null);
+                        setTimeLogFocus('');
+                        setTimeLogDescription('');
+                        setTimeLogTakeAway('');
+                        setTimerDuration('');
+                      }}
+                      style={{width: 'auto', padding: '10px 30px'}}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

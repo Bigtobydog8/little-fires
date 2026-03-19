@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
 export default function LittleFires() {
-  const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes'
+  const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'archive', 'time'
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentList, setCurrentList] = useState('master');
   const [selectedPriority, setSelectedPriority] = useState('low');
@@ -11,6 +11,12 @@ export default function LittleFires() {
   const [taskInput, setTaskInput] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [expandedTaskId, setExpandedTaskId] = useState(null);
+
+  // Standalone time logs state
+  const [standaloneTimeLogs, setStandaloneTimeLogs] = useState(() => {
+    const saved = localStorage.getItem('standaloneTimeLogs');
+    return saved ? JSON.parse(saved) : [];
+  });
 
   // Load Tesseract.js for OCR
   useEffect(() => {
@@ -132,6 +138,8 @@ export default function LittleFires() {
   const [timeLogFocus, setTimeLogFocus] = useState('');
   const [timeLogDescription, setTimeLogDescription] = useState('');
   const [timeLogTakeAway, setTimeLogTakeAway] = useState('');
+  const [timeLogMinutes, setTimeLogMinutes] = useState('');
+  const [expandedTimeLogId, setExpandedTimeLogId] = useState(null);
 
   const [selectedProject, setSelectedProject] = useState(null);
   const [currentProjectList, setCurrentProjectList] = useState('master');
@@ -188,6 +196,10 @@ export default function LittleFires() {
   useEffect(() => {
     localStorage.setItem('little_fires_goals', JSON.stringify(goals));
   }, [goals]);
+
+  useEffect(() => {
+    localStorage.setItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
+  }, [standaloneTimeLogs]);
 
   // Timer for time logging
   useEffect(() => {
@@ -1301,6 +1313,58 @@ export default function LittleFires() {
       return masterProjects;
     }
     return projects[currentProjectList] || [];
+  };
+
+  const getAllTimeLogs = () => {
+    const allLogs = [];
+    
+    // Get time logs from all goals
+    const allGoalLists = ['personal', 'work', 'home', 'travel', 'kids'];
+    allGoalLists.forEach(listName => {
+      (goals[listName] || []).forEach(goal => {
+        if (goal.timeLogs && goal.timeLogs.length > 0) {
+          goal.timeLogs.forEach(log => {
+            allLogs.push({
+              ...log,
+              source: 'goal',
+              sourceName: goal.name,
+              sourceId: goal.id,
+              listName
+            });
+          });
+        }
+      });
+    });
+    
+    // Get time logs from all notes
+    notes.forEach(note => {
+      if (note.timeLogs && note.timeLogs.length > 0) {
+        note.timeLogs.forEach(log => {
+          allLogs.push({
+            ...log,
+            source: 'journal',
+            sourceName: new Date(note.date).toLocaleDateString('en-US', { 
+              weekday: 'long', 
+              month: 'long', 
+              day: 'numeric' 
+            }),
+            sourceId: note.id
+          });
+        });
+      }
+    });
+    
+    // Get standalone time logs
+    standaloneTimeLogs.forEach(log => {
+      allLogs.push({
+        ...log,
+        source: 'time',
+        sourceName: 'Standalone Time Log'
+      });
+    });
+    
+    // Sort by date (newest first)
+    return allLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
   };
 
   const getProjectTasks = (projectId) => {
@@ -4862,6 +4926,12 @@ export default function LittleFires() {
               >
                 Tasks
               </div>
+              <div 
+                className={`menu-item ${appMode === 'time' ? 'active' : ''}`}
+                onClick={() => { setAppMode('time'); setMenuOpen(false); }}
+              >
+                Time
+              </div>
               <div className="menu-divider"></div>
               <div 
                 className={`menu-item ${appMode === 'goals' ? 'active' : ''}`}
@@ -6137,7 +6207,8 @@ export default function LittleFires() {
                               color: '#f4e8d8',
                             fontSize: '0.95rem',
                             fontFamily: 'Quicksand, sans-serif',
-                            resize: 'vertical'
+                            resize: 'vertical',
+                            boxSizing: 'border-box'
                           }}
                         />
                       </div>
@@ -6167,7 +6238,8 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             fontSize: '0.95rem',
                             fontFamily: 'Quicksand, sans-serif',
-                            resize: 'vertical'
+                            resize: 'vertical',
+                            boxSizing: 'border-box'
                           }}
                         />
                       </div>
@@ -7605,7 +7677,8 @@ export default function LittleFires() {
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
                               fontFamily: 'inherit',
-                              resize: 'vertical'
+                              resize: 'vertical',
+                              boxSizing: 'border-box'
                             }}
                           />
                         </div>
@@ -7629,7 +7702,8 @@ export default function LittleFires() {
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
                               fontFamily: 'inherit',
-                              resize: 'vertical'
+                              resize: 'vertical',
+                              boxSizing: 'border-box'
                             }}
                           />
                         </div>
@@ -8457,7 +8531,6 @@ export default function LittleFires() {
                     <select
                       value={timerDuration}
                       onChange={(e) => setTimerDuration(e.target.value === '' ? '' : Number(e.target.value))}
-                      disabled={isLogging}
                       style={{
                         width: '100%',
                         padding: '10px',
@@ -8467,8 +8540,7 @@ export default function LittleFires() {
                         color: '#f4e8d8',
                         fontSize: '1rem',
                         fontFamily: 'Quicksand, sans-serif',
-                        cursor: isLogging ? 'not-allowed' : 'pointer',
-                        opacity: isLogging ? 0.6 : 1
+                        cursor: 'pointer'
                       }}
                     >
                       <option value="">Timer</option>
@@ -8496,7 +8568,6 @@ export default function LittleFires() {
                       value={timeLogFocus}
                       onChange={(e) => setTimeLogFocus(e.target.value)}
                       placeholder="What are you focusing on?"
-                      disabled={isLogging}
                       style={{
                         width: '100%',
                         padding: '10px',
@@ -8505,8 +8576,7 @@ export default function LittleFires() {
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
-                        marginBottom: '15px',
-                        opacity: isLogging ? 0.5 : 1
+                        marginBottom: '15px'
                       }}
                     />
                     
@@ -8523,7 +8593,6 @@ export default function LittleFires() {
                       value={timeLogDescription}
                       onChange={(e) => setTimeLogDescription(e.target.value)}
                       placeholder="Optional notes..."
-                      disabled={isLogging}
                       style={{
                         width: '100%',
                         minHeight: '60px',
@@ -8534,8 +8603,7 @@ export default function LittleFires() {
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
                         fontFamily: 'inherit',
-                        resize: 'vertical',
-                        opacity: isLogging ? 0.5 : 1
+                        resize: 'vertical'
                       }}
                     />
                   </div>
@@ -8555,7 +8623,6 @@ export default function LittleFires() {
                       value={timeLogTakeAway}
                       onChange={(e) => setTimeLogTakeAway(e.target.value)}
                       placeholder="What did you learn or accomplish?"
-                      disabled={isLogging}
                       style={{
                         width: '100%',
                         minHeight: '100px',
@@ -8566,8 +8633,7 @@ export default function LittleFires() {
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
                         fontFamily: 'inherit',
-                        resize: 'vertical',
-                        opacity: isLogging ? 0.5 : 1
+                        resize: 'vertical'
                       }}
                     />
                   </div>
@@ -8867,6 +8933,886 @@ export default function LittleFires() {
               </div>
             )}
 
+
+        {appMode === 'time' && (
+          <div className="time-section">
+            {/* Log Time Button */}
+            <div style={{display: 'block', textAlign: 'center', marginBottom: '30px'}}>
+              <button 
+                className="add-task-btn" 
+                onClick={() => setShowTimeLogger(true)}
+                style={{width: '70%', display: 'inline-block'}}
+              >
+                Log Time
+              </button>
+            </div>
+
+            {/* Time Log Records */}
+            <div style={{
+              padding: '20px 40px',
+              minHeight: '400px'
+            }}>
+              {(() => {
+                const allTimeLogs = getAllTimeLogs();
+                
+                if (allTimeLogs.length === 0) {
+                  return (
+                    <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                      <div style={{
+                        width: '180px',
+                        height: '180px',
+                        position: 'relative',
+                        display: 'inline-block'
+                      }}>
+                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 1280.000000 1280.000000"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                          }}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill="#3a3a4a" stroke="none">
+                            <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                            -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                            -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                            17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                            -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                            132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                            680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                            -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                            -1 -56z"/>
+                            <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                            -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                            -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                            -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                            289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                            553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                            -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                            <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                            -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                            -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                            -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                            36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                            -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                            95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                          </g>
+                        </svg>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Group time logs by source
+                const groupedLogs = {
+                  goal: allTimeLogs.filter(log => log.source === 'goal'),
+                  journal: allTimeLogs.filter(log => log.source === 'journal'),
+                  time: allTimeLogs.filter(log => log.source === 'time')
+                };
+
+                return (
+                  <div style={{display: 'flex', flexDirection: 'column', gap: '30px'}}>
+                    {/* Goal Time Logs */}
+                    {groupedLogs.goal.length > 0 && (
+                      <div>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          Goal Time Logs
+                        </div>
+                        <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
+                          {groupedLogs.goal.map((log, index) => {
+                            const isExpanded = expandedTimeLogId === `goal-${log.id}-${index}`;
+                            return (
+                              <div key={`goal-${log.id}-${index}`} style={{
+                                padding: '15px',
+                                background: 'rgba(52, 52, 72, 0.6)',
+                                borderRadius: '10px',
+                                border: '2px solid rgba(100, 116, 139, 0.2)',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease'
+                              }}
+                              onClick={() => setExpandedTimeLogId(isExpanded ? null : `goal-${log.id}-${index}`)}
+                              >
+                                <div style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}>
+                                  <div style={{flex: 1}}>
+                                    <div style={{
+                                      color: '#999',
+                                      fontSize: '0.85rem',
+                                      fontFamily: 'Quicksand, sans-serif'
+                                    }}>
+                                      {new Date(log.date).toLocaleDateString('en-US', { 
+                                        month: 'short', 
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit'
+                                      })}
+                                    </div>
+                                    <div style={{
+                                      color: '#f4e8d8',
+                                      fontSize: '0.9rem',
+                                      fontFamily: 'Quicksand, sans-serif',
+                                      marginTop: '3px'
+                                    }}>
+                                      {log.sourceName}
+                                    </div>
+                                  </div>
+                                  <div style={{
+                                    color: '#7dd3c0',
+                                    fontSize: '1rem',
+                                    fontWeight: '700',
+                                    fontFamily: 'Quicksand, sans-serif'
+                                  }}>
+                                    {log.minutes} min
+                                  </div>
+                                </div>
+                                
+                                {isExpanded && (
+                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(125, 211, 192, 0.2)'}}>
+                                    {log.focus && (
+                                      <div style={{marginBottom: '10px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Focus:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif'
+                                        }}>
+                                          {log.focus}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {log.description && (
+                                      <div style={{marginBottom: '10px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Description:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif'
+                                        }}>
+                                          {log.description}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {log.takeAway && (
+                                      <div style={{marginBottom: '15px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Take Away:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontStyle: 'italic'
+                                        }}>
+                                          {log.takeAway}
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {/* Add Time Button */}
+                                    <div style={{display: 'flex', justifyContent: 'flex-end'}}>
+                                      <button
+                                        className="add-task-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setTimeLoggerContext({
+                                            type: 'goal',
+                                            id: log.sourceId,
+                                            listName: log.listName
+                                          });
+                                          setShowTimeLogger(true);
+                                        }}
+                                        style={{width: 'auto', padding: '12px 30px'}}
+                                      >
+                                        Add Time
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Journal Time Logs */}
+                    {groupedLogs.journal.length > 0 && (
+                      <div>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          Journal Time Logs
+                        </div>
+                        <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
+                          {groupedLogs.journal.map((log, index) => {
+                            const isExpanded = expandedTimeLogId === `journal-${log.id}-${index}`;
+                            return (
+                              <div key={`journal-${log.id}-${index}`} style={{
+                                padding: '15px',
+                                background: 'rgba(52, 52, 72, 0.6)',
+                                borderRadius: '10px',
+                                border: '2px solid rgba(100, 116, 139, 0.2)',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease'
+                              }}
+                              onClick={() => setExpandedTimeLogId(isExpanded ? null : `journal-${log.id}-${index}`)}
+                              >
+                                <div style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}>
+                                  <div style={{flex: 1}}>
+                                    <div style={{
+                                      color: '#999',
+                                      fontSize: '0.85rem',
+                                      fontFamily: 'Quicksand, sans-serif'
+                                    }}>
+                                      {new Date(log.date).toLocaleDateString('en-US', { 
+                                        month: 'short', 
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit'
+                                      })}
+                                    </div>
+                                    <div style={{
+                                      color: '#f4e8d8',
+                                      fontSize: '0.9rem',
+                                      fontFamily: 'Quicksand, sans-serif',
+                                      marginTop: '3px'
+                                    }}>
+                                      {log.sourceName}
+                                    </div>
+                                  </div>
+                                  <div style={{
+                                    color: '#7dd3c0',
+                                    fontSize: '1rem',
+                                    fontWeight: '700',
+                                    fontFamily: 'Quicksand, sans-serif'
+                                  }}>
+                                    {log.minutes} min
+                                  </div>
+                                </div>
+                                
+                                {isExpanded && (
+                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(125, 211, 192, 0.2)'}}>
+                                    {log.focus && (
+                                      <div style={{marginBottom: '10px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Focus:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif'
+                                        }}>
+                                          {log.focus}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {log.description && (
+                                      <div style={{marginBottom: '10px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Description:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif'
+                                        }}>
+                                          {log.description}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {log.takeAway && (
+                                      <div style={{marginBottom: '15px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Take Away:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontStyle: 'italic'
+                                        }}>
+                                          {log.takeAway}
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {/* Add Time Button */}
+                                    <div style={{display: 'flex', justifyContent: 'flex-end'}}>
+                                      <button
+                                        className="add-task-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setTimeLoggerContext({
+                                            type: 'note',
+                                            id: log.sourceId
+                                          });
+                                          setShowTimeLogger(true);
+                                        }}
+                                        style={{width: 'auto', padding: '12px 30px'}}
+                                      >
+                                        Add Time
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Standalone Time Logs */}
+                    {groupedLogs.time.length > 0 && (
+                      <div>
+                        <div style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.3rem',
+                          fontWeight: '700',
+                          color: '#f4e8d8',
+                          marginBottom: '15px',
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)'
+                        }}>
+                          Time Logs
+                        </div>
+                        <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
+                          {groupedLogs.time.map((log, index) => {
+                            const isExpanded = expandedTimeLogId === `time-${log.id}-${index}`;
+                            return (
+                              <div key={`time-${log.id}-${index}`} style={{
+                                padding: '15px',
+                                background: 'rgba(52, 52, 72, 0.6)',
+                                borderRadius: '10px',
+                                border: '2px solid rgba(100, 116, 139, 0.2)',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease'
+                              }}
+                              onClick={() => setExpandedTimeLogId(isExpanded ? null : `time-${log.id}-${index}`)}
+                              >
+                                <div style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}>
+                                  <div style={{flex: 1}}>
+                                    <div style={{
+                                      color: '#999',
+                                      fontSize: '0.85rem',
+                                      fontFamily: 'Quicksand, sans-serif'
+                                    }}>
+                                      {new Date(log.date).toLocaleDateString('en-US', { 
+                                        month: 'short', 
+                                        day: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit'
+                                      })}
+                                    </div>
+                                    {log.focus && (
+                                      <div style={{
+                                        color: '#f4e8d8',
+                                        fontSize: '0.9rem',
+                                        fontFamily: 'Quicksand, sans-serif',
+                                        marginTop: '3px'
+                                      }}>
+                                        {log.focus}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div style={{
+                                    color: '#7dd3c0',
+                                    fontSize: '1rem',
+                                    fontWeight: '700',
+                                    fontFamily: 'Quicksand, sans-serif'
+                                  }}>
+                                    {log.minutes} min
+                                  </div>
+                                </div>
+                                
+                                {isExpanded && (
+                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(125, 211, 192, 0.2)'}}>
+                                    {log.focus && (
+                                      <div style={{marginBottom: '10px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Focus:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif'
+                                        }}>
+                                          {log.focus}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {log.description && (
+                                      <div style={{marginBottom: '10px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Description:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif'
+                                        }}>
+                                          {log.description}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {log.takeAway && (
+                                      <div style={{marginBottom: '15px'}}>
+                                        <div style={{
+                                          color: '#b8a99a',
+                                          fontSize: '0.8rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          marginBottom: '3px'
+                                        }}>
+                                          Take Away:
+                                        </div>
+                                        <div style={{
+                                          color: '#d0c8c0',
+                                          fontSize: '0.9rem',
+                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontStyle: 'italic'
+                                        }}>
+                                          {log.takeAway}
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {/* Delete Button */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setStandaloneTimeLogs(prev => prev.filter(l => l.id !== log.id));
+                                      }}
+                                      style={{
+                                        padding: '6px 12px',
+                                        background: 'rgba(255, 75, 75, 0.2)',
+                                        border: '1px solid rgba(255, 75, 75, 0.4)',
+                                        borderRadius: '6px',
+                                        color: '#ff6b6b',
+                                        fontSize: '0.85rem',
+                                        fontFamily: 'Quicksand, sans-serif',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s ease'
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Total Time Summary */}
+                    <div style={{
+                      padding: '20px',
+                      background: 'rgba(42, 42, 62, 0.8)',
+                      borderRadius: '10px',
+                      border: '2px solid rgba(125, 211, 192, 0.3)',
+                      textAlign: 'center'
+                    }}>
+                      <span style={{
+                        color: '#7dd3c0',
+                        fontSize: '1.3rem',
+                        fontWeight: '700',
+                        fontFamily: 'Quicksand, sans-serif'
+                      }}>
+                        Total Time Logged: {allTimeLogs.reduce((sum, log) => sum + log.minutes, 0)} minutes
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Time Logger Modal */}
+            {showTimeLogger && (
+              <div className="modal-overlay" onClick={() => {
+                setShowTimeLogger(false);
+                setIsLogging(false);
+                setLoggedMinutes(0);
+                setLogStartTime(null);
+                setTimeLogFocus('');
+                setTimeLogDescription('');
+                setTimeLogTakeAway('');
+                setTimerDuration('');
+              }}>
+                <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
+                  width: '90%',
+                  maxWidth: '500px',
+                  textAlign: 'center',
+                  padding: '20px',
+                  maxHeight: '90vh',
+                  overflowY: 'auto'
+                }}>
+                  {/* Fire Logo with Timer */}
+                  <div 
+                    onClick={() => {
+                      if (!isLogging) {
+                        setIsLogging(true);
+                        setLogStartTime(Date.now());
+                        setLoggedMinutes(0);
+                      } else {
+                        setIsLogging(false);
+                        setLogStartTime(null);
+                      }
+                    }}
+                    style={{
+                      cursor: 'pointer',
+                      marginTop: '40px',
+                      marginBottom: '15px',
+                      display: 'inline-block',
+                      transition: 'transform 0.2s ease'
+                    }}
+                  >
+                    <div style={{
+                      width: '180px',
+                      height: '180px',
+                      position: 'relative',
+                      display: 'inline-block'
+                    }}>
+                      {/* Circular Progress Ring */}
+                      <svg 
+                        style={{
+                          position: 'absolute',
+                          top: '-15px',
+                          left: '-15px',
+                          width: '210px',
+                          height: '210px',
+                          transform: 'rotate(-90deg)',
+                          pointerEvents: 'none'
+                        }}
+                      >
+                        <circle
+                          cx="105"
+                          cy="105"
+                          r="95"
+                          fill="none"
+                          stroke="rgba(58, 58, 74, 0.3)"
+                          strokeWidth="8"
+                        />
+                        {isLogging && (
+                          <circle
+                            cx="105"
+                            cy="105"
+                            r="95"
+                            fill="none"
+                            stroke="#7dd3c0"
+                            strokeWidth="8"
+                            strokeDasharray="597"
+                            strokeDashoffset="597"
+                            strokeLinecap="round"
+                            style={{
+                              animation: `progressRing ${timerDuration || 60}s linear infinite`
+                            }}
+                          />
+                        )}
+                      </svg>
+                      
+                      {/* Fire Icon */}
+                      <div style={{
+                        width: '100%',
+                        height: '100%',
+                        filter: isLogging ? 'drop-shadow(0 0 25px rgba(255, 69, 0, 0.8))' : 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))',
+                        animation: isLogging ? 'flameGlow 10s ease-in-out infinite' : 'none'
+                      }}>
+                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 1280.000000 1280.000000"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{width: '100%', height: '100%'}}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill={isLogging ? '#FF4500' : '#3a3a4a'} stroke="none">
+                          <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                          -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                          -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                          17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                          -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                          132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                          680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                          -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                          -1 -56z"/>
+                          <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                          -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                          -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                          -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                          289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                          553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                          -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                          <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                          -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                          -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                          -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                          36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                          -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                          95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                        </g>
+                      </svg>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Timer Display */}
+                  {loggedMinutes >= 1 && (
+                    <div style={{
+                      fontFamily: 'Quicksand, sans-serif',
+                      fontSize: '2rem',
+                      fontWeight: '600',
+                      color: isLogging ? '#7dd3c0' : '#64748b',
+                      marginBottom: '15px',
+                      letterSpacing: '0.05em'
+                    }}>
+                      {loggedMinutes} min
+                    </div>
+                  )}
+
+                  {/* Timer Duration Selector */}
+                  <div style={{textAlign: 'left', marginBottom: '20px'}}>
+                    <label style={{
+                      display: 'block',
+                      color: '#b8a99a',
+                      fontSize: '0.9rem',
+                      marginBottom: '5px',
+                      fontFamily: 'Quicksand, sans-serif'
+                    }}>
+                      Duration:
+                    </label>
+                    <select
+                      value={timerDuration}
+                      onChange={(e) => setTimerDuration(e.target.value === '' ? '' : Number(e.target.value))}
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.3)',
+                        borderRadius: '8px',
+                        color: '#f4e8d8',
+                        fontSize: '1rem',
+                        fontFamily: 'Quicksand, sans-serif',
+                        cursor: 'pointer',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      <option value="">Timer</option>
+                      <option value={300}>5 Minutes</option>
+                      <option value={420}>7 Minutes</option>
+                      <option value={600}>10 Minutes</option>
+                      <option value={1800}>30 Minutes</option>
+                      <option value={3600}>60 Minutes</option>
+                    </select>
+                  </div>
+
+                  {/* Focus Field */}
+                  <div style={{textAlign: 'left', marginBottom: '15px'}}>
+                    <label style={{
+                      display: 'block',
+                      color: '#b8a99a',
+                      fontSize: '0.9rem',
+                      marginBottom: '5px',
+                      fontFamily: 'Quicksand, sans-serif'
+                    }}>
+                      Focus:
+                    </label>
+                    <input
+                      type="text"
+                      value={timeLogFocus}
+                      onChange={(e) => setTimeLogFocus(e.target.value)}
+                      placeholder="What are you focusing on?"
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.3)',
+                        borderRadius: '8px',
+                        color: '#f4e8d8',
+                        fontSize: '0.95rem',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                  
+                  {/* Description Field */}
+                  <div style={{textAlign: 'left', marginBottom: '15px'}}>
+                    <label style={{
+                      display: 'block',
+                      color: '#b8a99a',
+                      fontSize: '0.9rem',
+                      marginBottom: '5px',
+                      fontFamily: 'Quicksand, sans-serif'
+                    }}>
+                      Description:
+                    </label>
+                    <textarea
+                      value={timeLogDescription}
+                      onChange={(e) => setTimeLogDescription(e.target.value)}
+                      placeholder="Optional notes..."
+                      style={{
+                        width: '100%',
+                        minHeight: '60px',
+                        padding: '10px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.3)',
+                        borderRadius: '8px',
+                        color: '#f4e8d8',
+                        fontSize: '0.95rem',
+                        fontFamily: 'inherit',
+                        resize: 'vertical',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+
+                  {/* Take Away Field */}
+                  <div style={{textAlign: 'left', marginBottom: '15px'}}>
+                    <label style={{
+                      display: 'block',
+                      color: '#b8a99a',
+                      fontSize: '0.9rem',
+                      marginBottom: '5px',
+                      fontFamily: 'Quicksand, sans-serif'
+                    }}>
+                      Take Away:
+                    </label>
+                    <textarea
+                      value={timeLogTakeAway}
+                      onChange={(e) => setTimeLogTakeAway(e.target.value)}
+                      placeholder="What did you learn or accomplish?"
+                      style={{
+                        width: '100%',
+                        minHeight: '100px',
+                        padding: '10px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.3)',
+                        borderRadius: '8px',
+                        color: '#f4e8d8',
+                        fontSize: '0.95rem',
+                        fontFamily: 'inherit',
+                        resize: 'vertical',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+
+                  {/* Instructions */}
+                  <p style={{
+                    color: '#b8a99a',
+                    fontSize: '0.9rem',
+                    marginBottom: '20px'
+                  }}>
+                    {isLogging ? 'Click fire to stop timer' : 'Click fire to start logging'}
+                  </p>
+
+                  {/* Save Button */}
+                  <button 
+                    className="edit-btn"
+                    onClick={() => {
+                      if (loggedMinutes > 0) {
+                        const newTimeLog = {
+                          id: Date.now(),
+                          minutes: loggedMinutes,
+                          focus: timeLogFocus,
+                          description: timeLogDescription,
+                          takeAway: timeLogTakeAway,
+                          date: new Date().toISOString()
+                        };
+                        
+                        setStandaloneTimeLogs(prev => [newTimeLog, ...prev]);
+                        
+                        // Close modal and reset
+                        setShowTimeLogger(false);
+                        setIsLogging(false);
+                        setLoggedMinutes(0);
+                        setLogStartTime(null);
+                        setTimeLogFocus('');
+                        setTimeLogDescription('');
+                        setTimeLogTakeAway('');
+                        setTimerDuration('');
+                      }
+                    }}
+                    disabled={loggedMinutes === 0}
+                    style={{
+                      opacity: loggedMinutes === 0 ? 0.5 : 1,
+                      cursor: loggedMinutes === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    Save Time Log
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {appMode === 'archive' && (
           <div className="archive-section">

@@ -154,6 +154,7 @@ export default function LittleFires() {
   const [showProjectCompletedTasks, setShowProjectCompletedTasks] = useState(false);
   const [projectTaskDueDate, setProjectTaskDueDate] = useState('');
   const [projectTaskPriority, setProjectTaskPriority] = useState('low');
+  const [collapsedJournalSections, setCollapsedJournalSections] = useState({}); // Track which year/month sections are collapsed
   const [projectFormData, setProjectFormData] = useState({
     name: '',
     description: '',
@@ -181,6 +182,16 @@ export default function LittleFires() {
   const [showHomeTasks, setShowHomeTasks] = useState(true);
   const [showTravelTasks, setShowTravelTasks] = useState(true);
   const [showKidsTasks, setShowKidsTasks] = useState(true);
+  const [showPersonalGoals, setShowPersonalGoals] = useState(true);
+  const [showWorkGoals, setShowWorkGoals] = useState(true);
+  const [showHomeGoals, setShowHomeGoals] = useState(true);
+  const [showTravelGoals, setShowTravelGoals] = useState(true);
+  const [showKidsGoals, setShowKidsGoals] = useState(true);
+  const [showPersonalProjects, setShowPersonalProjects] = useState(true);
+  const [showWorkProjects, setShowWorkProjects] = useState(true);
+  const [showHomeProjects, setShowHomeProjects] = useState(true);
+  const [showTravelProjects, setShowTravelProjects] = useState(true);
+  const [showKidsProjects, setShowKidsProjects] = useState(true);
   const [showStandaloneTimeLogs, setShowStandaloneTimeLogs] = useState(true);
   const [showGoalTimeLogs, setShowGoalTimeLogs] = useState(true);
   const [showJournalTimeLogs, setShowJournalTimeLogs] = useState(true);
@@ -807,6 +818,52 @@ export default function LittleFires() {
     }
     
     return filtered;
+  };
+
+  // Group notes by year and month
+  const groupNotesByYearAndMonth = () => {
+    const filtered = filterNotes();
+    const grouped = {};
+    
+    filtered.forEach(note => {
+      const date = new Date(note.date);
+      const year = date.getFullYear();
+      const month = date.getMonth(); // 0-11
+      
+      if (!grouped[year]) {
+        grouped[year] = {};
+      }
+      if (!grouped[year][month]) {
+        grouped[year][month] = [];
+      }
+      grouped[year][month].push(note);
+    });
+    
+    // Sort years descending, months descending
+    const sortedYears = Object.keys(grouped).sort((a, b) => b - a);
+    const result = {};
+    sortedYears.forEach(year => {
+      result[year] = {};
+      const sortedMonths = Object.keys(grouped[year]).sort((a, b) => b - a);
+      sortedMonths.forEach(month => {
+        result[year][month] = grouped[year][month].sort((a, b) => 
+          new Date(b.date) - new Date(a.date)
+        );
+      });
+    });
+    
+    return result;
+  };
+
+  const toggleJournalSection = (key) => {
+    setCollapsedJournalSections(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const isJournalSectionCollapsed = (key) => {
+    return collapsedJournalSections[key] || false;
   };
 
   // Calendar helper functions
@@ -5032,52 +5089,65 @@ export default function LittleFires() {
             <div className="hamburger-line"></div>
           </div>
           {menuOpen && (
-            <div className="menu-dropdown">
+            <>
               <div 
-                className={`menu-item ${appMode === 'tasks' ? 'active' : ''}`}
-                onClick={() => { setAppMode('tasks'); setMenuOpen(false); }}
-              >
-                Tasks
+                style={{
+                  position: 'fixed',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 98
+                }}
+                onClick={() => setMenuOpen(false)}
+              />
+              <div className="menu-dropdown">
+                <div 
+                  className={`menu-item ${appMode === 'tasks' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('tasks'); setMenuOpen(false); }}
+                >
+                  Tasks
+                </div>
+                <div 
+                  className={`menu-item ${appMode === 'time' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('time'); setMenuOpen(false); }}
+                >
+                  Time
+                </div>
+                <div className="menu-divider"></div>
+                <div 
+                  className={`menu-item ${appMode === 'goals' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('goals'); setMenuOpen(false); }}
+                >
+                  Goals
+                </div>
+                <div 
+                  className={`menu-item ${appMode === 'projects' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('projects'); setMenuOpen(false); }}
+                >
+                  Projects
+                </div>
+                <div 
+                  className={`menu-item ${appMode === 'notes' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('notes'); setMenuOpen(false); }}
+                >
+                  Journal
+                </div>
+                <div 
+                  className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('calendar'); setMenuOpen(false); }}
+                >
+                  Calendar
+                </div>
+                <div className="menu-divider"></div>
+                <div 
+                  className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('archive'); setMenuOpen(false); }}
+                >
+                  Archive
+                </div>
               </div>
-              <div 
-                className={`menu-item ${appMode === 'time' ? 'active' : ''}`}
-                onClick={() => { setAppMode('time'); setMenuOpen(false); }}
-              >
-                Time
-              </div>
-              <div className="menu-divider"></div>
-              <div 
-                className={`menu-item ${appMode === 'goals' ? 'active' : ''}`}
-                onClick={() => { setAppMode('goals'); setMenuOpen(false); }}
-              >
-                Goals
-              </div>
-              <div 
-                className={`menu-item ${appMode === 'projects' ? 'active' : ''}`}
-                onClick={() => { setAppMode('projects'); setMenuOpen(false); }}
-              >
-                Projects
-              </div>
-              <div 
-                className={`menu-item ${appMode === 'notes' ? 'active' : ''}`}
-                onClick={() => { setAppMode('notes'); setMenuOpen(false); }}
-              >
-                Journal
-              </div>
-              <div 
-                className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
-                onClick={() => { setAppMode('calendar'); setMenuOpen(false); }}
-              >
-                Calendar
-              </div>
-              <div className="menu-divider"></div>
-              <div 
-                className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}
-                onClick={() => { setAppMode('archive'); setMenuOpen(false); }}
-              >
-                Archive
-              </div>
-            </div>
+            </>
           )}
         </div>
 
@@ -5384,7 +5454,66 @@ export default function LittleFires() {
                   </div>
                 </div>
               ) : (
-                filterNotes().map(note => (
+                (() => {
+                  const groupedNotes = groupNotesByYearAndMonth();
+                  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+                  
+                  return Object.keys(groupedNotes).map(year => (
+                    <div key={year} style={{marginBottom: '30px'}}>
+                      {/* Year Header */}
+                      <div 
+                        onClick={() => toggleJournalSection(`year-${year}`)}
+                        style={{
+                          fontFamily: 'Quicksand, sans-serif',
+                          fontSize: '1.5rem',
+                          fontWeight: '700',
+                          color: '#7dd3c0',
+                          marginBottom: '15px',
+                          paddingBottom: '10px',
+                          borderBottom: '4px solid rgba(125, 211, 192, 0.3)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <span>{year}</span>
+                        <span style={{fontSize: '1rem', opacity: 0.7}}>
+                          {Object.values(groupedNotes[year]).flat().length} entries
+                        </span>
+                      </div>
+                      
+                      {!isJournalSectionCollapsed(`year-${year}`) && (
+                        <div style={{marginLeft: '0'}}>
+                          {Object.keys(groupedNotes[year]).map(month => (
+                            <div key={`${year}-${month}`} style={{marginBottom: '20px'}}>
+                              {/* Month Header */}
+                              <div 
+                                onClick={() => toggleJournalSection(`month-${year}-${month}`)}
+                                style={{
+                                  fontFamily: 'Quicksand, sans-serif',
+                                  fontSize: '1.2rem',
+                                  fontWeight: '600',
+                                  color: '#b8a99a',
+                                  marginBottom: '10px',
+                                  paddingBottom: '8px',
+                                  borderBottom: '2px solid rgba(184, 169, 154, 0.2)',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}
+                              >
+                                <span>{monthNames[month]}</span>
+                                <span style={{fontSize: '0.9rem', opacity: 0.7}}>
+                                  {groupedNotes[year][month].length} entries
+                                </span>
+                              </div>
+                              
+                              {!isJournalSectionCollapsed(`month-${year}-${month}`) && (
+                                <div>
+                                  {groupedNotes[year][month].map(note => (
                   <div 
                     key={note.id} 
                     className="note-entry" 
@@ -5917,7 +6046,16 @@ export default function LittleFires() {
                       </>
                     )}
                   </div>
-                ))
+                ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ));
+                })()
               )}
             </div>
 
@@ -6153,49 +6291,75 @@ export default function LittleFires() {
                     </div>
                   ) : currentProjectList === 'master' ? (
                     // Master view - group by list
-                    ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
-                      const listProjects = projects[listName] || [];
-                      if (listProjects.length === 0) return null;
+                    (() => {
+                      const showStates = {
+                        personal: showPersonalProjects,
+                        work: showWorkProjects,
+                        home: showHomeProjects,
+                        travel: showTravelProjects,
+                        kids: showKidsProjects
+                      };
                       
-                      return (
-                        <div key={listName} className="list-section">
-                          <div className="list-section-header">
-                            <span style={{textTransform: 'capitalize'}}>{listName} Projects</span>
-                            <span className={`badge ${listName}`}>{listProjects.length}</span>
+                      const toggleStates = {
+                        personal: setShowPersonalProjects,
+                        work: setShowWorkProjects,
+                        home: setShowHomeProjects,
+                        travel: setShowTravelProjects,
+                        kids: setShowKidsProjects
+                      };
+                      
+                      return ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
+                        const listProjects = projects[listName] || [];
+                        if (listProjects.length === 0) return null;
+                        
+                        return (
+                          <div key={listName} className="list-section">
+                            <div 
+                              className="list-section-header"
+                              onClick={() => toggleStates[listName](!showStates[listName])}
+                              style={{cursor: 'pointer'}}
+                            >
+                              <span style={{textTransform: 'capitalize'}}>{listName} Projects</span>
+                              <span className={`badge ${listName}`}>{listProjects.length}</span>
+                            </div>
+                            {showStates[listName] && (
+                              <>
+                                {listProjects.map(project => {
+                                  const projectTasks = getProjectTasks(project.id);
+                                  const completedTasks = projectTasks.filter(t => t.completed).length;
+                                  const totalTasks = projectTasks.length;
+                                  
+                                  return (
+                                    <div key={project.id} className="project-card">
+                                      <div className="project-header" onClick={() => setSelectedProject({ id: project.id, listName })}>
+                                        <div>
+                                          <h3>{project.name}</h3>
+                                          {project.description && (
+                                            <p className="project-description">{project.description}</p>
+                                          )}
+                                        </div>
+                                        <div className="project-meta">
+                                          {(project.startDate || project.endDate) && (
+                                            <span className="project-due-date">
+                                              📅 {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                              {project.startDate && project.endDate && ' - '}
+                                              {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                            </span>
+                                          )}
+                                          <span className="project-task-count">
+                                            {completedTasks}/{totalTasks} tasks
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </>
+                            )}
                           </div>
-                          {listProjects.map(project => {
-                            const projectTasks = getProjectTasks(project.id);
-                            const completedTasks = projectTasks.filter(t => t.completed).length;
-                            const totalTasks = projectTasks.length;
-                            
-                            return (
-                              <div key={project.id} className="project-card">
-                                <div className="project-header" onClick={() => setSelectedProject({ id: project.id, listName })}>
-                                  <div>
-                                    <h3>{project.name}</h3>
-                                    {project.description && (
-                                      <p className="project-description">{project.description}</p>
-                                    )}
-                                  </div>
-                                  <div className="project-meta">
-                                    {(project.startDate || project.endDate) && (
-                                      <span className="project-due-date">
-                                        📅 {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                        {project.startDate && project.endDate && ' - '}
-                                        {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                      </span>
-                                    )}
-                                    <span className="project-task-count">
-                                      {completedTasks}/{totalTasks} tasks
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })
+                        );
+                      });
+                    })()
                   ) : (
                     // Individual list view
                     getCurrentProjects().map(project => {
@@ -7640,51 +7804,77 @@ export default function LittleFires() {
                     </div>
                   ) : currentGoalList === 'master' ? (
                     // Master view - group by list
-                    ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
-                      const listGoals = goals[listName] || [];
-                      if (listGoals.length === 0) return null;
+                    (() => {
+                      const showStates = {
+                        personal: showPersonalGoals,
+                        work: showWorkGoals,
+                        home: showHomeGoals,
+                        travel: showTravelGoals,
+                        kids: showKidsGoals
+                      };
                       
-                      return (
-                        <div key={listName} className="list-section">
-                          <div className="list-section-header">
-                            <span style={{textTransform: 'capitalize'}}>{listName} Goals</span>
-                            <span className={`badge ${listName}`}>{listGoals.length}</span>
+                      const toggleStates = {
+                        personal: setShowPersonalGoals,
+                        work: setShowWorkGoals,
+                        home: setShowHomeGoals,
+                        travel: setShowTravelGoals,
+                        kids: setShowKidsGoals
+                      };
+                      
+                      return ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
+                        const listGoals = goals[listName] || [];
+                        if (listGoals.length === 0) return null;
+                        
+                        return (
+                          <div key={listName} className="list-section">
+                            <div 
+                              className="list-section-header"
+                              onClick={() => toggleStates[listName](!showStates[listName])}
+                              style={{cursor: 'pointer'}}
+                            >
+                              <span style={{textTransform: 'capitalize'}}>{listName} Goals</span>
+                              <span className={`badge ${listName}`}>{listGoals.length}</span>
+                            </div>
+                            {showStates[listName] && (
+                              <>
+                                {listGoals.map(goal => {
+                                  const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
+                                  
+                                  return (
+                                    <div key={goal.id} className="goal-card">
+                                      <div 
+                                        className="goal-header"
+                                        onClick={() => setSelectedGoal({ id: goal.id, listName })}
+                                        style={{cursor: 'pointer'}}
+                                      >
+                                        <div>
+                                          <h3 style={{margin: '0 0 8px 0'}}>{goal.name}</h3>
+                                          {goal.description && (
+                                            <p className="project-description">{goal.description}</p>
+                                          )}
+                                        </div>
+                                        <div className="project-meta">
+                                          {(goal.startDate || goal.endDate) && (
+                                            <span className="project-due-date">
+                                              📅 {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                              {goal.startDate && goal.endDate && ' - '}
+                                              {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                            </span>
+                                          )}
+                                          <span className="goal-project-count">
+                                            {goalProjects.length} project{goalProjects.length !== 1 ? 's' : ''}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </>
+                            )}
                           </div>
-                          {listGoals.map(goal => {
-                            const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
-                            
-                            return (
-                              <div key={goal.id} className="goal-card">
-                                <div 
-                                  className="goal-header"
-                                  onClick={() => setSelectedGoal({ id: goal.id, listName })}
-                                  style={{cursor: 'pointer'}}
-                                >
-                                  <div>
-                                    <h3 style={{margin: '0 0 8px 0'}}>{goal.name}</h3>
-                                    {goal.description && (
-                                      <p className="project-description">{goal.description}</p>
-                                    )}
-                                  </div>
-                                  <div className="project-meta">
-                                    {(goal.startDate || goal.endDate) && (
-                                      <span className="project-due-date">
-                                        📅 {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                        {goal.startDate && goal.endDate && ' - '}
-                                        {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                      </span>
-                                    )}
-                                    <span className="goal-project-count">
-                                      {goalProjects.length} project{goalProjects.length !== 1 ? 's' : ''}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })
+                        );
+                      });
+                    })()
                   ) : (
                     // Individual list view
                     getCurrentGoals().map(goal => {

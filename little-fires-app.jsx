@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
 export default function LittleFires() {
-  const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'archive', 'time'
+  const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar'
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentList, setCurrentList] = useState('master');
   const [selectedPriority, setSelectedPriority] = useState('low');
@@ -5141,6 +5141,12 @@ export default function LittleFires() {
                 </div>
                 <div className="menu-divider"></div>
                 <div 
+                  className={`menu-item ${appMode === 'search' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('search'); setMenuOpen(false); }}
+                >
+                  Search
+                </div>
+                <div 
                   className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}
                   onClick={() => { setAppMode('archive'); setMenuOpen(false); }}
                 >
@@ -5265,16 +5271,6 @@ export default function LittleFires() {
                   Kids
                 </button>
               </div>
-            </div>
-
-            <div className={`search-filter-bar ${currentList !== 'master' ? 'hidden' : ''}`}>
-              <input
-                type="text"
-                className="search-box"
-                placeholder="🔍 Search tasks..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
             </div>
 
             <div className={`input-container ${currentList === 'master' ? 'hidden' : ''}`}>
@@ -10219,6 +10215,117 @@ export default function LittleFires() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {appMode === 'search' && (
+          <div className="search-section">
+            <h2>Search Tasks</h2>
+            
+            <div style={{ padding: '20px 40px' }}>
+              <input
+                type="text"
+                className="search-box"
+                placeholder="🔍 Search tasks..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                autoFocus
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  marginBottom: '20px',
+                  background: 'rgba(52, 52, 72, 0.6)',
+                  border: '2px solid rgba(125, 211, 192, 0.3)',
+                  borderRadius: '10px',
+                  color: '#f4e8d8',
+                  fontSize: '1rem',
+                  fontFamily: 'Quicksand, sans-serif',
+                  boxSizing: 'border-box'
+                }}
+              />
+
+              {!searchQuery ? (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '40px 20px',
+                  color: '#b8a99a',
+                  fontSize: '1.1rem',
+                  fontFamily: 'Quicksand, sans-serif'
+                }}>
+                  🔍 Type to search across all your tasks
+                </div>
+              ) : (
+                <>
+                  {(() => {
+                    const allSearchResults = [];
+                    const listNames = ['personal', 'work', 'home', 'travel', 'kids'];
+                    const listLabels = {
+                      personal: 'Personal Tasks',
+                      work: 'Work Tasks',
+                      home: 'Home Projects',
+                      travel: 'Travel Plans',
+                      kids: 'Kids Tasks'
+                    };
+
+                    listNames.forEach(listName => {
+                      if (!allLists[listName]) return;
+                      
+                      const matchingTasks = allLists[listName].filter(task => 
+                        task.text.toLowerCase().includes(searchQuery.toLowerCase())
+                      );
+
+                      if (matchingTasks.length > 0) {
+                        allSearchResults.push({
+                          listName,
+                          label: listLabels[listName],
+                          tasks: matchingTasks
+                        });
+                      }
+                    });
+
+                    if (allSearchResults.length === 0) {
+                      return (
+                        <div style={{
+                          textAlign: 'center',
+                          padding: '40px 20px',
+                          color: '#b8a99a',
+                          fontSize: '1rem',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}>
+                          No tasks found for "{searchQuery}"
+                        </div>
+                      );
+                    }
+
+                    return allSearchResults.map(result => (
+                      <div key={result.listName} style={{ marginBottom: '30px' }}>
+                        <div className="list-section-header">
+                          <span>{result.label}</span>
+                          <span className={`badge ${result.listName}`}>{result.tasks.length}</span>
+                        </div>
+                        {result.tasks.map((task) => {
+                          const actualIndex = allLists[result.listName].indexOf(task);
+                          return (
+                            <div key={task.id} style={{position: 'relative'}}>
+                              {task.isArchived && (
+                                <div className="archived-indicator">📦 Archived</div>
+                              )}
+                              <Task
+                                key={task.id}
+                                task={task}
+                                listName={result.listName}
+                                index={actualIndex}
+                                showMoveButtons={true}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ));
+                  })()}
+                </>
+              )}
+            </div>
           </div>
         )}
 

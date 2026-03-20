@@ -176,6 +176,11 @@ export default function LittleFires() {
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [showToDoSection, setShowToDoSection] = useState(true);
   const [showBacklogSection, setShowBacklogSection] = useState(true);
+  const [showPersonalTasks, setShowPersonalTasks] = useState(true);
+  const [showWorkTasks, setShowWorkTasks] = useState(true);
+  const [showHomeTasks, setShowHomeTasks] = useState(true);
+  const [showTravelTasks, setShowTravelTasks] = useState(true);
+  const [showKidsTasks, setShowKidsTasks] = useState(true);
   const [showStandaloneTimeLogs, setShowStandaloneTimeLogs] = useState(true);
   const [showGoalTimeLogs, setShowGoalTimeLogs] = useState(true);
   const [showJournalTimeLogs, setShowJournalTimeLogs] = useState(true);
@@ -2117,6 +2122,22 @@ export default function LittleFires() {
         travel: 'Travel Plans',
         kids: 'Kids Tasks'
       };
+      
+      const showStates = {
+        personal: showPersonalTasks,
+        work: showWorkTasks,
+        home: showHomeTasks,
+        travel: showTravelTasks,
+        kids: showKidsTasks
+      };
+      
+      const toggleStates = {
+        personal: setShowPersonalTasks,
+        work: setShowWorkTasks,
+        home: setShowHomeTasks,
+        travel: setShowTravelTasks,
+        kids: setShowKidsTasks
+      };
 
       let hasAnyTasks = false;
       const sections = listNames.map(listName => {
@@ -2133,29 +2154,37 @@ export default function LittleFires() {
 
         return (
           <div key={listName} className="list-section">
-            <div className="list-section-header">
+            <div 
+              className="list-section-header"
+              onClick={() => toggleStates[listName](!showStates[listName])}
+              style={{cursor: 'pointer'}}
+            >
               <span>{listLabels[listName]}</span>
               <span className={`badge ${listName}`}>{tasks.length}</span>
             </div>
-            {tasks.map((task) => {
-              const actualIndex = task.isArchived 
-                ? archivedTasks[listName]?.indexOf(task) ?? -1
-                : allLists[listName].indexOf(task);
-              return (
-                <div key={task.id} style={{position: 'relative'}}>
-                  {task.isArchived && (
-                    <div className="archived-indicator">📦 Archived</div>
-                  )}
-                  <Task
-                    key={task.id}
-                    task={task}
-                    listName={listName}
-                    index={actualIndex}
-                    showMoveButtons={true}
-                  />
-                </div>
-              );
-            })}
+            {showStates[listName] && (
+              <>
+                {tasks.map((task) => {
+                  const actualIndex = task.isArchived 
+                    ? archivedTasks[listName]?.indexOf(task) ?? -1
+                    : allLists[listName].indexOf(task);
+                  return (
+                    <div key={task.id} style={{position: 'relative'}}>
+                      {task.isArchived && (
+                        <div className="archived-indicator">📦 Archived</div>
+                      )}
+                      <Task
+                        key={task.id}
+                        task={task}
+                        listName={listName}
+                        index={actualIndex}
+                        showMoveButtons={true}
+                      />
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         );
       });
@@ -6704,7 +6733,7 @@ export default function LittleFires() {
                             />
                           </div>
                         </div>
-                        <div className="section-btn-group" style={{marginBottom: '15px', gap: '10px'}}>
+                        <div className="section-btn-group" style={{marginBottom: '15px', gap: '15px'}}>
                           <button
                             className={`section-btn ${projectTaskSection === 'todo' ? 'selected' : ''}`}
                             onClick={() => setProjectTaskSection('todo')}

@@ -151,6 +151,7 @@ export default function LittleFires() {
   const [projectTaskInput, setProjectTaskInput] = useState('');
   const [projectTaskList, setProjectTaskList] = useState('personal');
   const [projectTaskSection, setProjectTaskSection] = useState('todo');
+  const [showProjectCompletedTasks, setShowProjectCompletedTasks] = useState(false);
   const [projectTaskDueDate, setProjectTaskDueDate] = useState('');
   const [projectTaskPriority, setProjectTaskPriority] = useState('low');
   const [projectFormData, setProjectFormData] = useState({
@@ -2538,8 +2539,10 @@ export default function LittleFires() {
         .container {
           max-width: 800px;
           margin: 0 auto;
+          padding: 0 24px;
           position: relative;
           z-index: 1;
+          box-sizing: border-box;
         }
 
         .hamburger-menu {
@@ -2748,11 +2751,11 @@ export default function LittleFires() {
 
         .task-input-wrapper {
           display: flex;
-          gap: 12px;
+          gap: 8px;
           margin-bottom: 15px;
         }
 
-        input[type="text"], input[type="date"] {
+        input[type="text"] {
           background: rgba(42, 42, 62, 0.8);
           backdrop-filter: blur(10px);
           border: 2px solid rgba(125, 211, 192, 0.2);
@@ -2764,13 +2767,56 @@ export default function LittleFires() {
           outline: none;
           transition: all 0.3s ease;
           box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-        }
-
-        input[type="text"] {
+          box-sizing: border-box;
           flex: 1;
+          min-width: 120px;
         }
 
-        input[type="text"]:focus, input[type="date"]:focus {
+        input[type="date"] {
+          background: rgba(42, 42, 62, 0.8);
+          backdrop-filter: blur(10px);
+          border: 2px solid rgba(125, 211, 192, 0.2);
+          border-radius: 20px;
+          padding: 10px 12px;
+          color: #f4e8d8;
+          font-family: 'Nunito', sans-serif;
+          font-size: 0.95rem;
+          outline: none;
+          transition: all 0.3s ease;
+          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+          box-sizing: border-box;
+          cursor: pointer;
+        }
+
+        input[type="date"]::-webkit-datetime-edit-text,
+        input[type="date"]::-webkit-datetime-edit-month-field,
+        input[type="date"]::-webkit-datetime-edit-day-field,
+        input[type="date"]::-webkit-datetime-edit-year-field {
+          color: #f4e8d8;
+        }
+
+        input[type="date"]:invalid {
+          color: #b8a99a;
+        }
+
+        input[type="date"]::before {
+          content: 'Due Date';
+          color: #b8a99a;
+          opacity: 0.6;
+        }
+
+        input[type="date"]:focus::before,
+        input[type="date"]:valid::before {
+          content: '';
+        }
+
+        input[type="text"]:focus {
+          border-color: #7dd3c0;
+          box-shadow: 0 0 30px rgba(125, 211, 192, 0.4);
+          transform: translateY(-2px);
+        }
+
+        input[type="date"]:focus {
           border-color: #7dd3c0;
           box-shadow: 0 0 30px rgba(125, 211, 192, 0.4);
           transform: translateY(-2px);
@@ -2779,13 +2825,6 @@ export default function LittleFires() {
         input[type="text"]::placeholder {
           color: #b8a99a;
           opacity: 0.6;
-        }
-
-        input[type="date"] {
-          padding: 12px 16px;
-          border-radius: 20px;
-          font-size: 0.9rem;
-          cursor: pointer;
         }
 
         .project-selector {
@@ -2978,6 +3017,10 @@ export default function LittleFires() {
           background: linear-gradient(135deg, #2D6A4F, #40916C);
           color: #fff;
           box-shadow: 0 6px 20px rgba(45, 106, 79, 0.4);
+          padding: 16px 20px;
+          flex-shrink: 0;
+          white-space: nowrap;
+          font-size: 0.9rem;
         }
 
         .add-task-btn:hover {
@@ -3136,7 +3179,6 @@ export default function LittleFires() {
         }
 
         .task.completed .task-text {
-          text-decoration: line-through;
           opacity: 0.7;
         }
 
@@ -3313,6 +3355,9 @@ export default function LittleFires() {
           resize: vertical;
           min-height: 100px;
           transition: all 0.3s ease;
+          box-sizing: border-box;
+          word-wrap: break-word;
+          overflow-wrap: break-word;
         }
 
         .details-textarea:focus {
@@ -3333,7 +3378,12 @@ export default function LittleFires() {
           min-height: 100px;
           max-height: 300px;
           overflow-y: auto;
+          overflow-x: hidden;
           transition: all 0.3s ease;
+          box-sizing: border-box;
+          word-wrap: break-word;
+          overflow-wrap: break-word;
+          white-space: pre-wrap;
         }
 
         .details-richtext:focus {
@@ -3448,6 +3498,7 @@ export default function LittleFires() {
 
         .richtext-toolbar {
           display: flex;
+          flex-wrap: wrap;
           gap: 8px;
           margin-bottom: 8px;
           padding: 5px;
@@ -3465,6 +3516,8 @@ export default function LittleFires() {
           font-size: 0.85rem;
           font-weight: 600;
           transition: all 0.2s ease;
+          flex-shrink: 0;
+          white-space: nowrap;
         }
 
         .toolbar-btn:hover {
@@ -3501,6 +3554,7 @@ export default function LittleFires() {
           display: flex;
           gap: 15px;
           flex-wrap: wrap;
+          margin-top: 20px;
         }
 
         .date-project-row .due-date-display {
@@ -4109,10 +4163,11 @@ export default function LittleFires() {
           background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
           border: 2px solid rgba(100, 116, 139, 0.4);
           border-radius: 20px;
-          padding: 30px;
+          padding: 15px;
           max-width: 500px;
-          width: 90%;
+          width: 88%;
           box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+          box-sizing: border-box;
         }
 
         .modal-content h3 {
@@ -5527,6 +5582,7 @@ export default function LittleFires() {
                         <div style={{marginTop: '20px'}}>
                           <div style={{
                             display: 'flex',
+                            flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: '10px',
                             marginBottom: '10px'
@@ -5636,6 +5692,7 @@ export default function LittleFires() {
                         <div style={{marginTop: '15px'}}>
                           <div style={{
                             display: 'flex',
+                            flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: '10px'
                           }}>
@@ -5661,14 +5718,15 @@ export default function LittleFires() {
                               placeholder="Click to auto-detect or type location..."
                               onClick={(e) => e.stopPropagation()}
                               style={{
-                                flex: 1,
+                                width: '100%',
                                 padding: '8px 12px',
                                 background: 'rgba(42, 42, 62, 0.8)',
                                 border: '2px solid rgba(125, 211, 192, 0.3)',
                                 borderRadius: '8px',
                                 color: '#f4e8d8',
                                 fontSize: '0.9rem',
-                                fontFamily: 'Quicksand, sans-serif'
+                                fontFamily: 'Quicksand, sans-serif',
+                                boxSizing: 'border-box'
                               }}
                             />
                             {note.location && (
@@ -6575,7 +6633,7 @@ export default function LittleFires() {
                       {/* Add Task to Project */}
                       <div className="project-task-input">
                         <div className="task-input-wrapper" style={{flexDirection: 'column', alignItems: 'stretch'}}>
-                          <div style={{display: 'flex', gap: '10px', marginBottom: '15px'}}>
+                          <div style={{marginBottom: '15px'}}>
                             <input
                               type="text"
                               placeholder="Task"
@@ -6584,20 +6642,15 @@ export default function LittleFires() {
                               onKeyPress={(e) => {
                                 if (e.key === 'Enter') addTaskToProject(selectedProject.id, projectTaskList);
                               }}
-                              style={{flex: 1}}
+                              style={{width: '100%'}}
                             />
-                            <button 
-                              className="add-task-btn" 
-                              onClick={() => addTaskToProject(selectedProject.id, projectTaskList)}
-                            >
-                              Add Task
-                            </button>
                           </div>
-                          <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
+                          <div style={{display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px'}}>
                             <select
                               value={projectTaskList}
                               onChange={(e) => setProjectTaskList(e.target.value)}
                               className="project-selector"
+                              style={{flex: 1}}
                             >
                               <option value="personal">Personal</option>
                               <option value="work">Work</option>
@@ -6605,12 +6658,6 @@ export default function LittleFires() {
                               <option value="travel">Travel</option>
                               <option value="kids">Kids</option>
                             </select>
-                            <input
-                              type="date"
-                              value={projectTaskDueDate}
-                              onChange={(e) => setProjectTaskDueDate(e.target.value)}
-                              className="date-picker"
-                            />
                             <span 
                               className={`fire-flag-icon clickable ${projectTaskPriority === 'high' ? 'active' : ''}`}
                               onClick={() => setProjectTaskPriority(projectTaskPriority === 'high' ? 'low' : 'high')}
@@ -6619,8 +6666,17 @@ export default function LittleFires() {
                               {projectTaskPriority === 'high' ? <LitFlame /> : <UnlitFlame />}
                             </span>
                           </div>
+                          <div style={{marginBottom: '15px'}}>
+                            <input
+                              type="date"
+                              value={projectTaskDueDate}
+                              onChange={(e) => setProjectTaskDueDate(e.target.value)}
+                              className="date-picker"
+                              style={{width: '50%', textAlign: 'left'}}
+                            />
+                          </div>
                         </div>
-                        <div className="section-btn-group" style={{marginTop: '15px'}}>
+                        <div className="section-btn-group" style={{marginBottom: '15px', gap: '10px'}}>
                           <button
                             className={`section-btn ${projectTaskSection === 'todo' ? 'selected' : ''}`}
                             onClick={() => setProjectTaskSection('todo')}
@@ -6634,6 +6690,13 @@ export default function LittleFires() {
                             Backlog
                           </button>
                         </div>
+                        <button 
+                          className="add-task-btn" 
+                          onClick={() => addTaskToProject(selectedProject.id, projectTaskList)}
+                          style={{width: '100%', padding: '14px', fontSize: '0.9rem'}}
+                        >
+                          Add Task
+                        </button>
                       </div>
 
                       {/* Task Sections - Only show if tasks exist */}
@@ -6803,75 +6866,83 @@ export default function LittleFires() {
 
                           {/* Complete Section */}
                           <div className="list-section">
-                            <div className="list-section-header">
+                            <div 
+                              className="list-section-header"
+                              onClick={() => setShowProjectCompletedTasks(!showProjectCompletedTasks)}
+                              style={{cursor: 'pointer'}}
+                            >
                               <span className="section-icon checkbox-icon"><CheckedBox /></span>
                               <span>Complete</span>
                               <span className="badge home">{completedTasks.length}</span>
                             </div>
-                            {completedTasks.length === 0 ? (
-                              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
-                                <div style={{
-                                  width: '120px',
-                                  height: '120px',
-                                  position: 'relative',
-                                  display: 'inline-block'
-                                }}>
-                                  {/* Background circle */}
-                                  <svg 
-                                    style={{
-                                      position: 'absolute',
-                                      top: '-10px',
-                                      left: '-10px',
-                                      width: '140px',
-                                      height: '140px',
-                                      transform: 'rotate(-90deg)',
-                                      pointerEvents: 'none'
-                                    }}
-                                  >
-                                    <circle
-                                      cx="70"
-                                      cy="70"
-                                      r="63"
-                                      fill="none"
-                                      stroke="rgba(58, 58, 74, 0.3)"
-                                      strokeWidth="6"
-                                    />
-                                  </svg>
-                                  
-                                  {/* Dark Fire Icon */}
-                                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 1280.000000 1280.000000"
-                                    preserveAspectRatio="xMidYMid meet"
-                                    style={{
-                                      width: '100%',
-                                      height: '100%',
-                                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                            {showProjectCompletedTasks && (
+                              <>
+                                {completedTasks.length === 0 ? (
+                                  <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                                    <div style={{
+                                      width: '120px',
+                                      height: '120px',
+                                      position: 'relative',
+                                      display: 'inline-block'
                                     }}>
-                                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                                      fill="#3a3a4a" stroke="none">
-                                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-                                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-                                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-                                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-                                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-                                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-                                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-                                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-                                      0 -151z"/>
-                                    </g>
-                                  </svg>
-                                </div>
-                              </div>
-                            ) : (
-                              completedTasks.map((task) => (
-                                <Task
-                                  key={task.id}
-                                  task={task}
-                                  listName={task.listName}
-                                  index={task.index}
-                                  showMoveButtons={true}
-                                />
-                              ))
+                                      {/* Background circle */}
+                                      <svg 
+                                        style={{
+                                          position: 'absolute',
+                                          top: '-10px',
+                                          left: '-10px',
+                                          width: '140px',
+                                          height: '140px',
+                                          transform: 'rotate(-90deg)',
+                                          pointerEvents: 'none'
+                                        }}
+                                      >
+                                        <circle
+                                          cx="70"
+                                          cy="70"
+                                          r="63"
+                                          fill="none"
+                                          stroke="rgba(58, 58, 74, 0.3)"
+                                          strokeWidth="6"
+                                        />
+                                      </svg>
+                                      
+                                      {/* Dark Fire Icon */}
+                                      <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                                        viewBox="0 0 1280.000000 1280.000000"
+                                        preserveAspectRatio="xMidYMid meet"
+                                        style={{
+                                          width: '100%',
+                                          height: '100%',
+                                          filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                                        }}>
+                                        <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                                          fill="#3a3a4a" stroke="none">
+                                          <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                                          -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                                          -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                                          17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                                          -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                                          132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                                          680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                                          -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                                          0 -151z"/>
+                                        </g>
+                                      </svg>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  completedTasks.map((task) => (
+                                    <Task
+                                      key={task.id}
+                                      task={task}
+                                      listName={task.listName}
+                                      index={task.index}
+                                      showMoveButtons={true}
+                                    />
+                                  ))
+                                )}
+                              </>
                             )}
                           </div>
                         </>
@@ -8246,7 +8317,8 @@ export default function LittleFires() {
                       borderRadius: '10px',
                       color: '#f4e8d8',
                       fontSize: '1rem',
-                      marginBottom: '15px'
+                      marginBottom: '15px',
+                      boxSizing: 'border-box'
                     }}
                   />
                   <textarea
@@ -8264,34 +8336,33 @@ export default function LittleFires() {
                       marginBottom: '15px',
                       minHeight: '80px',
                       fontFamily: 'inherit',
-                      resize: 'vertical'
+                      resize: 'vertical',
+                      boxSizing: 'border-box'
                     }}
                   />
-                  <div style={{display: 'flex', gap: '15px', marginBottom: '20px'}}>
-                    <div style={{flex: 1}}>
-                      <label style={{display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px'}}>
-                        Start Date (optional)
-                      </label>
-                      <input
-                        type="date"
-                        value={goalFormData.startDate}
-                        onChange={(e) => setGoalFormData(prev => ({ ...prev, startDate: e.target.value }))}
-                        className="date-picker"
-                        style={{width: '100%'}}
-                      />
-                    </div>
-                    <div style={{flex: 1}}>
-                      <label style={{display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px'}}>
-                        End Date (optional)
-                      </label>
-                      <input
-                        type="date"
-                        value={goalFormData.endDate}
-                        onChange={(e) => setGoalFormData(prev => ({ ...prev, endDate: e.target.value }))}
-                        className="date-picker"
-                        style={{width: '100%'}}
-                      />
-                    </div>
+                  <div style={{marginBottom: '20px'}}>
+                    <label style={{display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px'}}>
+                      Start Date
+                    </label>
+                    <input
+                      type="date"
+                      value={goalFormData.startDate}
+                      onChange={(e) => setGoalFormData(prev => ({ ...prev, startDate: e.target.value }))}
+                      className="date-picker"
+                      style={{width: '100%', boxSizing: 'border-box'}}
+                    />
+                  </div>
+                  <div style={{marginBottom: '20px'}}>
+                    <label style={{display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px'}}>
+                      End Date
+                    </label>
+                    <input
+                      type="date"
+                      value={goalFormData.endDate}
+                      onChange={(e) => setGoalFormData(prev => ({ ...prev, endDate: e.target.value }))}
+                      className="date-picker"
+                      style={{width: '100%', boxSizing: 'border-box'}}
+                    />
                   </div>
                   <div className="modal-actions">
                     <button 

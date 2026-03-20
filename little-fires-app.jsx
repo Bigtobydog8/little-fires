@@ -174,6 +174,8 @@ export default function LittleFires() {
   const [expandedCalendarProjectId, setExpandedCalendarProjectId] = useState(null);
   const [showOpenTasks, setShowOpenTasks] = useState(true);
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
+  const [showToDoSection, setShowToDoSection] = useState(true);
+  const [showBacklogSection, setShowBacklogSection] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
   const [showProjects, setShowProjects] = useState(true);
   
@@ -2247,230 +2249,254 @@ export default function LittleFires() {
       return (
         <>
           <div className="list-section">
-            <div className="list-section-header">
+            <div 
+              className="list-section-header"
+              onClick={() => setShowToDoSection(!showToDoSection)}
+              style={{cursor: 'pointer'}}
+            >
               <span className="section-icon campfire-icon"><BurningCampfire /></span>
               <span>To Do</span>
               <span className="badge work">{todoTasks.length}</span>
             </div>
-            {todoTasks.length === 0 ? (
-              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
-                <div style={{
-                  width: '120px',
-                  height: '120px',
-                  position: 'relative',
-                  display: 'inline-block'
-                }}>
-                  {/* Background circle */}
-                  <svg 
-                    style={{
-                      position: 'absolute',
-                      top: '-10px',
-                      left: '-10px',
-                      width: '140px',
-                      height: '140px',
-                      transform: 'rotate(-90deg)',
-                      pointerEvents: 'none'
-                    }}
-                  >
-                    <circle
-                      cx="70"
-                      cy="70"
-                      r="63"
-                      fill="none"
-                      stroke="rgba(58, 58, 74, 0.3)"
-                      strokeWidth="6"
-                    />
-                  </svg>
-                  
-                  {/* Dark Fire Icon */}
-                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 1280.000000 1280.000000"
-                    preserveAspectRatio="xMidYMid meet"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+            {showToDoSection && (
+              <>
+                {todoTasks.length === 0 ? (
+                  <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                    <div style={{
+                      width: '120px',
+                      height: '120px',
+                      position: 'relative',
+                      display: 'inline-block'
                     }}>
-                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                      fill="#3a3a4a" stroke="none">
-                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-                      0 -151z"/>
-                    </g>
-                  </svg>
-                </div>
-              </div>
-            ) : (
-              todoTasks.map((task) => {
-                const actualIndex = allLists[currentList].indexOf(task);
-                return (
-                  <Task
-                    key={task.id}
-                    task={task}
-                    listName={currentList}
-                    index={actualIndex}
-                    showMoveButtons={true}
-                  />
-                );
-              })
+                      {/* Background circle */}
+                      <svg 
+                        style={{
+                          position: 'absolute',
+                          top: '-10px',
+                          left: '-10px',
+                          width: '140px',
+                          height: '140px',
+                          transform: 'rotate(-90deg)',
+                          pointerEvents: 'none'
+                        }}
+                      >
+                        <circle
+                          cx="70"
+                          cy="70"
+                          r="63"
+                          fill="none"
+                          stroke="rgba(58, 58, 74, 0.3)"
+                          strokeWidth="6"
+                        />
+                      </svg>
+                      
+                      {/* Dark Fire Icon */}
+                      <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 1280.000000 1280.000000"
+                        preserveAspectRatio="xMidYMid meet"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                        }}>
+                        <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                          fill="#3a3a4a" stroke="none">
+                          <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                          -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                          -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                          17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                          -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                          132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                          680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                          -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                          0 -151z"/>
+                        </g>
+                      </svg>
+                    </div>
+                  </div>
+                ) : (
+                  todoTasks.map((task) => {
+                    const actualIndex = allLists[currentList].indexOf(task);
+                    return (
+                      <Task
+                        key={task.id}
+                        task={task}
+                        listName={currentList}
+                        index={actualIndex}
+                        showMoveButtons={true}
+                      />
+                    );
+                  })
+                )}
+              </>
             )}
           </div>
 
           <div className="list-section">
-            <div className="list-section-header">
+            <div 
+              className="list-section-header"
+              onClick={() => setShowBacklogSection(!showBacklogSection)}
+              style={{cursor: 'pointer'}}
+            >
               <span className="section-icon logs-icon"><CutLog /></span>
               <span>Backlog</span>
               <span className="badge personal">{backlogTasks.length}</span>
             </div>
-            {backlogTasks.length === 0 ? (
-              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
-                <div style={{
-                  width: '120px',
-                  height: '120px',
-                  position: 'relative',
-                  display: 'inline-block'
-                }}>
-                  {/* Background circle */}
-                  <svg 
-                    style={{
-                      position: 'absolute',
-                      top: '-10px',
-                      left: '-10px',
-                      width: '140px',
-                      height: '140px',
-                      transform: 'rotate(-90deg)',
-                      pointerEvents: 'none'
-                    }}
-                  >
-                    <circle
-                      cx="70"
-                      cy="70"
-                      r="63"
-                      fill="none"
-                      stroke="rgba(58, 58, 74, 0.3)"
-                      strokeWidth="6"
-                    />
-                  </svg>
-                  
-                  {/* Dark Fire Icon */}
-                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 1280.000000 1280.000000"
-                    preserveAspectRatio="xMidYMid meet"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+            {showBacklogSection && (
+              <>
+                {backlogTasks.length === 0 ? (
+                  <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                    <div style={{
+                      width: '120px',
+                      height: '120px',
+                      position: 'relative',
+                      display: 'inline-block'
                     }}>
-                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                      fill="#3a3a4a" stroke="none">
-                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-                      0 -151z"/>
-                    </g>
-                  </svg>
-                </div>
-              </div>
-            ) : (
-              backlogTasks.map((task) => {
-                const actualIndex = allLists[currentList].indexOf(task);
-                return (
-                  <Task
-                    key={task.id}
-                    task={task}
-                    listName={currentList}
-                    index={actualIndex}
-                    showMoveButtons={true}
-                  />
-                );
-              })
+                      {/* Background circle */}
+                      <svg 
+                        style={{
+                          position: 'absolute',
+                          top: '-10px',
+                          left: '-10px',
+                          width: '140px',
+                          height: '140px',
+                          transform: 'rotate(-90deg)',
+                          pointerEvents: 'none'
+                        }}
+                      >
+                        <circle
+                          cx="70"
+                          cy="70"
+                          r="63"
+                          fill="none"
+                          stroke="rgba(58, 58, 74, 0.3)"
+                          strokeWidth="6"
+                        />
+                      </svg>
+                      
+                      {/* Dark Fire Icon */}
+                      <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 1280.000000 1280.000000"
+                        preserveAspectRatio="xMidYMid meet"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                        }}>
+                        <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                          fill="#3a3a4a" stroke="none">
+                          <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                          -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                          -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                          17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                          -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                          132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                          680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                          -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                          0 -151z"/>
+                        </g>
+                      </svg>
+                    </div>
+                  </div>
+                ) : (
+                  backlogTasks.map((task) => {
+                    const actualIndex = allLists[currentList].indexOf(task);
+                    return (
+                      <Task
+                        key={task.id}
+                        task={task}
+                        listName={currentList}
+                        index={actualIndex}
+                        showMoveButtons={true}
+                      />
+                    );
+                  })
+                )}
+              </>
             )}
           </div>
 
           <div className="list-section">
-            <div className="list-section-header">
+            <div 
+              className="list-section-header"
+              onClick={() => setShowCompletedTasks(!showCompletedTasks)}
+              style={{cursor: 'pointer'}}
+            >
               <span className="section-icon checkbox-icon"><CheckedBox /></span>
               <span>Complete</span>
               <span className="badge home">{completedTasks.length}</span>
             </div>
-            {completedTasks.length === 0 ? (
-              <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
-                <div style={{
-                  width: '120px',
-                  height: '120px',
-                  position: 'relative',
-                  display: 'inline-block'
-                }}>
-                  {/* Background circle */}
-                  <svg 
-                    style={{
-                      position: 'absolute',
-                      top: '-10px',
-                      left: '-10px',
-                      width: '140px',
-                      height: '140px',
-                      transform: 'rotate(-90deg)',
-                      pointerEvents: 'none'
-                    }}
-                  >
-                    <circle
-                      cx="70"
-                      cy="70"
-                      r="63"
-                      fill="none"
-                      stroke="rgba(58, 58, 74, 0.3)"
-                      strokeWidth="6"
-                    />
-                  </svg>
-                  
-                  {/* Dark Fire Icon */}
-                  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 1280.000000 1280.000000"
-                    preserveAspectRatio="xMidYMid meet"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+            {showCompletedTasks && (
+              <>
+                {completedTasks.length === 0 ? (
+                  <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                    <div style={{
+                      width: '120px',
+                      height: '120px',
+                      position: 'relative',
+                      display: 'inline-block'
                     }}>
-                    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-                      fill="#3a3a4a" stroke="none">
-                      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-                      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-                      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-                      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-                      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-                      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-                      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-                      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-                      0 -151z"/>
-                    </g>
-                  </svg>
-                </div>
-              </div>
-            ) : (
-              completedTasks.map((task) => {
-                const actualIndex = allLists[currentList].indexOf(task);
-                return (
-                  <Task
-                    key={task.id}
-                    task={task}
-                    listName={currentList}
-                    index={actualIndex}
-                    showMoveButtons={true}
-                  />
-                );
-              })
+                      {/* Background circle */}
+                      <svg 
+                        style={{
+                          position: 'absolute',
+                          top: '-10px',
+                          left: '-10px',
+                          width: '140px',
+                          height: '140px',
+                          transform: 'rotate(-90deg)',
+                          pointerEvents: 'none'
+                        }}
+                      >
+                        <circle
+                          cx="70"
+                          cy="70"
+                          r="63"
+                          fill="none"
+                          stroke="rgba(58, 58, 74, 0.3)"
+                          strokeWidth="6"
+                        />
+                      </svg>
+                      
+                      {/* Dark Fire Icon */}
+                      <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 1280.000000 1280.000000"
+                        preserveAspectRatio="xMidYMid meet"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                        }}>
+                        <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                          fill="#3a3a4a" stroke="none">
+                          <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                          -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                          -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                          17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                          -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                          132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                          680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                          -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                          0 -151z"/>
+                        </g>
+                      </svg>
+                    </div>
+                  </div>
+                ) : (
+                  completedTasks.map((task) => {
+                    const actualIndex = allLists[currentList].indexOf(task);
+                    return (
+                      <Task
+                        key={task.id}
+                        task={task}
+                        listName={currentList}
+                        index={actualIndex}
+                        showMoveButtons={true}
+                      />
+                    );
+                  })
+                )}
+              </>
             )}
           </div>
         </>
@@ -4241,7 +4267,7 @@ export default function LittleFires() {
           display: flex;
           flex-direction: column;
           gap: 20px;
-          padding: 20px 40px;
+          padding: 20px 0;
           min-height: 400px;
         }
 
@@ -5350,7 +5376,6 @@ export default function LittleFires() {
                           day: 'numeric' 
                         })}
                       </span>
-                      <span className="note-toggle">{note.expanded ? '▼' : '▶'}</span>
                     </div>
                     {note.expanded && (
                       <>

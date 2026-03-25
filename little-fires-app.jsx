@@ -4,6 +4,8 @@ export default function LittleFires() {
   const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar'
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentList, setCurrentList] = useState('master');
+  const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
+  const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({}); // Track which archive sections are collapsed
   const [selectedPriority, setSelectedPriority] = useState('low');
   const [selectedChild, setSelectedChild] = useState(null);
   const [selectedSection, setSelectedSection] = useState('todo');
@@ -129,6 +131,10 @@ export default function LittleFires() {
     endDate: ''
   });
   const [goalToDelete, setGoalToDelete] = useState(null);
+  const [draggedGoal, setDraggedGoal] = useState(null);
+  const [dragOverGoal, setDragOverGoal] = useState(null);
+  const [touchStartY, setTouchStartY] = useState(null);
+  const [isTouchDragging, setIsTouchDragging] = useState(false);
   const [showTimeLogger, setShowTimeLogger] = useState(false);
   const [isLogging, setIsLogging] = useState(false);
   const [loggedMinutes, setLoggedMinutes] = useState(0);
@@ -143,6 +149,8 @@ export default function LittleFires() {
 
   const [selectedProject, setSelectedProject] = useState(null);
   const [currentProjectList, setCurrentProjectList] = useState('master');
+  const [draggedProject, setDraggedProject] = useState(null);
+  const [dragOverProject, setDragOverProject] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState(false);
@@ -344,6 +352,18 @@ export default function LittleFires() {
       
       return newLists;
     });
+  };
+
+  const toggleArchiveSection = (sectionKey) => {
+    setCollapsedArchiveSections(prev => ({
+      ...prev,
+      [sectionKey]: !prev[sectionKey]
+    }));
+  };
+
+  const isArchiveSectionCollapsed = (sectionKey) => {
+    // Default to collapsed (true) if not in state
+    return collapsedArchiveSections[sectionKey] !== false;
   };
 
   const deleteTask = (listName, index) => {
@@ -1205,6 +1225,30 @@ export default function LittleFires() {
     setSelectedProject(null); // Close project detail view after deletion
   };
 
+  const archiveProject = (listName, id) => {
+    setProjects(prev => ({
+      ...prev,
+      [listName]: (prev[listName] || []).map(project =>
+        project.id === id
+          ? { ...project, archived: true, archivedAt: new Date().toISOString() }
+          : project
+      )
+    }));
+    setSelectedProject(null); // Close project detail view after archiving
+  };
+
+  const reorderProjects = (listName, fromIndex, toIndex) => {
+    setProjects(prev => {
+      const list = [...(prev[listName] || [])];
+      const [removed] = list.splice(fromIndex, 1);
+      list.splice(toIndex, 0, removed);
+      return {
+        ...prev,
+        [listName]: list
+      };
+    });
+  };
+
   // Goal Functions
   const addGoal = (listName, name, description, startDate, endDate) => {
     const newGoal = {
@@ -1323,20 +1367,100 @@ export default function LittleFires() {
     setSelectedGoal(null);
   };
 
+  const archiveGoal = (listName, id) => {
+    setGoals(prev => ({
+      ...prev,
+      [listName]: (prev[listName] || []).map(goal =>
+        goal.id === id
+          ? { ...goal, archived: true, archivedAt: new Date().toISOString() }
+          : goal
+      )
+    }));
+    setSelectedGoal(null); // Close goal detail view after archiving
+  };
+
+  const reorderGoals = (listName, fromIndex, toIndex) => {
+    setGoals(prev => {
+      const list = [...(prev[listName] || [])];
+      const [removed] = list.splice(fromIndex, 1);
+      list.splice(toIndex, 0, removed);
+      return {
+        ...prev,
+        [listName]: list
+      };
+    });
+  };
+
+  // Touch handlers for mobile drag and drop
+  const handleTouchStart = (e, item, index, listName, type) => {
+    if (e.touches.length !== 1) return;
+    setTouchStartY(e.touches[0].clientY);
+    setIsTouchDragging(true);
+    if (type === 'goal') {
+      setDraggedGoal({ ...item, index, listName });
+    } else if (type === 'project') {
+      setDraggedProject({ ...item, index, listName });
+    }
+  };
+
+  const handleTouchMove = (e, items, type) => {
+    if (!isTouchDragging || e.touches.length !== 1) return;
+    e.preventDefault();
+    
+    const touch = e.touches[0];
+    const elementAtTouch = document.elementFromPoint(touch.clientX, touch.clientY);
+    
+    if (!elementAtTouch) return;
+    
+    const cardElement = elementAtTouch.closest(type === 'goal' ? '.goal-card' : '.project-card');
+    if (!cardElement) return;
+    
+    // Find which item this card represents
+    const cards = Array.from(document.querySelectorAll(type === 'goal' ? '.goal-card' : '.project-card'));
+    const targetIndex = cards.indexOf(cardElement);
+    
+    if (targetIndex >= 0 && targetIndex < items.length) {
+      if (type === 'goal') {
+        setDragOverGoal({ ...items[targetIndex], index: targetIndex });
+      } else if (type === 'project') {
+        setDragOverProject({ ...items[targetIndex], index: targetIndex });
+      }
+    }
+  };
+
+  const handleTouchEnd = (e, listName, type) => {
+    if (!isTouchDragging) return;
+    
+    if (type === 'goal' && draggedGoal && dragOverGoal && draggedGoal.id !== dragOverGoal.id) {
+      reorderGoals(listName, draggedGoal.index, dragOverGoal.index);
+    } else if (type === 'project' && draggedProject && dragOverProject && draggedProject.id !== dragOverProject.id) {
+      reorderProjects(listName, draggedProject.index, dragOverProject.index);
+    }
+    
+    setDraggedGoal(null);
+    setDragOverGoal(null);
+    setDraggedProject(null);
+    setDragOverProject(null);
+    setIsTouchDragging(false);
+    setTouchStartY(null);
+  };
+
   const getCurrentGoals = () => {
     if (currentGoalList === 'master') {
       const masterGoals = [];
       ['personal', 'work', 'home', 'travel', 'kids'].forEach(listName => {
         (goals[listName] || []).forEach(goal => {
-          masterGoals.push({
-            ...goal,
-            listName
-          });
+          if (!goal.archived) {  // Filter out archived goals
+            masterGoals.push({
+              ...goal,
+              listName
+            });
+          }
         });
       });
       return masterGoals;
     }
-    return goals[currentGoalList] || [];
+    return (goals[currentGoalList] || []).filter(g => !g.archived);  // Filter out archived
   };
 
   const addTaskToProject = (projectId, listName) => {
@@ -1371,16 +1495,18 @@ export default function LittleFires() {
       ['personal', 'work', 'home', 'travel'].forEach(listName => {
         if (projects[listName]) {
           projects[listName].forEach(project => {
-            masterProjects.push({
-              ...project,
-              sourceList: listName
-            });
+            if (!project.archived) {  // Filter out archived projects
+              masterProjects.push({
+                ...project,
+                sourceList: listName
+              });
+            }
           });
         }
       });
       return masterProjects;
     }
-    return projects[currentProjectList] || [];
+    return (projects[currentProjectList] || []).filter(p => !p.archived);  // Filter out archived
   };
 
   const getAllTimeLogs = () => {
@@ -1935,7 +2061,7 @@ export default function LittleFires() {
       viewBox="0 0 1280.000000 1280.000000"
       preserveAspectRatio="xMidYMid meet">
       <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-        fill="#666666" stroke="none" opacity="0.4">
+        fill="#000000" stroke="none">
         <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
         -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
         -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
@@ -3028,7 +3154,7 @@ export default function LittleFires() {
 
         .fire-flag-icon.clickable {
           cursor: pointer;
-          opacity: 0.7;
+          opacity: 1;
         }
 
         .fire-flag-icon.clickable:hover {
@@ -3191,6 +3317,16 @@ export default function LittleFires() {
 
         .list-section {
           margin-bottom: 30px;
+        }
+
+        .list-section .goal-card,
+        .list-section .project-card {
+          margin-bottom: 20px;
+        }
+
+        .list-section .goal-card:last-child,
+        .list-section .project-card:last-child {
+          margin-bottom: 0;
         }
 
         .list-section-header {
@@ -3909,7 +4045,7 @@ export default function LittleFires() {
         .goals-container {
           display: flex;
           flex-direction: column;
-          gap: 30px;
+          gap: 20px;
           margin-top: 20px;
         }
 
@@ -3920,6 +4056,11 @@ export default function LittleFires() {
           padding: 20px;
           border: 2px solid rgba(125, 211, 192, 0.3);
           transition: all 0.3s ease;
+          user-select: none;
+          -webkit-user-select: none;
+          -moz-user-select: none;
+          -ms-user-select: none;
+          touch-action: none;
         }
 
         .goal-card:hover {
@@ -4036,6 +4177,11 @@ export default function LittleFires() {
           padding: 20px;
           border: 2px solid rgba(100, 116, 139, 0.2);
           transition: all 0.3s ease;
+          user-select: none;
+          -webkit-user-select: none;
+          -moz-user-select: none;
+          -ms-user-select: none;
+          touch-action: none;
         }
 
         .project-card:hover {
@@ -4308,6 +4454,7 @@ export default function LittleFires() {
         .form-field input[type="date"],
         .form-field textarea {
           width: 100%;
+          max-width: 100%;
           background: rgba(42, 42, 62, 0.8);
           border: 2px solid rgba(125, 211, 192, 0.2);
           border-radius: 12px;
@@ -4318,6 +4465,11 @@ export default function LittleFires() {
           outline: none;
           transition: all 0.3s ease;
           box-sizing: border-box;
+          min-width: 0;
+        }
+
+        .form-field input[type="date"] {
+          padding: 12px 8px;
         }
 
         .form-field textarea {
@@ -6179,11 +6331,11 @@ export default function LittleFires() {
                         <textarea
                           value={projectFormData.description}
                           onChange={(e) => setProjectFormData(prev => ({ ...prev, description: e.target.value }))}
-                          placeholder="Enter project description (optional)"
+                          placeholder="Enter project description"
                           rows="3"
                         />
                       </div>
-                      <div className="form-field">
+                      <div className="form-field" style={{width: '50%'}}>
                         <label>Start Date</label>
                         <input
                           type="date"
@@ -6191,7 +6343,7 @@ export default function LittleFires() {
                           onChange={(e) => setProjectFormData(prev => ({ ...prev, startDate: e.target.value }))}
                         />
                       </div>
-                      <div className="form-field">
+                      <div className="form-field" style={{width: '50%'}}>
                         <label>End Date</label>
                         <input
                           type="date"
@@ -6358,13 +6510,67 @@ export default function LittleFires() {
                     })()
                   ) : (
                     // Individual list view
-                    getCurrentProjects().map(project => {
+                    getCurrentProjects().map((project, index) => {
                       const projectTasks = getProjectTasks(project.id);
                       const completedTasks = projectTasks.filter(t => t.completed).length;
                       const totalTasks = projectTasks.length;
+                      const isDragging = draggedProject?.id === project.id;
+                      const isDragOver = dragOverProject?.id === project.id;
                       
                       return (
-                        <div key={project.id} className="project-card">
+                        <div 
+                          key={project.id} 
+                          className="project-card"
+                          draggable={currentProjectList !== 'master'}
+                          onDragStart={(e) => {
+                            if (currentProjectList === 'master') return;
+                            setDraggedProject({ ...project, index, listName: currentProjectList });
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragEnd={() => {
+                            setDraggedProject(null);
+                            setDragOverProject(null);
+                          }}
+                          onDragOver={(e) => {
+                            if (currentProjectList === 'master') return;
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            if (draggedProject && draggedProject.id !== project.id) {
+                              setDragOverProject({ ...project, index });
+                            }
+                          }}
+                          onDragLeave={() => {
+                            setDragOverProject(null);
+                          }}
+                          onDrop={(e) => {
+                            if (currentProjectList === 'master') return;
+                            e.preventDefault();
+                            if (draggedProject && draggedProject.id !== project.id) {
+                              reorderProjects(currentProjectList, draggedProject.index, index);
+                            }
+                            setDraggedProject(null);
+                            setDragOverProject(null);
+                          }}
+                          onTouchStart={(e) => {
+                            if (currentProjectList === 'master') return;
+                            handleTouchStart(e, project, index, currentProjectList, 'project');
+                          }}
+                          onTouchMove={(e) => {
+                            if (currentProjectList === 'master') return;
+                            handleTouchMove(e, getCurrentProjects(), 'project');
+                          }}
+                          onTouchEnd={(e) => {
+                            if (currentProjectList === 'master') return;
+                            handleTouchEnd(e, currentProjectList, 'project');
+                          }}
+                          style={{
+                            opacity: isDragging ? 0.5 : 1,
+                            cursor: currentProjectList !== 'master' ? 'move' : 'default',
+                            borderTop: isDragOver && draggedProject?.index > index ? '3px solid #7dd3c0' : undefined,
+                            borderBottom: isDragOver && draggedProject?.index < index ? '3px solid #7dd3c0' : undefined,
+                            transition: 'opacity 0.2s, border 0.2s'
+                          }}
+                        >
                           <div className="project-header" onClick={() => setSelectedProject({ id: project.id, listName: currentProjectList })}>
                             <div>
                               <h3>{project.name}</h3>
@@ -7167,7 +7373,27 @@ export default function LittleFires() {
                       </div>
 
                       {/* Project Actions */}
-                      <div className="project-actions">
+                      <div className="project-actions" style={{display: 'flex', justifyContent: 'space-between', width: '100%'}}>
+                        <button 
+                          className="archive-btn"
+                          onClick={() => {
+                            archiveProject(selectedProject.listName, selectedProject.id);
+                            setSelectedProject(null);
+                          }}
+                          style={{
+                            padding: '10px 20px',
+                            background: 'rgba(125, 211, 192, 0.2)',
+                            border: '2px solid rgba(125, 211, 192, 0.4)',
+                            borderRadius: '8px',
+                            color: '#7dd3c0',
+                            fontSize: '0.9rem',
+                            fontWeight: '600',
+                            fontFamily: 'Quicksand, sans-serif',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Archive
+                        </button>
                         <button 
                           className="delete-project-btn"
                           onClick={() => {
@@ -7833,11 +8059,50 @@ export default function LittleFires() {
                             </div>
                             {showStates[listName] && (
                               <>
-                                {listGoals.map(goal => {
+                                {listGoals.map((goal, index) => {
                                   const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
+                                  const isDragging = draggedGoal?.id === goal.id;
+                                  const isDragOver = dragOverGoal?.id === goal.id;
                                   
                                   return (
-                                    <div key={goal.id} className="goal-card">
+                                    <div 
+                                      key={goal.id} 
+                                      className="goal-card"
+                                      draggable={true}
+                                      onDragStart={(e) => {
+                                        setDraggedGoal({ ...goal, index, listName });
+                                        e.dataTransfer.effectAllowed = 'move';
+                                      }}
+                                      onDragEnd={() => {
+                                        setDraggedGoal(null);
+                                        setDragOverGoal(null);
+                                      }}
+                                      onDragOver={(e) => {
+                                        e.preventDefault();
+                                        e.dataTransfer.dropEffect = 'move';
+                                        if (draggedGoal && draggedGoal.id !== goal.id && draggedGoal.listName === listName) {
+                                          setDragOverGoal({ ...goal, index, listName });
+                                        }
+                                      }}
+                                      onDragLeave={() => {
+                                        setDragOverGoal(null);
+                                      }}
+                                      onDrop={(e) => {
+                                        e.preventDefault();
+                                        if (draggedGoal && draggedGoal.id !== goal.id && draggedGoal.listName === listName) {
+                                          reorderGoals(listName, draggedGoal.index, index);
+                                        }
+                                        setDraggedGoal(null);
+                                        setDragOverGoal(null);
+                                      }}
+                                      style={{
+                                        opacity: isDragging ? 0.5 : 1,
+                                        cursor: 'move',
+                                        borderTop: isDragOver && draggedGoal?.index > index ? '3px solid #7dd3c0' : undefined,
+                                        borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid #7dd3c0' : undefined,
+                                        transition: 'opacity 0.2s, border 0.2s'
+                                      }}
+                                    >
                                       <div 
                                         className="goal-header"
                                         onClick={() => setSelectedGoal({ id: goal.id, listName })}
@@ -7873,12 +8138,66 @@ export default function LittleFires() {
                     })()
                   ) : (
                     // Individual list view
-                    getCurrentGoals().map(goal => {
+                    getCurrentGoals().map((goal, index) => {
                       const listName = currentGoalList;
                       const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
+                      const isDragging = draggedGoal?.id === goal.id;
+                      const isDragOver = dragOverGoal?.id === goal.id;
                       
                       return (
-                        <div key={goal.id} className="goal-card">
+                        <div 
+                          key={goal.id} 
+                          className="goal-card"
+                          draggable={currentGoalList !== 'master'}
+                          onDragStart={(e) => {
+                            if (currentGoalList === 'master') return;
+                            setDraggedGoal({ ...goal, index, listName });
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragEnd={() => {
+                            setDraggedGoal(null);
+                            setDragOverGoal(null);
+                          }}
+                          onDragOver={(e) => {
+                            if (currentGoalList === 'master') return;
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            if (draggedGoal && draggedGoal.id !== goal.id) {
+                              setDragOverGoal({ ...goal, index });
+                            }
+                          }}
+                          onDragLeave={() => {
+                            setDragOverGoal(null);
+                          }}
+                          onDrop={(e) => {
+                            if (currentGoalList === 'master') return;
+                            e.preventDefault();
+                            if (draggedGoal && draggedGoal.id !== goal.id) {
+                              reorderGoals(listName, draggedGoal.index, index);
+                            }
+                            setDraggedGoal(null);
+                            setDragOverGoal(null);
+                          }}
+                          onTouchStart={(e) => {
+                            if (currentGoalList === 'master') return;
+                            handleTouchStart(e, goal, index, listName, 'goal');
+                          }}
+                          onTouchMove={(e) => {
+                            if (currentGoalList === 'master') return;
+                            handleTouchMove(e, getCurrentGoals(), 'goal');
+                          }}
+                          onTouchEnd={(e) => {
+                            if (currentGoalList === 'master') return;
+                            handleTouchEnd(e, listName, 'goal');
+                          }}
+                          style={{
+                            opacity: isDragging ? 0.5 : 1,
+                            cursor: currentGoalList !== 'master' ? 'move' : 'default',
+                            borderTop: isDragOver && draggedGoal?.index > index ? '3px solid #7dd3c0' : undefined,
+                            borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid #7dd3c0' : undefined,
+                            transition: 'opacity 0.2s, border 0.2s'
+                          }}
+                        >
                           <div 
                             className="goal-header"
                             onClick={() => setSelectedGoal({ id: goal.id, listName })}
@@ -8521,19 +8840,41 @@ export default function LittleFires() {
                       </div>
 
                       {/* Goal Actions */}
-                      <div className="project-actions">
+                      <div className="project-actions" style={{display: 'flex', justifyContent: 'space-between', width: '100%'}}>
                         <button 
-                          className="edit-btn"
-                          onClick={() => setSelectedGoal(null)}
+                          className="archive-btn"
+                          onClick={() => {
+                            archiveGoal(selectedGoal.listName, goal.id);
+                            setSelectedGoal(null);
+                          }}
+                          style={{
+                            padding: '10px 20px',
+                            background: 'rgba(125, 211, 192, 0.2)',
+                            border: '2px solid rgba(125, 211, 192, 0.4)',
+                            borderRadius: '8px',
+                            color: '#7dd3c0',
+                            fontSize: '0.9rem',
+                            fontWeight: '600',
+                            fontFamily: 'Quicksand, sans-serif',
+                            cursor: 'pointer'
+                          }}
                         >
-                          Close
+                          Archive
                         </button>
-                        <button 
-                          className="delete-btn"
-                          onClick={() => setGoalToDelete({ id: goal.id, listName: selectedGoal.listName, name: goal.name })}
-                        >
-                          Delete
-                        </button>
+                        <div style={{display: 'flex', gap: '10px'}}>
+                          <button 
+                            className="edit-btn"
+                            onClick={() => setSelectedGoal(null)}
+                          >
+                            Close
+                          </button>
+                          <button 
+                            className="delete-btn"
+                            onClick={() => setGoalToDelete({ id: goal.id, listName: selectedGoal.listName, name: goal.name })}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                       </div>
                     </div>
@@ -8565,7 +8906,7 @@ export default function LittleFires() {
                     }}
                   />
                   <textarea
-                    placeholder="Description (optional)"
+                    placeholder="Description"
                     value={goalFormData.description}
                     onChange={(e) => setGoalFormData(prev => ({ ...prev, description: e.target.value }))}
                     style={{
@@ -8591,8 +8932,18 @@ export default function LittleFires() {
                       type="date"
                       value={goalFormData.startDate}
                       onChange={(e) => setGoalFormData(prev => ({ ...prev, startDate: e.target.value }))}
-                      className="date-picker"
-                      style={{width: '100%', boxSizing: 'border-box'}}
+                      style={{
+                        width: '50%',
+                        maxWidth: '50%',
+                        boxSizing: 'border-box',
+                        padding: '10px 8px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.2)',
+                        borderRadius: '10px',
+                        color: '#f4e8d8',
+                        fontSize: '0.95rem',
+                        fontFamily: 'Nunito, sans-serif'
+                      }}
                     />
                   </div>
                   <div style={{marginBottom: '20px'}}>
@@ -8603,8 +8954,18 @@ export default function LittleFires() {
                       type="date"
                       value={goalFormData.endDate}
                       onChange={(e) => setGoalFormData(prev => ({ ...prev, endDate: e.target.value }))}
-                      className="date-picker"
-                      style={{width: '100%', boxSizing: 'border-box'}}
+                      style={{
+                        width: '50%',
+                        maxWidth: '50%',
+                        boxSizing: 'border-box',
+                        padding: '10px 8px',
+                        background: 'rgba(42, 42, 62, 0.8)',
+                        border: '2px solid rgba(125, 211, 192, 0.2)',
+                        borderRadius: '10px',
+                        color: '#f4e8d8',
+                        fontSize: '0.95rem',
+                        fontFamily: 'Nunito, sans-serif'
+                      }}
                     />
                   </div>
                   <div className="modal-actions">
@@ -10333,13 +10694,65 @@ export default function LittleFires() {
           <div className="archive-section">
             <h2>Archive</h2>
             
-            <div className="tabs">
+            {/* Picklist for Archive Type */}
+            <div style={{
+              padding: '0 40px',
+              marginBottom: '20px'
+            }}>
+              <select
+                value={archiveType}
+                onChange={(e) => setArchiveType(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '16px 24px',
+                  background: 'rgba(42, 42, 62, 0.8)',
+                  border: '2px solid rgba(125, 211, 192, 0.2)',
+                  borderRadius: '25px',
+                  color: '#f4e8d8',
+                  fontSize: '1rem',
+                  fontWeight: 'normal',
+                  fontFamily: 'Nunito, sans-serif',
+                  cursor: 'pointer',
+                  appearance: 'none',
+                  outline: 'none',
+                  transition: 'all 0.3s ease',
+                  boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+                  boxSizing: 'border-box'
+                }}
+              >
+                <option value="tasks">Tasks</option>
+                <option value="goals">Goals</option>
+                <option value="projects">Projects</option>
+              </select>
+            </div>
+
+            {/* Seafoam Divider */}
+            <div style={{
+              height: '2px',
+              background: 'rgba(125, 211, 192, 0.3)',
+              margin: '20px 40px',
+              borderRadius: '2px'
+            }} />
+            
+            {/* All Button - Full Width */}
+            <div style={{
+              padding: '0 40px',
+              marginBottom: '15px'
+            }}>
               <button 
                 className={`tab ${currentList === 'master' ? 'active' : ''}`}
                 onClick={() => setCurrentList('master')}
+                style={{
+                  width: '100%',
+                  display: 'block'
+                }}
               >
                 All
               </button>
+            </div>
+
+            {/* Other List Buttons */}
+            <div className="tabs">
               <button 
                 className={`tab ${currentList === 'personal' ? 'active' : ''}`}
                 onClick={() => setCurrentList('personal')}
@@ -10374,52 +10787,54 @@ export default function LittleFires() {
 
             <div className="archived-tasks-container">
               {(() => {
-                const tasksToShow = currentList === 'master' 
-                  ? Object.entries(archivedTasks).flatMap(([listName, tasks]) => 
-                      tasks.map(task => ({ ...task, listName }))
-                    )
-                  : archivedTasks[currentList] || [];
+                // Determine what to show based on archiveType
+                if (archiveType === 'tasks') {
+                  const tasksToShow = currentList === 'master' 
+                    ? Object.entries(archivedTasks).flatMap(([listName, tasks]) => 
+                        tasks.map(task => ({ ...task, listName }))
+                      )
+                    : archivedTasks[currentList] || [];
 
-                if (tasksToShow.length === 0) {
-                  return (
-                    <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
-                      <div style={{
-                        width: '180px',
-                        height: '180px',
-                        position: 'relative',
-                        display: 'inline-block'
-                      }}>
-                        {/* Background circle */}
-                        <svg 
-                          style={{
-                            position: 'absolute',
-                            top: '-15px',
-                            left: '-15px',
-                            width: '210px',
-                            height: '210px',
-                            transform: 'rotate(-90deg)',
-                            pointerEvents: 'none'
-                          }}
-                        >
-                          <circle
-                            cx="105"
-                            cy="105"
-                            r="95"
-                            fill="none"
-                            stroke="rgba(58, 58, 74, 0.3)"
-                            strokeWidth="8"
-                          />
-                        </svg>
-                        
-                        {/* Dark Fire Icon */}
-                        <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 1280.000000 1280.000000"
-                          preserveAspectRatio="xMidYMid meet"
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
-                          }}>
+                  if (tasksToShow.length === 0) {
+                    return (
+                      <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                        <div style={{
+                          width: '180px',
+                          height: '180px',
+                          position: 'relative',
+                          display: 'inline-block'
+                        }}>
+                          {/* Background circle */}
+                          <svg 
+                            style={{
+                              position: 'absolute',
+                              top: '-15px',
+                              left: '-15px',
+                              width: '210px',
+                              height: '210px',
+                              transform: 'rotate(-90deg)',
+                              pointerEvents: 'none'
+                            }}
+                          >
+                            <circle
+                              cx="105"
+                              cy="105"
+                              r="95"
+                              fill="none"
+                              stroke="rgba(58, 58, 74, 0.3)"
+                              strokeWidth="8"
+                            />
+                          </svg>
+                          
+                          {/* Dark Fire Icon */}
+                          <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 1280.000000 1280.000000"
+                            preserveAspectRatio="xMidYMid meet"
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                            }}>
                           <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
                             fill="#3a3a4a" stroke="none">
                             <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
@@ -10461,11 +10876,21 @@ export default function LittleFires() {
 
                   return Object.entries(grouped).map(([listName, tasks]) => (
                     <div key={listName} className="archive-list-section">
-                      <div className="section-header archive-section-header" style={{textTransform: 'capitalize', display: 'flex', alignItems: 'center', gap: '10px'}}>
+                      <div 
+                        className="section-header archive-section-header" 
+                        style={{
+                          textTransform: 'capitalize', 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'space-between',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => toggleArchiveSection(`archive-tasks-${listName}`)}
+                      >
                         <span>{listName}</span>
                         <span className={`badge ${listName}`}>{tasks.length}</span>
                       </div>
-                      {tasks.map((task, idx) => {
+                      {!isArchiveSectionCollapsed(`archive-tasks-${listName}`) && tasks.map((task, idx) => {
                         const actualIndex = archivedTasks[listName].findIndex(t => t === task);
                         return (
                           <div key={idx} className="archived-task">
@@ -10523,6 +10948,413 @@ export default function LittleFires() {
                       </div>
                     </div>
                   ));
+                }
+                }
+                
+                // GOALS ARCHIVE
+                else if (archiveType === 'goals') {
+                  const goalsToShow = currentList === 'master'
+                    ? Object.entries(goals).flatMap(([listName, goalList]) =>
+                        (Array.isArray(goalList) ? goalList : []).filter(g => g.archived).map(goal => ({ ...goal, listName }))
+                      )
+                    : (goals[currentList] || []).filter(g => g.archived);
+
+                  if (goalsToShow.length === 0) {
+                    return (
+                      <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                        <div style={{
+                          width: '180px',
+                          height: '180px',
+                          position: 'relative',
+                          display: 'inline-block'
+                        }}>
+                          {/* Background circle */}
+                          <svg 
+                            style={{
+                              position: 'absolute',
+                              top: '-15px',
+                              left: '-15px',
+                              width: '210px',
+                              height: '210px',
+                              transform: 'rotate(-90deg)',
+                              pointerEvents: 'none'
+                            }}
+                          >
+                            <circle
+                              cx="105"
+                              cy="105"
+                              r="95"
+                              fill="none"
+                              stroke="rgba(58, 58, 74, 0.3)"
+                              strokeWidth="8"
+                            />
+                          </svg>
+                          
+                          {/* Dark Fire Icon */}
+                          <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 1280.000000 1280.000000"
+                            preserveAspectRatio="xMidYMid meet"
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                            }}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill="#3a3a4a" stroke="none">
+                            <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                            -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                            -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                            17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                            -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                            132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                            680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                            -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                            -1 -56z"/>
+                            <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                            -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                            -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                            -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                            289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                            553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                            -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                            <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                            -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                            -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                            -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                            36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                            -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                            95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                          </g>
+                        </svg>
+                      </div>
+                    </div>
+                    );
+                  }
+
+                  if (currentList === 'master') {
+                    const grouped = {};
+                    goalsToShow.forEach(goal => {
+                      if (!grouped[goal.listName]) grouped[goal.listName] = [];
+                      grouped[goal.listName].push(goal);
+                    });
+
+                    return Object.entries(grouped).map(([listName, goalsList]) => (
+                      <div key={listName} className="archive-list-section">
+                        <div 
+                          className="section-header archive-section-header" 
+                          style={{
+                            textTransform: 'capitalize', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'space-between',
+                            cursor: 'pointer'
+                          }}
+                          onClick={() => toggleArchiveSection(`archive-goals-${listName}`)}
+                        >
+                          <span>{listName}</span>
+                          <span className={`badge ${listName}`}>{goalsList.length}</span>
+                        </div>
+                        {!isArchiveSectionCollapsed(`archive-goals-${listName}`) && goalsList.map((goal, idx) => (
+                          <div key={goal.id} className="archived-task">
+                            <div className="task-text" style={{fontWeight: '600'}}>{goal.name.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').trim()}</div>
+                            {goal.description && (
+                              <div style={{color: '#b8a99a', fontSize: '0.9rem', marginTop: '5px'}}>
+                                {goal.description}
+                              </div>
+                            )}
+                            <div className="task-meta">
+                              {goal.startDate && goal.endDate && (
+                                <span style={{color: '#7dd3c0', fontSize: '0.85rem', marginRight: '15px'}}>
+                                  {new Date(goal.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(goal.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
+                              {goal.archivedAt && (
+                                <span className="archived-date">
+                                  Archived {new Date(goal.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
+                            </div>
+                            <div className="archived-task-actions">
+                              <button
+                                className="edit-btn"
+                                onClick={() => {
+                                  setGoals(prev => ({
+                                    ...prev,
+                                    [listName]: prev[listName].map(g =>
+                                      g.id === goal.id ? { ...g, archived: false, archivedAt: null } : g
+                                    )
+                                  }));
+                                }}
+                              >
+                                Unarchive
+                              </button>
+                              <button
+                                className="delete-btn"
+                                onClick={() => {
+                                  if (window.confirm(`Delete goal "${goal.name}"?`)) {
+                                    deleteGoal(listName, goal.id);
+                                  }
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ));
+                  } else {
+                    return goalsToShow.map((goal, idx) => (
+                      <div key={goal.id} className="archived-task">
+                        <div className="task-text" style={{fontWeight: '600'}}>{goal.name.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').trim()}</div>
+                        {goal.description && (
+                          <div style={{color: '#b8a99a', fontSize: '0.9rem', marginTop: '5px'}}>
+                            {goal.description}
+                          </div>
+                        )}
+                        <div className="task-meta">
+                          {goal.startDate && goal.endDate && (
+                            <span style={{color: '#7dd3c0', fontSize: '0.85rem', marginRight: '15px'}}>
+                              {new Date(goal.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(goal.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
+                          {goal.archivedAt && (
+                            <span className="archived-date">
+                              Archived {new Date(goal.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
+                        </div>
+                        <div className="archived-task-actions">
+                          <button
+                            className="edit-btn"
+                            onClick={() => {
+                              setGoals(prev => ({
+                                ...prev,
+                                [currentList]: prev[currentList].map(g =>
+                                  g.id === goal.id ? { ...g, archived: false, archivedAt: null } : g
+                                )
+                              }));
+                            }}
+                          >
+                            Unarchive
+                          </button>
+                          <button
+                            className="delete-btn"
+                            onClick={() => {
+                              if (window.confirm(`Delete goal "${goal.name}"?`)) {
+                                deleteGoal(currentList, goal.id);
+                              }
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ));
+                  }
+                }
+                
+                // PROJECTS ARCHIVE
+                else if (archiveType === 'projects') {
+                  const projectsToShow = currentList === 'master'
+                    ? Object.entries(projects).flatMap(([listName, projectList]) =>
+                        (Array.isArray(projectList) ? projectList : []).filter(p => p.archived).map(project => ({ ...project, listName }))
+                      )
+                    : (projects[currentList] || []).filter(p => p.archived);
+
+                  if (projectsToShow.length === 0) {
+                    return (
+                      <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
+                        <div style={{
+                          width: '180px',
+                          height: '180px',
+                          position: 'relative',
+                          display: 'inline-block'
+                        }}>
+                          {/* Background circle */}
+                          <svg 
+                            style={{
+                              position: 'absolute',
+                              top: '-15px',
+                              left: '-15px',
+                              width: '210px',
+                              height: '210px',
+                              transform: 'rotate(-90deg)',
+                              pointerEvents: 'none'
+                            }}
+                          >
+                            <circle
+                              cx="105"
+                              cy="105"
+                              r="95"
+                              fill="none"
+                              stroke="rgba(58, 58, 74, 0.3)"
+                              strokeWidth="8"
+                            />
+                          </svg>
+                          
+                          {/* Dark Fire Icon */}
+                          <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 1280.000000 1280.000000"
+                            preserveAspectRatio="xMidYMid meet"
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                            }}>
+                          <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                            fill="#3a3a4a" stroke="none">
+                            <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                            -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                            -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                            17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                            -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                            132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                            680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                            -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                            -1 -56z"/>
+                            <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                            -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                            -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                            -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                            289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                            553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                            -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                            <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                            -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                            -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                            -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                            36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                            -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                            95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                          </g>
+                        </svg>
+                      </div>
+                    </div>
+                    );
+                  }
+
+                  if (currentList === 'master') {
+                    const grouped = {};
+                    projectsToShow.forEach(project => {
+                      if (!grouped[project.listName]) grouped[project.listName] = [];
+                      grouped[project.listName].push(project);
+                    });
+
+                    return Object.entries(grouped).map(([listName, projectsList]) => (
+                      <div key={listName} className="archive-list-section">
+                        <div 
+                          className="section-header archive-section-header" 
+                          style={{
+                            textTransform: 'capitalize', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'space-between',
+                            cursor: 'pointer'
+                          }}
+                          onClick={() => toggleArchiveSection(`archive-projects-${listName}`)}
+                        >
+                          <span>{listName}</span>
+                          <span className={`badge ${listName}`}>{projectsList.length}</span>
+                        </div>
+                        {!isArchiveSectionCollapsed(`archive-projects-${listName}`) && projectsList.map((project, idx) => (
+                          <div key={project.id} className="archived-task">
+                            <div className="task-text" style={{fontWeight: '600'}}>🏗️ {project.name}</div>
+                            {project.description && (
+                              <div style={{color: '#b8a99a', fontSize: '0.9rem', marginTop: '5px'}}>
+                                {project.description}
+                              </div>
+                            )}
+                            <div className="task-meta">
+                              {project.startDate && project.endDate && (
+                                <span style={{color: '#7dd3c0', fontSize: '0.85rem', marginRight: '15px'}}>
+                                  {new Date(project.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(project.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
+                              {project.archivedAt && (
+                                <span className="archived-date">
+                                  Archived {new Date(project.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
+                            </div>
+                            <div className="archived-task-actions">
+                              <button
+                                className="edit-btn"
+                                onClick={() => {
+                                  setProjects(prev => ({
+                                    ...prev,
+                                    [listName]: prev[listName].map(p =>
+                                      p.id === project.id ? { ...p, archived: false, archivedAt: null } : p
+                                    )
+                                  }));
+                                }}
+                              >
+                                Unarchive
+                              </button>
+                              <button
+                                className="delete-btn"
+                                onClick={() => {
+                                  if (window.confirm(`Delete project "${project.name}"?`)) {
+                                    deleteProject(listName, project.id);
+                                  }
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ));
+                  } else {
+                    return projectsToShow.map((project, idx) => (
+                      <div key={project.id} className="archived-task">
+                        <div className="task-text" style={{fontWeight: '600'}}>🏗️ {project.name}</div>
+                        {project.description && (
+                          <div style={{color: '#b8a99a', fontSize: '0.9rem', marginTop: '5px'}}>
+                            {project.description}
+                          </div>
+                        )}
+                        <div className="task-meta">
+                          {project.startDate && project.endDate && (
+                            <span style={{color: '#7dd3c0', fontSize: '0.85rem', marginRight: '15px'}}>
+                              {new Date(project.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(project.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
+                          {project.archivedAt && (
+                            <span className="archived-date">
+                              Archived {new Date(project.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
+                        </div>
+                        <div className="archived-task-actions">
+                          <button
+                            className="edit-btn"
+                            onClick={() => {
+                              setProjects(prev => ({
+                                ...prev,
+                                [currentList]: prev[currentList].map(p =>
+                                  p.id === project.id ? { ...p, archived: false, archivedAt: null } : p
+                                )
+                              }));
+                            }}
+                          >
+                            Unarchive
+                          </button>
+                          <button
+                            className="delete-btn"
+                            onClick={() => {
+                              if (window.confirm(`Delete project "${project.name}"?`)) {
+                                deleteProject(currentList, project.id);
+                              }
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ));
+                  }
                 }
               })()}
             </div>

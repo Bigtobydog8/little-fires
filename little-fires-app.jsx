@@ -1612,6 +1612,23 @@ export default function LittleFires() {
     
     const isExpanded = expandedTaskId === `${listName}-${index}`;
     const taskRef = React.useRef(null);
+    const detailsRef = React.useRef(null);
+    const hasSetInitialContent = React.useRef(false);
+    const saveTimeoutRef = React.useRef(null);
+
+    // Set initial content only when task first expands
+    React.useEffect(() => {
+      if (isExpanded && detailsRef.current) {
+        // Only set content once when first expanded
+        if (!hasSetInitialContent.current) {
+          detailsRef.current.innerHTML = task.details || '';
+          hasSetInitialContent.current = true;
+        }
+      } else if (!isExpanded) {
+        // Reset flag when collapsed so it will load fresh next time
+        hasSetInitialContent.current = false;
+      }
+    }, [isExpanded]);
 
     React.useEffect(() => {
       if (!isExpanded) return;
@@ -1623,6 +1640,34 @@ export default function LittleFires() {
       };
 
       document.addEventListener('mousedown', handleClickOutside);
+      
+      // Attach onChange handlers to existing checkboxes
+      const detailsArea = taskRef.current?.querySelector('.details-richtext');
+      if (detailsArea) {
+        const checkboxes = detailsArea.querySelectorAll('.task-checkbox');
+        checkboxes.forEach(checkbox => {
+          checkbox.onclick = (evt) => {
+            evt.stopPropagation();
+            // Focus the details area to enable editing if needed
+            if (document.activeElement !== detailsArea) {
+              detailsArea.focus();
+            }
+          };
+          checkbox.onchange = (evt) => {
+            evt.stopPropagation();
+            // Just update checkbox attributes, save happens on blur
+            const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
+            allCheckboxes.forEach(cb => {
+              if (cb.checked) {
+                cb.setAttribute('checked', 'checked');
+              } else {
+                cb.removeAttribute('checked');
+              }
+            });
+          };
+        });
+      }
+      
       return () => {
         document.removeEventListener('mousedown', handleClickOutside);
       };
@@ -1748,7 +1793,29 @@ export default function LittleFires() {
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.className = 'task-checkbox';
-                    checkbox.onclick = (evt) => evt.stopPropagation();
+                    checkbox.onclick = (evt) => {
+                      evt.stopPropagation();
+                      // Focus the details area to enable editing if needed
+                      const detailsArea = evt.target.closest('.details-richtext');
+                      if (detailsArea && document.activeElement !== detailsArea) {
+                        detailsArea.focus();
+                      }
+                    };
+                    checkbox.onchange = (evt) => {
+                      evt.stopPropagation();
+                      const detailsArea = evt.target.closest('.details-richtext');
+                      if (detailsArea) {
+                        // Just update checkbox attributes, save happens on blur
+                        const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
+                        allCheckboxes.forEach(cb => {
+                          if (cb.checked) {
+                            cb.setAttribute('checked', 'checked');
+                          } else {
+                            cb.removeAttribute('checked');
+                          }
+                        });
+                      }
+                    };
                     
                     const textSpan = document.createElement('span');
                     textSpan.innerHTML = '&nbsp;';
@@ -1814,6 +1881,15 @@ export default function LittleFires() {
               suppressContentEditableWarning
               onBlur={(e) => {
                 e.stopPropagation();
+                // Update ALL checkboxes' attributes before getting innerHTML
+                const allCheckboxes = e.currentTarget.querySelectorAll('.task-checkbox');
+                allCheckboxes.forEach(cb => {
+                  if (cb.checked) {
+                    cb.setAttribute('checked', 'checked');
+                  } else {
+                    cb.removeAttribute('checked');
+                  }
+                });
                 const content = e.currentTarget.innerHTML;
                 if (content !== task.details) {
                   updateTaskDetails(listName, index, content);
@@ -1846,7 +1922,29 @@ export default function LittleFires() {
                       const newCheckbox = document.createElement('input');
                       newCheckbox.type = 'checkbox';
                       newCheckbox.className = 'task-checkbox';
-                      newCheckbox.onclick = (evt) => evt.stopPropagation();
+                      newCheckbox.onclick = (evt) => {
+                        evt.stopPropagation();
+                        // Focus the details area to enable editing if needed
+                        const detailsArea = evt.target.closest('.details-richtext');
+                        if (detailsArea && document.activeElement !== detailsArea) {
+                          detailsArea.focus();
+                        }
+                      };
+                      newCheckbox.onchange = (evt) => {
+                        evt.stopPropagation();
+                        const detailsArea = evt.target.closest('.details-richtext');
+                        if (detailsArea) {
+                          // Just update checkbox attributes, save happens on blur
+                          const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
+                          allCheckboxes.forEach(cb => {
+                            if (cb.checked) {
+                              cb.setAttribute('checked', 'checked');
+                            } else {
+                              cb.removeAttribute('checked');
+                            }
+                          });
+                        }
+                      };
                       
                       const newTextSpan = document.createElement('span');
                       newTextSpan.innerHTML = '&nbsp;';
@@ -1868,7 +1966,7 @@ export default function LittleFires() {
                   }
                 }
               }}
-              dangerouslySetInnerHTML={{ __html: task.details || '' }}
+              ref={detailsRef}
             />
 
             <div className="date-project-row">

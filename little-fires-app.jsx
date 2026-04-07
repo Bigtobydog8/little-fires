@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 
 export default function LittleFires() {
-  // Set favicon on mount
+  // Set favicon and Apple Touch Icon on mount
   useEffect(() => {
     // Create SVG favicon as data URI
     const faviconSVG = `<svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280"><g transform="translate(0,1280) scale(0.1,-0.1)" fill="#000000"><path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/><path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/><path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/></g></svg>`;
     
     const faviconDataURI = 'data:image/svg+xml,' + encodeURIComponent(faviconSVG);
     
-    // Remove existing favicons
+    // Remove existing favicons and apple-touch-icons
     const existingLinks = document.querySelectorAll("link[rel*='icon']");
     existingLinks.forEach(link => link.remove());
     
@@ -18,6 +18,50 @@ export default function LittleFires() {
     link.type = 'image/svg+xml';
     link.href = faviconDataURI;
     document.head.appendChild(link);
+    
+    // Add Apple Touch Icon for iOS home screen
+    // Create a canvas to draw the icon with background
+    const canvas = document.createElement('canvas');
+    canvas.width = 180;
+    canvas.height = 180;
+    const ctx = canvas.getContext('2d');
+    
+    // Dark background to match app theme
+    ctx.fillStyle = '#2a2a3e';
+    ctx.fillRect(0, 0, 180, 180);
+    
+    // Load and draw the flame SVG
+    const img = new Image();
+    img.onload = () => {
+      // Center the flame icon with some padding
+      const size = 140;
+      const x = (180 - size) / 2;
+      const y = (180 - size) / 2;
+      ctx.drawImage(img, x, y, size, size);
+      
+      // Convert to data URL and set as apple-touch-icon
+      const appleIcon = canvas.toDataURL('image/png');
+      
+      const appleTouchLink = document.createElement('link');
+      appleTouchLink.rel = 'apple-touch-icon';
+      appleTouchLink.href = appleIcon;
+      document.head.appendChild(appleTouchLink);
+    };
+    img.src = faviconDataURI;
+    
+    // Add PWA meta tags for better iOS support
+    const metaTags = [
+      { name: 'apple-mobile-web-app-capable', content: 'yes' },
+      { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' },
+      { name: 'apple-mobile-web-app-title', content: 'Little Fires' }
+    ];
+    
+    metaTags.forEach(tag => {
+      const meta = document.createElement('meta');
+      meta.name = tag.name;
+      meta.content = tag.content;
+      document.head.appendChild(meta);
+    });
     
     // Also set page title
     document.title = 'Little Fires';

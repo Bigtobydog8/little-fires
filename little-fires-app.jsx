@@ -26,8 +26,8 @@ export default function LittleFires() {
     canvas.height = 180;
     const ctx = canvas.getContext('2d');
     
-    // Dark background to match app theme
-    ctx.fillStyle = '#2a2a3e';
+    // Matcha green background
+    ctx.fillStyle = '#53745f';
     ctx.fillRect(0, 0, 180, 180);
     
     // Load and draw the flame SVG

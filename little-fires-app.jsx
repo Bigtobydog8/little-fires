@@ -1838,29 +1838,35 @@ export default function LittleFires() {
                 className="task-text"
                 onClick={(e) => {
                   e.stopPropagation();
-                  // Delay single-click action to allow double-click to cancel it
-                  clickTimeoutRef.current = setTimeout(() => {
-                    // Save details before toggling if expanded
-                    if (isExpanded && detailsRef.current) {
-                      const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-                      allCheckboxes.forEach(cb => {
-                        if (cb.checked) {
-                          cb.setAttribute('checked', 'checked');
-                        } else {
-                          cb.removeAttribute('checked');
+                  // If already expanded, single click enters edit mode
+                  if (isExpanded && !task.isArchived) {
+                    setEditingTaskName(`${listName}-${index}`);
+                  } else {
+                    // If collapsed, single click expands
+                    // Delay single-click action to allow double-click to cancel it
+                    clickTimeoutRef.current = setTimeout(() => {
+                      // Save details before toggling if expanded
+                      if (isExpanded && detailsRef.current) {
+                        const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
+                        allCheckboxes.forEach(cb => {
+                          if (cb.checked) {
+                            cb.setAttribute('checked', 'checked');
+                          } else {
+                            cb.removeAttribute('checked');
+                          }
+                        });
+                        const content = detailsRef.current.innerHTML;
+                        if (content !== task.details) {
+                          updateTaskDetails(listName, index, content);
                         }
-                      });
-                      const content = detailsRef.current.innerHTML;
-                      if (content !== task.details) {
-                        updateTaskDetails(listName, index, content);
                       }
-                    }
-                    
-                    // Single click toggles task expanded/collapsed
-                    if (!task.isArchived) {
-                      setExpandedTaskId(isExpanded ? null : `${listName}-${index}`);
-                    }
-                  }, 250); // 250ms delay
+                      
+                      // Single click toggles task expanded/collapsed
+                      if (!task.isArchived) {
+                        setExpandedTaskId(isExpanded ? null : `${listName}-${index}`);
+                      }
+                    }, 250); // 250ms delay
+                  }
                 }}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
@@ -1868,12 +1874,12 @@ export default function LittleFires() {
                   if (clickTimeoutRef.current) {
                     clearTimeout(clickTimeoutRef.current);
                   }
-                  // Double-click only enters edit mode if already expanded
-                  if (isExpanded && !task.isArchived) {
+                  // Double-click enters edit mode (works whether expanded or not)
+                  if (!task.isArchived) {
+                    if (!isExpanded) {
+                      setExpandedTaskId(`${listName}-${index}`);
+                    }
                     setEditingTaskName(`${listName}-${index}`);
-                  } else if (!task.isArchived) {
-                    // If collapsed, expand it
-                    setExpandedTaskId(`${listName}-${index}`);
                   }
                 }}
                 style={{cursor: isExpanded ? 'text' : 'pointer'}}
@@ -3607,10 +3613,12 @@ export default function LittleFires() {
           color: #f4e8d8;
           margin-bottom: 15px;
           padding-bottom: 10px;
-          border-bottom: 4px solid rgba(83, 116, 95, 0.3);
           display: flex;
           align-items: center;
           gap: 10px;
+          background: transparent;
+          padding: 0;
+          padding-bottom: 10px;
         }
 
         .section-icon {
@@ -5770,13 +5778,36 @@ export default function LittleFires() {
             </div>
 
             {/* Search bar */}
-            <div className="search-filter-bar">
+            <div className="search-filter-bar" style={{position: 'relative'}}>
+              <div style={{
+                position: 'absolute',
+                left: '15px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                width: '20px',
+                height: '20px',
+                pointerEvents: 'none',
+                zIndex: 1
+              }}>
+                <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 1280 1280"
+                  preserveAspectRatio="xMidYMid meet"
+                  style={{width: '100%', height: '100%'}}>
+                  <g transform="translate(0,1280) scale(0.1,-0.1)"
+                    fill="#6b7280" stroke="none" opacity="0.5">
+                    <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/>
+                    <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                    <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                  </g>
+                </svg>
+              </div>
               <input
                 type="text"
                 className="search-box"
-                placeholder="🔍 Search notes..."
+                placeholder="Search notes..."
                 value={noteSearchQuery}
                 onChange={(e) => setNoteSearchQuery(e.target.value)}
+                style={{paddingLeft: '45px'}}
               />
             </div>
 
@@ -10856,7 +10887,7 @@ export default function LittleFires() {
               <input
                 type="text"
                 className="search-box"
-                placeholder="🔍 Search tasks..."
+                placeholder="Search tasks..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 autoFocus
@@ -10875,19 +10906,87 @@ export default function LittleFires() {
               />
 
               {!searchQuery ? (
-                <div style={{
-                  textAlign: 'center',
-                  padding: '40px 20px',
-                  color: '#b8a99a',
-                  fontSize: '1.1rem',
-                  fontFamily: 'Quicksand, sans-serif'
-                }}>
-                  🔍 Type to search across all your tasks
+                <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
+                  <div style={{
+                    width: '120px',
+                    height: '120px',
+                    position: 'relative',
+                    display: 'inline-block'
+                  }}>
+                    {/* Background circle */}
+                    <svg 
+                      style={{
+                        position: 'absolute',
+                        top: '-10px',
+                        left: '-10px',
+                        width: '140px',
+                        height: '140px',
+                        transform: 'rotate(-90deg)',
+                        pointerEvents: 'none'
+                      }}
+                    >
+                      <circle
+                        cx="70"
+                        cy="70"
+                        r="63"
+                        fill="none"
+                        stroke="rgba(58, 58, 74, 0.3)"
+                        strokeWidth="6"
+                      />
+                    </svg>
+                    
+                    {/* Dark Fire Icon */}
+                    <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 1280.000000 1280.000000"
+                      preserveAspectRatio="xMidYMid meet"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        filter: 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))'
+                      }}>
+                      <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+                        fill="#3a3a4a" stroke="none">
+                        <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+                        -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+                        -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+                        17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+                        -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+                        132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+                        680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+                        -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+                        -1 -56z"/>
+                        <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+                        -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+                        -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+                        -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+                        289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+                        553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+                        -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                        <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+                        -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+                        -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+                        -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+                        36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+                        -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+                        95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                      </g>
+                    </svg>
+                  </div>
                 </div>
               ) : (
                 <>
                   {(() => {
-                    const allSearchResults = [];
+                    const searchResults = {
+                      tasks: [],
+                      projects: [],
+                      goals: [],
+                      notes: [],
+                      timeLogs: []
+                    };
+                    
+                    const query = searchQuery.toLowerCase();
+                    
+                    // Search Tasks
                     const listNames = ['personal', 'work', 'home', 'travel', 'kids'];
                     const listLabels = {
                       personal: 'Personal Tasks',
@@ -10901,19 +11000,85 @@ export default function LittleFires() {
                       if (!allLists[listName]) return;
                       
                       const matchingTasks = allLists[listName].filter(task => 
-                        task.text.toLowerCase().includes(searchQuery.toLowerCase())
+                        task.text.toLowerCase().includes(query) ||
+                        (task.details && task.details.toLowerCase().includes(query))
                       );
 
-                      if (matchingTasks.length > 0) {
-                        allSearchResults.push({
+                      matchingTasks.forEach(task => {
+                        searchResults.tasks.push({
+                          item: task,
                           listName,
                           label: listLabels[listName],
-                          tasks: matchingTasks
+                          index: allLists[listName].indexOf(task)
                         });
-                      }
+                      });
                     });
+                    
+                    // Search Projects
+                    Object.keys(projects).forEach(listName => {
+                      if (!projects[listName] || !Array.isArray(projects[listName])) return;
+                      
+                      projects[listName].forEach(project => {
+                        if (project.name.toLowerCase().includes(query) ||
+                            (project.description && project.description.toLowerCase().includes(query))) {
+                          searchResults.projects.push({
+                            item: project,
+                            listName,
+                            label: listLabels[listName]
+                          });
+                        }
+                      });
+                    });
+                    
+                    // Search Goals
+                    Object.keys(goals).forEach(listName => {
+                      if (!goals[listName] || !Array.isArray(goals[listName])) return;
+                      
+                      goals[listName].forEach(goal => {
+                        if (goal.name.toLowerCase().includes(query) ||
+                            (goal.description && goal.description.toLowerCase().includes(query))) {
+                          searchResults.goals.push({
+                            item: goal,
+                            listName,
+                            label: listLabels[listName]
+                          });
+                        }
+                      });
+                    });
+                    
+                    // Search Notes
+                    if (notes && notes.length > 0) {
+                      notes.filter(note => note != null).forEach(note => {
+                        if ((note.title && note.title.toLowerCase().includes(query)) ||
+                            (note.content && note.content.toLowerCase().includes(query)) ||
+                            (note.tags && note.tags.some(tag => tag && tag.toLowerCase().includes(query)))) {
+                          searchResults.notes.push({
+                            item: note
+                          });
+                        }
+                      });
+                    }
+                    
+                    // Search Time Logs
+                    if (standaloneTimeLogs && standaloneTimeLogs.length > 0) {
+                      standaloneTimeLogs.forEach(log => {
+                        if (log.notes && log.notes.toLowerCase().includes(query)) {
+                          searchResults.timeLogs.push({
+                            item: log
+                          });
+                        }
+                      });
+                    }
+                    
+                    // Count total results
+                    const totalResults = 
+                      searchResults.tasks.length +
+                      searchResults.projects.length +
+                      searchResults.goals.length +
+                      searchResults.notes.length +
+                      searchResults.timeLogs.length;
 
-                    if (allSearchResults.length === 0) {
+                    if (totalResults === 0) {
                       return (
                         <div style={{
                           textAlign: 'center',
@@ -10922,36 +11087,207 @@ export default function LittleFires() {
                           fontSize: '1rem',
                           fontFamily: 'Quicksand, sans-serif'
                         }}>
-                          No tasks found for "{searchQuery}"
+                          No results found for "{searchQuery}"
                         </div>
                       );
                     }
 
-                    return allSearchResults.map(result => (
-                      <div key={result.listName} style={{ marginBottom: '30px' }}>
-                        <div className="list-section-header">
-                          <span>{result.label}</span>
-                          <span className={`badge ${result.listName}`}>{result.tasks.length}</span>
-                        </div>
-                        {result.tasks.map((task) => {
-                          const actualIndex = allLists[result.listName].indexOf(task);
-                          return (
-                            <div key={task.id} style={{position: 'relative'}}>
-                              {task.isArchived && (
-                                <div className="archived-indicator">📦 Archived</div>
-                              )}
-                              <Task
-                                key={task.id}
-                                task={task}
-                                listName={result.listName}
-                                index={actualIndex}
-                                showMoveButtons={true}
-                              />
+                    return (
+                      <div>
+                        {/* Tasks Results */}
+                        {searchResults.tasks.length > 0 && (
+                          <div style={{ marginBottom: '30px' }}>
+                            <div className="list-section-header" style={{marginBottom: '15px'}}>
+                              <span>Tasks</span>
+                              <span className="badge work">{searchResults.tasks.length}</span>
                             </div>
-                          );
-                        })}
+                            {searchResults.tasks.map(result => (
+                              <div key={result.item.id} style={{marginBottom: '15px'}}>
+                                <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px', marginLeft: '10px'}}>
+                                  {result.label}
+                                </div>
+                                <Task
+                                  task={result.item}
+                                  listName={result.listName}
+                                  index={result.index}
+                                  showMoveButtons={true}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Projects Results */}
+                        {searchResults.projects.length > 0 && (
+                          <div style={{ marginBottom: '30px' }}>
+                            <div className="list-section-header" style={{marginBottom: '15px'}}>
+                              <span>Projects</span>
+                              <span className="badge work">{searchResults.projects.length}</span>
+                            </div>
+                            {searchResults.projects.map(result => (
+                              <div key={result.item.id} 
+                                onClick={() => {
+                                  setAppMode('projects');
+                                  setCurrentList(result.listName);
+                                }}
+                                style={{
+                                  background: 'rgba(52, 52, 72, 0.6)',
+                                  padding: '15px',
+                                  borderRadius: '10px',
+                                  marginBottom: '10px',
+                                  cursor: 'pointer',
+                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  transition: 'all 0.2s'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                              >
+                                <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
+                                  {result.label}
+                                </div>
+                                <div style={{fontSize: '1.1rem', fontWeight: '600', color: '#f4e8d8', marginBottom: '5px'}}>
+                                  {result.item.name}
+                                </div>
+                                {result.item.description && (
+                                  <div style={{fontSize: '0.9rem', color: '#b8a99a'}}>
+                                    {result.item.description}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Goals Results */}
+                        {searchResults.goals.length > 0 && (
+                          <div style={{ marginBottom: '30px' }}>
+                            <div className="list-section-header" style={{marginBottom: '15px'}}>
+                              <span>Goals</span>
+                              <span className="badge work">{searchResults.goals.length}</span>
+                            </div>
+                            {searchResults.goals.map(result => (
+                              <div key={result.item.id}
+                                onClick={() => {
+                                  setAppMode('goals');
+                                  setCurrentList(result.listName);
+                                }}
+                                style={{
+                                  background: 'rgba(52, 52, 72, 0.6)',
+                                  padding: '15px',
+                                  borderRadius: '10px',
+                                  marginBottom: '10px',
+                                  cursor: 'pointer',
+                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  transition: 'all 0.2s'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                              >
+                                <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
+                                  {result.label}
+                                </div>
+                                <div style={{fontSize: '1.1rem', fontWeight: '600', color: '#f4e8d8', marginBottom: '5px'}}>
+                                  {result.item.name}
+                                </div>
+                                {result.item.description && (
+                                  <div style={{fontSize: '0.9rem', color: '#b8a99a'}}>
+                                    {result.item.description}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Notes Results */}
+                        {searchResults.notes.length > 0 && (
+                          <div style={{ marginBottom: '30px' }}>
+                            <div className="list-section-header" style={{marginBottom: '15px'}}>
+                              <span>Notes</span>
+                              <span className="badge work">{searchResults.notes.length}</span>
+                            </div>
+                            {searchResults.notes.map(result => (
+                              <div key={result.item.id || Math.random()}
+                                onClick={() => setAppMode('notes')}
+                                style={{
+                                  background: 'rgba(52, 52, 72, 0.6)',
+                                  padding: '15px',
+                                  borderRadius: '10px',
+                                  marginBottom: '10px',
+                                  cursor: 'pointer',
+                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  transition: 'all 0.2s'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                              >
+                                <div style={{fontSize: '1.1rem', fontWeight: '600', color: '#f4e8d8', marginBottom: '5px'}}>
+                                  {result.item.title || 'Untitled Note'}
+                                </div>
+                                {result.item.content && (
+                                  <div style={{fontSize: '0.9rem', color: '#b8a99a', marginBottom: '5px'}}>
+                                    {result.item.content.substring(0, 100)}...
+                                  </div>
+                                )}
+                                {result.item.tags && result.item.tags.length > 0 && (
+                                  <div style={{display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '8px'}}>
+                                    {result.item.tags.map((tag, idx) => (
+                                      <span key={tag || idx} style={{
+                                        background: 'rgba(83, 116, 95, 0.3)',
+                                        padding: '3px 8px',
+                                        borderRadius: '12px',
+                                        fontSize: '0.75rem',
+                                        color: '#7fb069'
+                                      }}>
+                                        #{tag}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Time Logs Results */}
+                        {searchResults.timeLogs.length > 0 && (
+                          <div style={{ marginBottom: '30px' }}>
+                            <div className="list-section-header" style={{marginBottom: '15px'}}>
+                              <span>Time Logs</span>
+                              <span className="badge work">{searchResults.timeLogs.length}</span>
+                            </div>
+                            {searchResults.timeLogs.map(result => (
+                              <div key={result.item.id}
+                                onClick={() => setAppMode('time')}
+                                style={{
+                                  background: 'rgba(52, 52, 72, 0.6)',
+                                  padding: '15px',
+                                  borderRadius: '10px',
+                                  marginBottom: '10px',
+                                  cursor: 'pointer',
+                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  transition: 'all 0.2s'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                              >
+                                <div style={{fontSize: '1rem', color: '#f4e8d8', marginBottom: '5px'}}>
+                                  {new Date(result.item.startTime).toLocaleString()}
+                                </div>
+                                <div style={{fontSize: '0.9rem', color: '#7fb069', marginBottom: '5px'}}>
+                                  Duration: {result.item.duration}
+                                </div>
+                                {result.item.notes && (
+                                  <div style={{fontSize: '0.9rem', color: '#b8a99a'}}>
+                                    {result.item.notes}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    ));
+                    );
                   })()}
                 </>
               )}

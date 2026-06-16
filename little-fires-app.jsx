@@ -314,21 +314,43 @@ export default function LittleFires() {
     localStorage.setItem('little_fires_archived', JSON.stringify(archivedTasks));
   }, [archivedTasks]);
 
-  // Auto-archive completed tasks from previous months on app load
+  // Auto-archive completed tasks from previous months on app load and daily
   useEffect(() => {
+    const checkAndArchive = () => {
+      const now = new Date();
+      const lastCheck = new Date(lastArchiveCheck);
+      
+      // Check if we're in a new month since last check
+      const isNewMonth = now.getMonth() !== lastCheck.getMonth() || 
+                         now.getFullYear() !== lastCheck.getFullYear();
+      
+      if (isNewMonth) {
+        autoArchiveCompletedTasks();
+        const newCheckDate = now.toISOString();
+        setLastArchiveCheck(newCheckDate);
+        localStorage.setItem('little_fires_last_archive_check', newCheckDate);
+      }
+    };
+    
+    // Check on initial load
+    checkAndArchive();
+    
+    // Set up daily check at midnight
     const now = new Date();
-    const lastCheck = new Date(lastArchiveCheck);
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+    const msUntilMidnight = tomorrow.getTime() - now.getTime();
     
-    // Check if we're in a new month since last check
-    const isNewMonth = now.getMonth() !== lastCheck.getMonth() || 
-                       now.getFullYear() !== lastCheck.getFullYear();
+    // Schedule first midnight check
+    const midnightTimeout = setTimeout(() => {
+      checkAndArchive();
+      
+      // Then check every 24 hours
+      const dailyInterval = setInterval(checkAndArchive, 24 * 60 * 60 * 1000);
+      
+      return () => clearInterval(dailyInterval);
+    }, msUntilMidnight);
     
-    if (isNewMonth) {
-      autoArchiveCompletedTasks();
-      const newCheckDate = now.toISOString();
-      setLastArchiveCheck(newCheckDate);
-      localStorage.setItem('little_fires_last_archive_check', newCheckDate);
-    }
+    return () => clearTimeout(midnightTimeout);
   }, []);
 
   const getCurrentTasks = () => {

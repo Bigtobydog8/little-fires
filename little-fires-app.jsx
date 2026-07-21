@@ -1772,6 +1772,20 @@ export default function LittleFires() {
 
       const handleClickOutside = (e) => {
         if (taskRef.current && !taskRef.current.contains(e.target)) {
+          // Save details before collapsing when clicking outside
+          const detailsArea = taskRef.current.querySelector('.details-richtext');
+          if (detailsArea) {
+            const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
+            allCheckboxes.forEach(cb => {
+              if (cb.checked) {
+                cb.setAttribute('checked', 'checked');
+              } else {
+                cb.removeAttribute('checked');
+              }
+            });
+            const content = detailsArea.innerHTML;
+            updateTaskDetails(listName, index, content);
+          }
           setExpandedTaskId(null);
         }
       };
@@ -1808,7 +1822,7 @@ export default function LittleFires() {
       return () => {
         document.removeEventListener('mousedown', handleClickOutside);
       };
-    }, [isExpanded]);
+    }, [isExpanded, listName, index]);
 
     return (
       <div 
@@ -1828,9 +1842,9 @@ export default function LittleFires() {
               }
             });
             const content = detailsRef.current.innerHTML;
-            if (content !== task.details) {
-              updateTaskDetails(listName, index, content);
-            }
+            // Always save when collapsing, even if content looks the same
+            // This ensures text is persisted
+            updateTaskDetails(listName, index, content);
           }
           
           setExpandedTaskId(isExpanded ? null : `${listName}-${index}`);
@@ -1908,9 +1922,9 @@ export default function LittleFires() {
                           }
                         });
                         const content = detailsRef.current.innerHTML;
-                        if (content !== task.details) {
-                          updateTaskDetails(listName, index, content);
-                        }
+                        // Always save when collapsing, even if content looks the same
+                        // This ensures text is persisted
+                        updateTaskDetails(listName, index, content);
                       }
                       
                       // Single click toggles task expanded/collapsed
@@ -2584,13 +2598,13 @@ export default function LittleFires() {
     <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
       {/* Rounded checkbox background */}
       <rect x="16" y="16" width="48" height="48" rx="12" ry="12" 
-            fill="url(#checkboxGradient)" stroke="#a8e6cf" strokeWidth="3"/>
+            fill="url(#checkboxGradient)" stroke="#6a8f76" strokeWidth="3"/>
       
       {/* Gradient definition */}
       <defs>
         <linearGradient id="checkboxGradient" x1="0%" y1="0%" x2="100%" y2="100%">
           <stop offset="0%" stopColor="#53745f"/>
-          <stop offset="100%" stopColor="#a8e6cf"/>
+          <stop offset="100%" stopColor="#6a8f76"/>
         </linearGradient>
       </defs>
       
@@ -3544,7 +3558,7 @@ export default function LittleFires() {
 
         .section-btn.selected {
           background: linear-gradient(135deg, #5fb49c, #53745f);
-          color: #1a1a2e;
+          color: #ffffff;
           border-color: transparent;
         }
 
@@ -3579,11 +3593,11 @@ export default function LittleFires() {
         }
 
         button {
-          background: linear-gradient(135deg, #53745f, #a8e6cf);
+          background: linear-gradient(135deg, #53745f, #6a8f76);
           border: none;
           border-radius: 25px;
           padding: 16px 32px;
-          color: #1a1a2e;
+          color: #ffffff;
           font-family: 'Quicksand', sans-serif;
           font-weight: 700;
           font-size: 1rem;
@@ -3825,8 +3839,8 @@ export default function LittleFires() {
         }
 
         .checkbox-wrapper input[type="checkbox"]:checked {
-          background: linear-gradient(135deg, #53745f, #a8e6cf);
-          border-color: #a8e6cf;
+          background: linear-gradient(135deg, #53745f, #6a8f76);
+          border-color: #53745f;
         }
 
         .checkbox-wrapper input[type="checkbox"]:checked::after {
@@ -3835,7 +3849,7 @@ export default function LittleFires() {
           top: 50%;
           left: 50%;
           transform: translate(-50%, -50%);
-          color: #1a1a2e;
+          color: #ffffff;
           font-weight: bold;
           font-size: 14px;
         }
@@ -4044,8 +4058,8 @@ export default function LittleFires() {
         }
 
         .details-richtext .task-checkbox:checked {
-          background: linear-gradient(135deg, #53745f, #a8e6cf);
-          border-color: #a8e6cf;
+          background: linear-gradient(135deg, #53745f, #6a8f76);
+          border-color: #53745f;
         }
 
         .details-richtext .task-checkbox:checked::after {
@@ -4054,7 +4068,7 @@ export default function LittleFires() {
           top: 50%;
           left: 50%;
           transform: translate(-50%, -50%);
-          color: #1a1a2e;
+          color: #ffffff;
           font-weight: bold;
           font-size: 14px;
         }
@@ -5066,7 +5080,7 @@ export default function LittleFires() {
 
         .calendar-checkbox input[type="checkbox"]:checked {
           background: linear-gradient(135deg, #53745f, #6a8f76);
-          border-color: #6a8f76;
+          border-color: #53745f;
         }
 
         .calendar-checkbox input[type="checkbox"]:checked::after {
@@ -5405,8 +5419,8 @@ export default function LittleFires() {
         }
 
         .list-badge.work {
-          background: linear-gradient(135deg, #53745f, #a8e6cf);
-          color: #1a1a2e;
+          background: linear-gradient(135deg, #53745f, #6a8f76);
+          color: #ffffff;
         }
 
         .list-badge.home {
@@ -5547,8 +5561,8 @@ export default function LittleFires() {
         }
 
         .note-content .task-checkbox:checked {
-          background: linear-gradient(135deg, #53745f, #a8e6cf);
-          border-color: #a8e6cf;
+          background: linear-gradient(135deg, #53745f, #6a8f76);
+          border-color: #53745f;
         }
 
         .note-content .task-checkbox:checked::after {
@@ -5557,7 +5571,7 @@ export default function LittleFires() {
           top: 50%;
           left: 50%;
           transform: translate(-50%, -50%);
-          color: #1a1a2e;
+          color: #ffffff;
           font-weight: bold;
           font-size: 12px;
         }
@@ -8022,7 +8036,7 @@ export default function LittleFires() {
                       personal: '#6a9d5f',
                       work: '#53745f',
                       home: '#4a7a3a',
-                      travel: '#a8e6cf',
+                      travel: '#6a8f76',
                       kids: '#f472b6'
                     };
                     

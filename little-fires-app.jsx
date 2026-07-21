@@ -71,6 +71,10 @@ export default function LittleFires() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentList, setCurrentList] = useState('master');
   const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
+  const [archiveDropdownOpen, setArchiveDropdownOpen] = useState(false);
+  const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
+  const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
+  const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
   const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({}); // Track which archive sections are collapsed
   const [selectedPriority, setSelectedPriority] = useState('low');
   const [selectedChild, setSelectedChild] = useState(null);
@@ -206,6 +210,8 @@ export default function LittleFires() {
   const [loggedMinutes, setLoggedMinutes] = useState(0);
   const [timerDuration, setTimerDuration] = useState(''); // Duration in seconds for progress ring, blank by default
   const [logStartTime, setLogStartTime] = useState(null);
+  const [pausedTime, setPausedTime] = useState(0); // Track when pause started
+  const [totalPausedTime, setTotalPausedTime] = useState(0); // Track cumulative pause duration in ms
   const [editingTimeLog, setEditingTimeLog] = useState(null);
   const [timeLogFocus, setTimeLogFocus] = useState('');
   const [timeLogDescription, setTimeLogDescription] = useState('');
@@ -300,15 +306,16 @@ export default function LittleFires() {
   // Timer for time logging
   useEffect(() => {
     let interval;
-    if (isLogging && logStartTime) {
+    if (logStartTime) {
+      // Keep calculating time as long as logStartTime exists, regardless of isLogging
       interval = setInterval(() => {
         const now = Date.now();
-        const elapsedMinutes = Math.floor((now - logStartTime) / 60000);
-        setLoggedMinutes(elapsedMinutes);
+        const elapsedMinutes = Math.floor((now - logStartTime - totalPausedTime) / 60000);
+        setLoggedMinutes(Math.max(0, elapsedMinutes));
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isLogging, logStartTime]);
+  }, [logStartTime, totalPausedTime]);
 
   useEffect(() => {
     localStorage.setItem('little_fires_archived', JSON.stringify(archivedTasks));
@@ -352,6 +359,29 @@ export default function LittleFires() {
     
     return () => clearTimeout(midnightTimeout);
   }, []);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (archiveDropdownOpen && !e.target.closest('[data-archive-dropdown]')) {
+        setArchiveDropdownOpen(false);
+      }
+      if (goalDropdownOpen && !e.target.closest('[data-goal-dropdown]')) {
+        setGoalDropdownOpen(false);
+      }
+      if (taskListDropdownOpen && !e.target.closest('[data-task-list-dropdown]')) {
+        setTaskListDropdownOpen(false);
+      }
+      if (timeDurationDropdownOpen && !e.target.closest('[data-time-duration-dropdown]')) {
+        setTimeDurationDropdownOpen(false);
+      }
+    };
+
+    if (archiveDropdownOpen || goalDropdownOpen || taskListDropdownOpen || timeDurationDropdownOpen) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [archiveDropdownOpen, goalDropdownOpen, taskListDropdownOpen, timeDurationDropdownOpen]);
 
   const getCurrentTasks = () => {
     if (currentList === 'master') {
@@ -2064,6 +2094,22 @@ export default function LittleFires() {
                 }
               }}
               onClick={(e) => e.stopPropagation()}
+              onPaste={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Get plain text from clipboard
+                const text = e.clipboardData?.getData('text/plain') || '';
+                
+                // Insert plain text without formatting
+                const selection = window.getSelection();
+                if (selection.rangeCount > 0) {
+                  selection.getRangeAt(0).deleteContents();
+                  const textNode = document.createTextNode(text);
+                  selection.getRangeAt(0).insertNode(textNode);
+                  selection.collapseToEnd();
+                }
+              }}
               onKeyDown={(e) => {
                 e.stopPropagation();
                 
@@ -6189,6 +6235,22 @@ export default function LittleFires() {
                           suppressContentEditableWarning
                           onBlur={(e) => updateNote(note.id, e.currentTarget.innerHTML)}
                           onClick={(e) => e.stopPropagation()}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            
+                            // Get plain text from clipboard
+                            const text = e.clipboardData?.getData('text/plain') || '';
+                            
+                            // Insert plain text without formatting
+                            const selection = window.getSelection();
+                            if (selection.rangeCount > 0) {
+                              selection.getRangeAt(0).deleteContents();
+                              const textNode = document.createTextNode(text);
+                              selection.getRangeAt(0).insertNode(textNode);
+                              selection.collapseToEnd();
+                            }
+                          }}
                           onKeyDown={(e) => {
                             e.stopPropagation();
                             
@@ -6485,6 +6547,7 @@ export default function LittleFires() {
                                 setLoggedMinutes(0);
                                 setIsLogging(false);
                                 setLogStartTime(null);
+                        setPausedTime(0);
                               }}
                               style={{width: 'auto', padding: '12px 30px'}}
                             >
@@ -7327,31 +7390,90 @@ export default function LittleFires() {
                         }}>
                           Goal
                         </div>
-                        <div className="project-date-field" style={{width: '100%'}}>
-                          <select
-                            value={project.goalId || ''}
-                            onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { 
-                              goalId: e.target.value ? parseInt(e.target.value) : null 
-                            })}
+                        <div className="project-date-field" data-goal-dropdown style={{width: '100%', position: 'relative'}}>
+                          <div
+                            onClick={() => setGoalDropdownOpen(!goalDropdownOpen)}
                             style={{
                               padding: '10px',
-                              background: 'rgba(42, 42, 62, 0.8)',
+                              background: 'rgba(42, 42, 62, 1)',
                               border: '2px solid rgba(83, 116, 95, 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
                               cursor: 'pointer',
                               flex: 1,
-                              width: '100%'
+                              width: '100%',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center'
                             }}
                           >
-                            <option value="">No Goal</option>
-                            {(goals[selectedProject.listName] || []).map(goal => (
-                              <option key={goal.id} value={goal.id}>
-                                {goal.name}
-                              </option>
-                            ))}
-                          </select>
+                            <span>{project.goalId ? (goals[selectedProject.listName] || []).find(g => g.id === project.goalId)?.name || 'No Goal' : 'No Goal'}</span>
+                            <span style={{
+                              transform: goalDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                              transition: 'transform 0.3s ease',
+                              fontSize: '0.9rem'
+                            }}>▼</span>
+                          </div>
+
+                          {/* Goal Dropdown Options */}
+                          {goalDropdownOpen && (
+                            <div style={{
+                              position: 'absolute',
+                              top: '100%',
+                              left: '0',
+                              right: '0',
+                              marginTop: '-8px',
+                              background: 'rgba(42, 42, 62, 1)',
+                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              borderRadius: '10px',
+                              overflow: 'hidden',
+                              zIndex: 1000,
+                              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                            }}>
+                              <div
+                                onClick={() => {
+                                  updateProject(selectedProject.listName, selectedProject.id, { goalId: null });
+                                  setGoalDropdownOpen(false);
+                                }}
+                                style={{
+                                  padding: '10px',
+                                  color: '#f4e8d8',
+                                  fontSize: '0.95rem',
+                                  cursor: 'pointer',
+                                  background: !project.goalId ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                  borderBottom: '1px solid rgba(83, 116, 95, 0.2)',
+                                  transition: 'background 0.2s ease'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOut={(e) => e.currentTarget.style.background = !project.goalId ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                              >
+                                No Goal
+                              </div>
+                              {(goals[selectedProject.listName] || []).map((goal, idx) => (
+                                <div
+                                  key={goal.id}
+                                  onClick={() => {
+                                    updateProject(selectedProject.listName, selectedProject.id, { goalId: goal.id });
+                                    setGoalDropdownOpen(false);
+                                  }}
+                                  style={{
+                                    padding: '10px',
+                                    color: '#f4e8d8',
+                                    fontSize: '0.95rem',
+                                    cursor: 'pointer',
+                                    background: project.goalId === goal.id ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                    borderBottom: idx < (goals[selectedProject.listName]?.length - 1 || 0) ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                    transition: 'background 0.2s ease'
+                                  }}
+                                  onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                                  onMouseOut={(e) => e.currentTarget.style.background = project.goalId === goal.id ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                >
+                                  {goal.name}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -7392,18 +7514,74 @@ export default function LittleFires() {
                             />
                           </div>
                           <div style={{display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px'}}>
-                            <select
-                              value={projectTaskList}
-                              onChange={(e) => setProjectTaskList(e.target.value)}
-                              className="project-selector"
-                              style={{flex: 1}}
-                            >
-                              <option value="personal">Personal</option>
-                              <option value="work">Work</option>
-                              <option value="home">Home</option>
-                              <option value="travel">Travel</option>
-                              <option value="kids">Kids</option>
-                            </select>
+                            <div data-task-list-dropdown style={{flex: 1, position: 'relative'}}>
+                              <div
+                                onClick={() => setTaskListDropdownOpen(!taskListDropdownOpen)}
+                                style={{
+                                  padding: '10px',
+                                  background: 'rgba(42, 42, 62, 1)',
+                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  borderRadius: '10px',
+                                  color: '#f4e8d8',
+                                  fontSize: '0.95rem',
+                                  cursor: 'pointer',
+                                  width: '100%',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  fontFamily: 'Nunito, sans-serif'
+                                }}
+                              >
+                                <span style={{textTransform: 'capitalize'}}>{projectTaskList}</span>
+                                <span style={{
+                                  transform: taskListDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                                  transition: 'transform 0.3s ease',
+                                  fontSize: '0.9rem'
+                                }}>▼</span>
+                              </div>
+
+                              {/* Task List Dropdown Options */}
+                              {taskListDropdownOpen && (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: '100%',
+                                  left: '0',
+                                  right: '0',
+                                  marginTop: '-8px',
+                                  background: 'rgba(42, 42, 62, 1)',
+                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  borderRadius: '10px',
+                                  overflow: 'hidden',
+                                  zIndex: 1000,
+                                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                                }}>
+                                  {['personal', 'work', 'home', 'travel', 'kids'].map((list, idx) => (
+                                    <div
+                                      key={list}
+                                      onClick={() => {
+                                        setProjectTaskList(list);
+                                        setTaskListDropdownOpen(false);
+                                      }}
+                                      style={{
+                                        padding: '10px',
+                                        color: '#f4e8d8',
+                                        fontSize: '0.95rem',
+                                        cursor: 'pointer',
+                                        background: projectTaskList === list ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                        borderBottom: idx < 4 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                        transition: 'background 0.2s ease',
+                                        textTransform: 'capitalize',
+                                        fontFamily: 'Nunito, sans-serif'
+                                      }}
+                                      onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                                      onMouseOut={(e) => e.currentTarget.style.background = projectTaskList === list ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                    >
+                                      {list}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                             <span 
                               className={`fire-flag-icon clickable ${projectTaskPriority === 'high' ? 'active' : ''}`}
                               onClick={() => setProjectTaskPriority(projectTaskPriority === 'high' ? 'low' : 'high')}
@@ -9030,6 +9208,7 @@ export default function LittleFires() {
                               setLoggedMinutes(0);
                               setIsLogging(false);
                               setLogStartTime(null);
+                        setPausedTime(0);
                             }}
                             style={{width: 'auto', padding: '12px 30px'}}
                           >
@@ -9377,6 +9556,8 @@ export default function LittleFires() {
                 setIsLogging(false);
                 setLoggedMinutes(0);
                 setLogStartTime(null);
+                        setPausedTime(0);
+                setPausedTime(0);
                 setTimeLogFocus('');
                 setTimeLogDescription('');
                 setTimeLogTakeAway('');
@@ -9394,14 +9575,26 @@ export default function LittleFires() {
                   <div 
                     onClick={() => {
                       if (!isLogging) {
-                        // Start logging
+                        // Resume logging
                         setIsLogging(true);
-                        setLogStartTime(Date.now());
-                        setLoggedMinutes(0);
+                        if (!logStartTime) {
+                          // First time starting
+                          setLogStartTime(Date.now());
+                          setTotalPausedTime(0);
+                          setPausedTime(0);
+                        setTotalPausedTime(0);
+                        } else {
+                          // Resuming - add pause duration to totalPausedTime
+                          if (pausedTime > 0) {
+                            setTotalPausedTime(prev => prev + (Date.now() - pausedTime));
+                          }
+                          setPausedTime(0);
+                        setTotalPausedTime(0);
+                        }
                       } else {
-                        // Stop logging (but keep modal open)
+                        // Pause logging - record when we paused
                         setIsLogging(false);
-                        setLogStartTime(null);
+                        setPausedTime(Date.now());
                       }
                     }}
                     style={{
@@ -9506,7 +9699,7 @@ export default function LittleFires() {
                       fontFamily: 'Quicksand, sans-serif',
                       fontSize: '2rem',
                       fontWeight: '600',
-                      color: isLogging ? '#53745f' : '#64748b',
+                      color: isLogging ? '#53745f' : '#a0aec0',
                       marginBottom: '15px',
                       letterSpacing: '0.05em'
                     }}>
@@ -9525,28 +9718,81 @@ export default function LittleFires() {
                     }}>
                       Duration:
                     </label>
-                    <select
-                      value={timerDuration}
-                      onChange={(e) => setTimerDuration(e.target.value === '' ? '' : Number(e.target.value))}
-                      style={{
-                        width: '100%',
-                        padding: '10px',
-                        background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
-                        borderRadius: '8px',
-                        color: '#f4e8d8',
-                        fontSize: '1rem',
-                        fontFamily: 'Quicksand, sans-serif',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      <option value="">Timer</option>
-                      <option value={300}>5 Minutes</option>
-                      <option value={420}>7 Minutes</option>
-                      <option value={600}>10 Minutes</option>
-                      <option value={1800}>30 Minutes</option>
-                      <option value={3600}>60 Minutes</option>
-                    </select>
+                    <div data-time-duration-dropdown style={{position: 'relative'}}>
+                      <div
+                        onClick={() => setTimeDurationDropdownOpen(!timeDurationDropdownOpen)}
+                        style={{
+                          width: '100%',
+                          padding: '10px',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          borderRadius: '8px',
+                          color: '#f4e8d8',
+                          fontSize: '1rem',
+                          fontFamily: 'Quicksand, sans-serif',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <span>{timerDuration === '' || timerDuration === 0 ? 'Timer' : timerDuration === 300 ? '5 Minutes' : timerDuration === 420 ? '7 Minutes' : timerDuration === 900 ? '15 Minutes' : timerDuration === 600 ? '10 Minutes' : timerDuration === 1800 ? '30 Minutes' : timerDuration === 3600 ? '60 Minutes' : 'Timer'}</span>
+                        <span style={{
+                          transform: timeDurationDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.3s ease',
+                          fontSize: '0.9rem'
+                        }}>▼</span>
+                      </div>
+
+                      {/* Duration Options */}
+                      {timeDurationDropdownOpen && (
+                        <div style={{
+                          position: 'absolute',
+                          top: '100%',
+                          left: '0',
+                          right: '0',
+                          marginTop: '-8px',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          zIndex: 1000,
+                          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                        }}>
+                          {[
+                            { value: '', label: 'Timer' },
+                            { value: 300, label: '5 Minutes' },
+                            { value: 420, label: '7 Minutes' },
+                            { value: 900, label: '15 Minutes' },
+                            { value: 600, label: '10 Minutes' },
+                            { value: 1800, label: '30 Minutes' },
+                            { value: 3600, label: '60 Minutes' }
+                          ].map((option, idx) => (
+                            <div
+                              key={option.value}
+                              onClick={() => {
+                                setTimerDuration(option.value === '' ? '' : option.value);
+                                setTimeDurationDropdownOpen(false);
+                              }}
+                              style={{
+                                padding: '10px',
+                                color: '#f4e8d8',
+                                fontSize: '1rem',
+                                cursor: 'pointer',
+                                background: timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                borderBottom: idx < 6 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                transition: 'background 0.2s ease',
+                                fontFamily: 'Quicksand, sans-serif'
+                              }}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                            >
+                              {option.label}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* Focus and Description Fields */}
@@ -9688,6 +9934,7 @@ export default function LittleFires() {
                         setIsLogging(false);
                         setLoggedMinutes(0);
                         setLogStartTime(null);
+                        setPausedTime(0);
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
@@ -9704,6 +9951,7 @@ export default function LittleFires() {
                         setIsLogging(false);
                         setLoggedMinutes(0);
                         setLogStartTime(null);
+                        setPausedTime(0);
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
@@ -10577,6 +10825,7 @@ export default function LittleFires() {
                 setIsLogging(false);
                 setLoggedMinutes(0);
                 setLogStartTime(null);
+                        setPausedTime(0);
                 setTimeLogFocus('');
                 setTimeLogDescription('');
                 setTimeLogTakeAway('');
@@ -10595,11 +10844,23 @@ export default function LittleFires() {
                     onClick={() => {
                       if (!isLogging) {
                         setIsLogging(true);
-                        setLogStartTime(Date.now());
-                        setLoggedMinutes(0);
+                        if (!logStartTime) {
+                          // First time starting
+                          setLogStartTime(Date.now());
+                          setTotalPausedTime(0);
+                          setPausedTime(0);
+                        setTotalPausedTime(0);
+                        } else {
+                          // Resuming - add pause duration to totalPausedTime
+                          if (pausedTime > 0) {
+                            setTotalPausedTime(prev => prev + (Date.now() - pausedTime));
+                          }
+                          setPausedTime(0);
+                        setTotalPausedTime(0);
+                        }
                       } else {
                         setIsLogging(false);
-                        setLogStartTime(null);
+                        setPausedTime(Date.now());
                       }
                     }}
                     style={{
@@ -10702,7 +10963,7 @@ export default function LittleFires() {
                       fontFamily: 'Quicksand, sans-serif',
                       fontSize: '2rem',
                       fontWeight: '600',
-                      color: isLogging ? '#53745f' : '#64748b',
+                      color: isLogging ? '#53745f' : '#a0aec0',
                       marginBottom: '15px',
                       letterSpacing: '0.05em'
                     }}>
@@ -10721,29 +10982,82 @@ export default function LittleFires() {
                     }}>
                       Duration:
                     </label>
-                    <select
-                      value={timerDuration}
-                      onChange={(e) => setTimerDuration(e.target.value === '' ? '' : Number(e.target.value))}
-                      style={{
-                        width: '100%',
-                        padding: '10px',
-                        background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
-                        borderRadius: '8px',
-                        color: '#f4e8d8',
-                        fontSize: '1rem',
-                        fontFamily: 'Quicksand, sans-serif',
-                        cursor: 'pointer',
-                        boxSizing: 'border-box'
-                      }}
-                    >
-                      <option value="">Timer</option>
-                      <option value={300}>5 Minutes</option>
-                      <option value={420}>7 Minutes</option>
-                      <option value={600}>10 Minutes</option>
-                      <option value={1800}>30 Minutes</option>
-                      <option value={3600}>60 Minutes</option>
-                    </select>
+                    <div data-time-duration-dropdown style={{position: 'relative'}}>
+                      <div
+                        onClick={() => setTimeDurationDropdownOpen(!timeDurationDropdownOpen)}
+                        style={{
+                          width: '100%',
+                          padding: '10px',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          borderRadius: '8px',
+                          color: '#f4e8d8',
+                          fontSize: '1rem',
+                          fontFamily: 'Quicksand, sans-serif',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          boxSizing: 'border-box'
+                        }}
+                      >
+                        <span>{timerDuration === '' || timerDuration === 0 ? 'Timer' : timerDuration === 300 ? '5 Minutes' : timerDuration === 420 ? '7 Minutes' : timerDuration === 900 ? '15 Minutes' : timerDuration === 600 ? '10 Minutes' : timerDuration === 1800 ? '30 Minutes' : timerDuration === 3600 ? '60 Minutes' : 'Timer'}</span>
+                        <span style={{
+                          transform: timeDurationDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.3s ease',
+                          fontSize: '0.9rem'
+                        }}>▼</span>
+                      </div>
+
+                      {/* Duration Options */}
+                      {timeDurationDropdownOpen && (
+                        <div style={{
+                          position: 'absolute',
+                          top: '100%',
+                          left: '0',
+                          right: '0',
+                          marginTop: '-8px',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          zIndex: 1000,
+                          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                        }}>
+                          {[
+                            { value: '', label: 'Timer' },
+                            { value: 300, label: '5 Minutes' },
+                            { value: 420, label: '7 Minutes' },
+                            { value: 900, label: '15 Minutes' },
+                            { value: 600, label: '10 Minutes' },
+                            { value: 1800, label: '30 Minutes' },
+                            { value: 3600, label: '60 Minutes' }
+                          ].map((option, idx) => (
+                            <div
+                              key={option.value}
+                              onClick={() => {
+                                setTimerDuration(option.value === '' ? '' : option.value);
+                                setTimeDurationDropdownOpen(false);
+                              }}
+                              style={{
+                                padding: '10px',
+                                color: '#f4e8d8',
+                                fontSize: '1rem',
+                                cursor: 'pointer',
+                                background: timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                borderBottom: idx < 6 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                transition: 'background 0.2s ease',
+                                fontFamily: 'Quicksand, sans-serif'
+                              }}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                            >
+                              {option.label}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* Focus Field */}
@@ -10869,6 +11183,7 @@ export default function LittleFires() {
                         setIsLogging(false);
                         setLoggedMinutes(0);
                         setLogStartTime(null);
+                        setPausedTime(0);
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
@@ -10885,6 +11200,7 @@ export default function LittleFires() {
                         setIsLogging(false);
                         setLoggedMinutes(0);
                         setLogStartTime(null);
+                        setPausedTime(0);
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
@@ -11321,36 +11637,85 @@ export default function LittleFires() {
           <div className="archive-section">
             <h2>Archive</h2>
             
-            {/* Picklist for Archive Type */}
-            <div style={{
-              padding: '0 40px',
-              marginBottom: '20px'
-            }}>
-              <select
-                value={archiveType}
-                onChange={(e) => setArchiveType(e.target.value)}
+            {/* Custom Dropdown for Archive Type */}
+            <div 
+              data-archive-dropdown
+              style={{
+                padding: '0 40px',
+                marginBottom: '20px',
+                position: 'relative'
+              }}
+            >
+              <div
+                onClick={() => setArchiveDropdownOpen(!archiveDropdownOpen)}
                 style={{
                   width: '100%',
                   padding: '16px 24px',
-                  background: 'rgba(42, 42, 62, 0.8)',
-                  border: '2px solid rgba(83, 116, 95, 0.2)',
-                  borderRadius: '25px',
+                  background: 'rgba(42, 42, 62, 1)',
+                  border: '2px solid rgba(83, 116, 95, 0.4)',
+                  borderRadius: '50px',
                   color: '#f4e8d8',
                   fontSize: '1rem',
                   fontWeight: 'normal',
                   fontFamily: 'Nunito, sans-serif',
                   cursor: 'pointer',
-                  appearance: 'none',
-                  outline: 'none',
+                  boxSizing: 'border-box',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
                   transition: 'all 0.3s ease',
-                  boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
-                  boxSizing: 'border-box'
+                  boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)'
                 }}
               >
-                <option value="tasks">Tasks</option>
-                <option value="goals">Goals</option>
-                <option value="projects">Projects</option>
-              </select>
+                <span style={{ textTransform: 'capitalize' }}>{archiveType}</span>
+                <span style={{
+                  transform: archiveDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.3s ease',
+                  fontSize: '1.2rem'
+                }}>▼</span>
+              </div>
+
+              {/* Dropdown Options */}
+              {archiveDropdownOpen && (
+                <div style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: '40px',
+                  right: '40px',
+                  marginTop: '-10px',
+                  background: 'rgba(42, 42, 62, 1)',
+                  border: '2px solid rgba(83, 116, 95, 0.4)',
+                  borderRadius: '20px',
+                  overflow: 'hidden',
+                  zIndex: 1000,
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                }}>
+                  {['tasks', 'goals', 'projects'].map((option, idx) => (
+                    <div
+                      key={option}
+                      onClick={() => {
+                        setArchiveType(option);
+                        setArchiveDropdownOpen(false);
+                      }}
+                      style={{
+                        padding: '16px 24px',
+                        color: '#f4e8d8',
+                        fontSize: '1rem',
+                        fontFamily: 'Nunito, sans-serif',
+                        cursor: 'pointer',
+                        background: archiveType === option ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                        borderBottom: idx < 2 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                        transition: 'background 0.2s ease',
+                        textTransform: 'capitalize'
+                      }}
+                      onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                      onMouseOut={(e) => e.currentTarget.style.background = archiveType === option ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                    >
+                      {option}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Seafoam Divider */}

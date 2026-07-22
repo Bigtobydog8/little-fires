@@ -75,6 +75,10 @@ export default function LittleFires() {
   const [reportTimeframe, setReportTimeframe] = useState('last3'); // 'thisMonth','lastMonth','last3','last6','allTime'
   const [reportChartType, setReportChartType] = useState('line'); // 'line' or 'bar'
   const [reportTimeframeDropdownOpen, setReportTimeframeDropdownOpen] = useState(false);
+  const [reportHoverIndex, setReportHoverIndex] = useState(null); // hovered bucket index for tooltip
+  const [reportHiddenLists, setReportHiddenLists] = useState({}); // { work: true } => hidden from chart
+  const [reportTaskStatus, setReportTaskStatus] = useState('complete'); // 'complete','open','both'
+  const [reportStatusDropdownOpen, setReportStatusDropdownOpen] = useState(false);
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -398,13 +402,16 @@ export default function LittleFires() {
       if (reportTimeframeDropdownOpen && !e.target.closest('[data-report-timeframe-dropdown]')) {
         setReportTimeframeDropdownOpen(false);
       }
+      if (reportStatusDropdownOpen && !e.target.closest('[data-report-status-dropdown]')) {
+        setReportStatusDropdownOpen(false);
+      }
     };
 
-    if (archiveDropdownOpen || goalDropdownOpen || taskListDropdownOpen || timeDurationDropdownOpen || reportTimeframeDropdownOpen) {
+    if (archiveDropdownOpen || goalDropdownOpen || taskListDropdownOpen || timeDurationDropdownOpen || reportTimeframeDropdownOpen || reportStatusDropdownOpen) {
       document.addEventListener('click', handleClickOutside);
       return () => document.removeEventListener('click', handleClickOutside);
     }
-  }, [archiveDropdownOpen, goalDropdownOpen, taskListDropdownOpen, timeDurationDropdownOpen, reportTimeframeDropdownOpen]);
+  }, [archiveDropdownOpen, goalDropdownOpen, taskListDropdownOpen, timeDurationDropdownOpen, reportTimeframeDropdownOpen, reportStatusDropdownOpen]);
 
   const getCurrentTasks = () => {
     if (currentList === 'master') {
@@ -12667,8 +12674,7 @@ export default function LittleFires() {
         )}
 
         {appMode === 'reports' && (
-          <div className="reports-section" style={{ padding: '0 40px 40px' }}>
-            <h2>Reports</h2>
+          <div className="reports-section" style={{ padding: '20px 40px 40px' }}>
 
             {(() => {
               const listKeys = ['personal', 'work', 'home', 'travel', 'kids'];
@@ -12676,7 +12682,7 @@ export default function LittleFires() {
                 personal: 'Personal', work: 'Work', home: 'Home', travel: 'Travel', kids: 'Kids'
               };
               const listColors = {
-                personal: '#6a9d5f', work: '#53745f', home: '#4a7a3a', travel: '#6a8f76', kids: '#f472b6'
+                personal: '#6a9d5f', work: '#3b82f6', home: '#4a7a3a', travel: '#7dd3fc', kids: '#f472b6'
               };
 
               // --- Determine date range and bucketing for the selected timeframe ---
@@ -12704,19 +12710,45 @@ export default function LittleFires() {
                 rangeStart = null; // computed after scanning tasks
               }
 
-              // --- Gather all completed tasks (active + archived) with completedAt ---
-              const completed = [];
+              // --- Gather tasks to plot based on the selected status filter ---
+              // 'complete' => completed tasks bucketed by completedAt
+              // 'open'     => open (non-completed, non-backlog) tasks by createdAt
+              // 'both'     => union of the two
+              const includeComplete = reportTaskStatus === 'complete' || reportTaskStatus === 'both';
+              const includeOpen = reportTaskStatus === 'open' || reportTaskStatus === 'both';
+              const completed = []; // { list, date } - tasks to plot
               listKeys.forEach(key => {
-                const scan = (arr) => {
+                const scan = (arr, fromArchive) => {
                   (Array.isArray(arr) ? arr : []).forEach(t => {
-                    if (t && t.completed && t.completedAt) {
-                      const d = new Date(t.completedAt);
-                      if (!isNaN(d)) completed.push({ list: key, date: d });
+                    if (!t) return;
+                    if (t.completed) {
+                      if (includeComplete && t.completedAt) {
+                        const d = new Date(t.completedAt);
+                        if (!isNaN(d)) completed.push({ list: key, date: d });
+                      }
+                    } else {
+                      // Open tasks: only from active lists, exclude backlog
+                      if (includeOpen && !fromArchive && t.section !== 'backlog' && t.createdAt) {
+                        const d = new Date(t.createdAt);
+                        if (!isNaN(d)) completed.push({ list: key, date: d });
+                      }
                     }
                   });
                 };
-                scan(allLists[key]);
-                scan(archivedTasks[key]);
+                scan(allLists[key], false);
+                scan(archivedTasks[key], true);
+              });
+
+              // --- Count current open and backlog tasks (active lists only) ---
+              // These are point-in-time counts, independent of the timeframe.
+              let openTasksCount = 0;
+              let backlogTasksCount = 0;
+              listKeys.forEach(key => {
+                (Array.isArray(allLists[key]) ? allLists[key] : []).forEach(t => {
+                  if (!t || t.completed) return;
+                  if (t.section === 'backlog') backlogTasksCount += 1;
+                  else openTasksCount += 1; // 'todo' or any non-backlog section
+                });
               });
 
               // For all-time, set rangeStart to earliest completion (or this month if none)
@@ -12791,8 +12823,11 @@ export default function LittleFires() {
                 }
               });
 
-              const grandTotal = listKeys.reduce((s, k) => s + totals[k], 0);
-              const maxCount = Math.max(1, ...listKeys.flatMap(k => series[k]));
+              // Lists currently visible (not toggled off in the legend)
+              const visibleKeys = listKeys.filter(k => !reportHiddenLists[k]);
+
+              const grandTotal = visibleKeys.reduce((s, k) => s + totals[k], 0);
+              const maxCount = Math.max(1, ...visibleKeys.flatMap(k => series[k]), ...(visibleKeys.length === 0 ? [1] : []));
 
               // --- Chart dimensions ---
               const chartW = 720, chartH = 340;
@@ -12811,22 +12846,72 @@ export default function LittleFires() {
               }
               const uniqueTicks = [...new Set(yTicks)];
 
-              // Bar layout (grouped)
+              // Bar layout (grouped) - width based on how many lists are visible
               const groupWidth = n > 0 ? plotW / n : plotW;
               const barGroupInner = groupWidth * 0.7;
-              const barWidth = barGroupInner / listKeys.length;
+              const barWidth = barGroupInner / Math.max(1, visibleKeys.length);
 
               // Label thinning to avoid crowding
               const maxLabels = 14;
               const labelStep = Math.ceil(n / maxLabels);
 
               return (
-                <div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {/* Controls */}
                   <div style={{
+                    order: 2,
                     display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'flex-end',
-                    marginBottom: '25px'
+                    marginBottom: '25px', marginTop: '25px'
                   }}>
+                    {/* Task Status dropdown */}
+                    <div style={{ minWidth: '200px' }}>
+                      <label style={{ display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
+                        Task Status:
+                      </label>
+                      <div data-report-status-dropdown style={{ position: 'relative' }}>
+                        <div
+                          onClick={() => setReportStatusDropdownOpen(!reportStatusDropdownOpen)}
+                          style={{
+                            width: '100%', padding: '10px', background: 'rgba(42, 42, 62, 1)',
+                            border: '2px solid rgba(83, 116, 95, 0.3)', borderRadius: '8px',
+                            color: '#f4e8d8', fontSize: '1rem', fontFamily: 'Quicksand, sans-serif',
+                            cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
+                          }}
+                        >
+                          <span>{({ complete: 'Complete', open: 'Open', both: 'Open + Complete' })[reportTaskStatus]}</span>
+                          <span style={{ transform: reportStatusDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)', transition: 'transform 0.3s ease', fontSize: '0.9rem', display: 'inline-block' }}>▼</span>
+                        </div>
+                        {reportStatusDropdownOpen && (
+                          <div style={{
+                            position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '-8px',
+                            background: 'rgba(42, 42, 62, 1)', border: '2px solid rgba(83, 116, 95, 0.3)',
+                            borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+                          }}>
+                            {[
+                              { value: 'complete', label: 'Complete' },
+                              { value: 'open', label: 'Open' },
+                              { value: 'both', label: 'Open + Complete' }
+                            ].map((opt, idx, arr) => (
+                              <div
+                                key={opt.value}
+                                onClick={() => { setReportTaskStatus(opt.value); setReportStatusDropdownOpen(false); }}
+                                style={{
+                                  padding: '10px', color: '#f4e8d8', fontSize: '1rem', cursor: 'pointer',
+                                  background: reportTaskStatus === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                  transition: 'background 0.2s ease', fontFamily: 'Quicksand, sans-serif'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOut={(e) => e.currentTarget.style.background = reportTaskStatus === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                              >
+                                {opt.label}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
                     {/* Timeframe dropdown */}
                     <div style={{ minWidth: '200px' }}>
                       <label style={{ display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
@@ -12904,25 +12989,56 @@ export default function LittleFires() {
                     </div>
                   </div>
 
-                  {/* Summary stat */}
+                  {/* Summary stats */}
                   <div style={{
-                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
-                    borderRadius: '12px', padding: '18px 22px', marginBottom: '20px', display: 'inline-block'
+                    order: 3,
+                    display: 'flex', flexWrap: 'wrap', gap: '15px', marginBottom: '20px'
                   }}>
-                    <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
-                      Tasks Completed
+                    <div style={{
+                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                      borderRadius: '12px', padding: '18px 22px', minWidth: '150px'
+                    }}>
+                      <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                        {({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
+                      </div>
+                      <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                        {grandTotal}
+                      </div>
                     </div>
-                    <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
-                      {grandTotal}
+
+                    <div style={{
+                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                      borderRadius: '12px', padding: '18px 22px', minWidth: '150px'
+                    }}>
+                      <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                        Open Tasks
+                      </div>
+                      <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                        {openTasksCount}
+                      </div>
+                    </div>
+
+                    <div style={{
+                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                      borderRadius: '12px', padding: '18px 22px', minWidth: '150px'
+                    }}>
+                      <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                        Backlog
+                      </div>
+                      <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                        {backlogTasksCount}
+                      </div>
                     </div>
                   </div>
 
                   {/* Chart card */}
                   <div style={{
+                    order: 1,
                     background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
                     borderRadius: '12px', padding: '20px', overflowX: 'auto'
                   }}>
-                    <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', minWidth: n > 20 ? '900px' : '100%', height: 'auto' }}>
+                    <div style={{ position: 'relative' }}>
+                    <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', minWidth: n > 20 ? '900px' : '100%', height: 'auto', display: 'block' }}>
                       {/* Y gridlines + labels */}
                       {uniqueTicks.map((tick, i) => (
                         <g key={'y' + i}>
@@ -12941,52 +13057,154 @@ export default function LittleFires() {
                         )
                       ))}
 
+                      {/* Hover vertical guide line */}
+                      {reportHoverIndex !== null && buckets[reportHoverIndex] && (
+                        <line
+                          x1={reportChartType === 'bar' ? padL + groupWidth * reportHoverIndex + groupWidth / 2 : xFor(reportHoverIndex)}
+                          y1={padT}
+                          x2={reportChartType === 'bar' ? padL + groupWidth * reportHoverIndex + groupWidth / 2 : xFor(reportHoverIndex)}
+                          y2={padT + plotH}
+                          stroke="rgba(255,255,255,0.25)" strokeWidth="1" strokeDasharray="4 4"
+                        />
+                      )}
+
                       {/* Data: bars or lines */}
                       {reportChartType === 'bar' ? (
                         buckets.map((b, i) => (
                           <g key={'bar' + i}>
-                            {listKeys.map((k, ki) => {
+                            {visibleKeys.map((k, ki) => {
                               const v = series[k][i];
                               const x = padL + groupWidth * i + (groupWidth - barGroupInner) / 2 + ki * barWidth;
                               const h = (plotH * v) / maxCount;
                               return v > 0 ? (
                                 <rect key={k} x={x} y={padT + plotH - h} width={Math.max(1, barWidth - 2)} height={h}
-                                  fill={listColors[k]} rx="2" opacity="0.9" />
+                                  fill={listColors[k]} rx="2" opacity={reportHoverIndex === null || reportHoverIndex === i ? 0.9 : 0.35}
+                                  style={{ transition: 'opacity 0.15s ease' }} />
                               ) : null;
                             })}
                           </g>
                         ))
                       ) : (
-                        listKeys.map(k => {
+                        visibleKeys.map(k => {
                           const pts = series[k].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
                           return (
                             <g key={'line' + k}>
                               <polyline points={pts} fill="none" stroke={listColors[k]} strokeWidth="2.5"
                                 strokeLinejoin="round" strokeLinecap="round" opacity="0.95" />
                               {series[k].map((v, i) => (
-                                <circle key={i} cx={xFor(i)} cy={yFor(v)} r="3" fill={listColors[k]} />
+                                <circle key={i} cx={xFor(i)} cy={yFor(v)}
+                                  r={reportHoverIndex === i ? 5 : 3}
+                                  fill={listColors[k]}
+                                  stroke={reportHoverIndex === i ? '#fff' : 'none'}
+                                  strokeWidth={reportHoverIndex === i ? 1.5 : 0}
+                                  style={{ transition: 'r 0.1s ease' }} />
                               ))}
                             </g>
                           );
                         })
                       )}
+
+                      {/* Invisible hover-catcher columns */}
+                      {buckets.map((b, i) => {
+                        const colCenter = reportChartType === 'bar' ? padL + groupWidth * i + groupWidth / 2 : xFor(i);
+                        const colW = n <= 1 ? plotW : plotW / n;
+                        return (
+                          <rect key={'hit' + i}
+                            x={colCenter - colW / 2} y={padT} width={colW} height={plotH}
+                            fill="transparent"
+                            onMouseEnter={() => setReportHoverIndex(i)}
+                            onMouseLeave={() => setReportHoverIndex(null)}
+                            style={{ cursor: 'pointer' }}
+                          />
+                        );
+                      })}
                     </svg>
 
-                    {/* Legend */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px', marginTop: '15px', justifyContent: 'center' }}>
-                      {listKeys.map(k => (
-                        <div key={k} style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                          <span style={{ width: '14px', height: '14px', borderRadius: '4px', background: listColors[k], display: 'inline-block' }}></span>
-                          <span style={{ color: '#f4e8d8', fontSize: '0.9rem', fontFamily: 'Quicksand, sans-serif' }}>
-                            {listLabels[k]} <span style={{ color: '#b8a99a' }}>({totals[k]})</span>
-                          </span>
+                    {/* Tooltip */}
+                    {reportHoverIndex !== null && buckets[reportHoverIndex] && (() => {
+                      const b = buckets[reportHoverIndex];
+                      const bucketTotal = visibleKeys.reduce((s, k) => s + series[k][reportHoverIndex], 0);
+                      // Position as a percentage across the plot area
+                      const centerX = reportChartType === 'bar' ? padL + groupWidth * reportHoverIndex + groupWidth / 2 : xFor(reportHoverIndex);
+                      const leftPct = (centerX / chartW) * 100;
+                      const onRightHalf = leftPct > 55;
+                      // Build a readable date range label
+                      const fmt = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: bucketUnit === 'month' ? 'numeric' : undefined });
+                      let rangeLabel;
+                      if (bucketUnit === 'day') rangeLabel = fmt(b.start);
+                      else if (bucketUnit === 'week') rangeLabel = `${fmt(b.start)} – ${fmt(b.end)}`;
+                      else rangeLabel = b.start.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                      return (
+                        <div style={{
+                          position: 'absolute',
+                          left: `${leftPct}%`,
+                          top: '8px',
+                          transform: onRightHalf ? 'translateX(-105%)' : 'translateX(5%)',
+                          background: 'rgba(30, 30, 46, 0.97)',
+                          border: '1px solid rgba(83, 116, 95, 0.5)',
+                          borderRadius: '10px',
+                          padding: '10px 14px',
+                          pointerEvents: 'none',
+                          minWidth: '150px',
+                          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                          zIndex: 10,
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}>
+                          <div style={{ color: '#f4e8d8', fontSize: '0.85rem', fontWeight: '700', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px' }}>
+                            {rangeLabel}
+                          </div>
+                          {visibleKeys.map(k => (
+                            <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '3px' }}>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span style={{ width: '10px', height: '10px', borderRadius: '3px', background: listColors[k], display: 'inline-block' }}></span>
+                                <span style={{ color: '#b8a99a', fontSize: '0.8rem' }}>{listLabels[k]}</span>
+                              </span>
+                              <span style={{ color: '#f4e8d8', fontSize: '0.85rem', fontWeight: '600' }}>{series[k][reportHoverIndex]}</span>
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '7px', paddingTop: '6px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                            <span style={{ color: '#f4e8d8', fontSize: '0.8rem', fontWeight: '700' }}>Total</span>
+                            <span style={{ color: '#f4e8d8', fontSize: '0.85rem', fontWeight: '700' }}>{bucketTotal}</span>
+                          </div>
                         </div>
-                      ))}
+                      );
+                    })()}
+                    </div>
+
+                    {/* Legend - click to toggle a list on/off in the chart */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px', marginTop: '15px', justifyContent: 'center' }}>
+                      {listKeys.map(k => {
+                        const hidden = !!reportHiddenLists[k];
+                        return (
+                          <div
+                            key={k}
+                            onClick={() => setReportHiddenLists(prev => ({ ...prev, [k]: !prev[k] }))}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: '7px', cursor: 'pointer',
+                              opacity: hidden ? 0.4 : 1, transition: 'opacity 0.2s ease', userSelect: 'none'
+                            }}
+                            title={hidden ? `Show ${listLabels[k]}` : `Hide ${listLabels[k]}`}
+                          >
+                            <span style={{
+                              width: '14px', height: '14px', borderRadius: '4px',
+                              background: hidden ? 'transparent' : listColors[k],
+                              border: `2px solid ${listColors[k]}`,
+                              display: 'inline-block', boxSizing: 'border-box'
+                            }}></span>
+                            <span style={{
+                              color: '#f4e8d8', fontSize: '0.9rem', fontFamily: 'Quicksand, sans-serif',
+                              textDecoration: hidden ? 'line-through' : 'none'
+                            }}>
+                              {listLabels[k]} <span style={{ color: '#b8a99a' }}>({totals[k]})</span>
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
                   {grandTotal === 0 && (
-                    <div style={{ textAlign: 'center', color: '#b8a99a', fontFamily: 'Quicksand, sans-serif', marginTop: '20px', fontSize: '0.95rem' }}>
+                    <div style={{ order: 4, textAlign: 'center', color: '#b8a99a', fontFamily: 'Quicksand, sans-serif', marginTop: '20px', fontSize: '0.95rem' }}>
                       No completed tasks in this timeframe.
                     </div>
                   )}

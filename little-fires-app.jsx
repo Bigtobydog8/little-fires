@@ -67,11 +67,14 @@ export default function LittleFires() {
     document.title = 'Little Fires';
   }, []);
 
-  const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar'
+  const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar', 'reports'
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentList, setCurrentList] = useState('master');
   const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
   const [archiveDropdownOpen, setArchiveDropdownOpen] = useState(false);
+  const [reportTimeframe, setReportTimeframe] = useState('last3'); // 'thisMonth','lastMonth','last3','last6','allTime'
+  const [reportChartType, setReportChartType] = useState('line'); // 'line' or 'bar'
+  const [reportTimeframeDropdownOpen, setReportTimeframeDropdownOpen] = useState(false);
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -208,6 +211,7 @@ export default function LittleFires() {
   const [showTimeLogger, setShowTimeLogger] = useState(false);
   const [isLogging, setIsLogging] = useState(false);
   const [loggedMinutes, setLoggedMinutes] = useState(0);
+  const [loggedSeconds, setLoggedSeconds] = useState(0); // Accumulated seconds while logging
   const [timerDuration, setTimerDuration] = useState(''); // Duration in seconds for progress ring, blank by default
   const [logStartTime, setLogStartTime] = useState(null);
   const [pausedTime, setPausedTime] = useState(0); // Track when pause started
@@ -303,19 +307,35 @@ export default function LittleFires() {
     localStorage.setItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
   }, [standaloneTimeLogs]);
 
-  // Timer for time logging
+  // Timer for time logging - accumulator approach.
+  // While isLogging is true, accumulate elapsed time in fine increments so the
+  // progress ring moves smoothly and responds instantly on start/pause. When
+  // paused, the interval stops and the value holds. Resuming continues from
+  // where it left off. Uses real elapsed time between ticks (not a fixed step)
+  // so it stays accurate even if the interval is throttled.
   useEffect(() => {
     let interval;
-    if (logStartTime) {
-      // Keep calculating time as long as logStartTime exists, regardless of isLogging
+    let lastTick = Date.now();
+    if (isLogging) {
+      lastTick = Date.now();
       interval = setInterval(() => {
         const now = Date.now();
-        const elapsedMinutes = Math.floor((now - logStartTime - totalPausedTime) / 60000);
-        setLoggedMinutes(Math.max(0, elapsedMinutes));
-      }, 1000);
+        const delta = (now - lastTick) / 1000; // seconds elapsed since last tick
+        lastTick = now;
+        setLoggedSeconds(prev => prev + delta);
+      }, 50);
     }
     return () => clearInterval(interval);
-  }, [logStartTime, totalPausedTime]);
+  }, [isLogging]);
+
+  // Derive whole minutes from accumulated seconds for display/logging.
+  // Only while the live timer is active or has accumulated time, so editing
+  // a saved log (which sets loggedMinutes directly) isn't clobbered.
+  useEffect(() => {
+    if (isLogging || loggedSeconds > 0) {
+      setLoggedMinutes(Math.floor(loggedSeconds / 60));
+    }
+  }, [loggedSeconds, isLogging]);
 
   useEffect(() => {
     localStorage.setItem('little_fires_archived', JSON.stringify(archivedTasks));
@@ -375,13 +395,16 @@ export default function LittleFires() {
       if (timeDurationDropdownOpen && !e.target.closest('[data-time-duration-dropdown]')) {
         setTimeDurationDropdownOpen(false);
       }
+      if (reportTimeframeDropdownOpen && !e.target.closest('[data-report-timeframe-dropdown]')) {
+        setReportTimeframeDropdownOpen(false);
+      }
     };
 
-    if (archiveDropdownOpen || goalDropdownOpen || taskListDropdownOpen || timeDurationDropdownOpen) {
+    if (archiveDropdownOpen || goalDropdownOpen || taskListDropdownOpen || timeDurationDropdownOpen || reportTimeframeDropdownOpen) {
       document.addEventListener('click', handleClickOutside);
       return () => document.removeEventListener('click', handleClickOutside);
     }
-  }, [archiveDropdownOpen, goalDropdownOpen, taskListDropdownOpen, timeDurationDropdownOpen]);
+  }, [archiveDropdownOpen, goalDropdownOpen, taskListDropdownOpen, timeDurationDropdownOpen, reportTimeframeDropdownOpen]);
 
   const getCurrentTasks = () => {
     if (currentList === 'master') {
@@ -1735,6 +1758,79 @@ export default function LittleFires() {
     const saveTimeoutRef = React.useRef(null);
     const clickTimeoutRef = React.useRef(null);
 
+    // Sync parent checkboxes based on their indented children.
+    // A parent is a line whose immediately-following lines are more indented.
+    // Its direct children are the more-indented lines up until the indent
+    // returns to the parent's level or shallower. This does NOT assume a fixed
+    // 20px step - it works with any indent values.
+    const syncParentCheckboxes = (detailsArea) => {
+      try {
+        if (!detailsArea) return;
+        const lines = Array.from(detailsArea.querySelectorAll('.checkbox-line'));
+        if (lines.length < 2) return;
+        
+        const getIndent = (line) => parseInt(line.style.marginLeft || '0') || 0;
+        const items = lines.map((line) => ({
+          line,
+          indent: getIndent(line),
+          checkbox: line.querySelector('.task-checkbox')
+        }));
+        
+        // Determine, for each item, the set of DIRECT children.
+        // Direct children = the immediately-following run of lines that are
+        // more indented, where a "direct" child is at the shallowest indent
+        // within that run (deeper ones are grandchildren).
+        // Process parents from those deepest in the tree upward so nested
+        // chains resolve. We do multiple passes until stable.
+        let changed = true;
+        let guard = 0;
+        while (changed && guard < 20) {
+          changed = false;
+          guard++;
+          for (let i = 0; i < items.length; i++) {
+            const parent = items[i];
+            if (!parent.checkbox) continue;
+            
+            // Gather the run of following lines more indented than this one
+            const run = [];
+            for (let j = i + 1; j < items.length; j++) {
+              if (items[j].indent <= parent.indent) break;
+              run.push(items[j]);
+            }
+            if (run.length === 0) continue;
+            
+            // Direct children = lines in the run at the minimum indent of the run
+            const minChildIndent = Math.min(...run.map(r => r.indent));
+            const directChildren = run.filter(r => r.indent === minChildIndent && r.checkbox);
+            if (directChildren.length === 0) continue;
+            
+            const allChecked = directChildren.every(r => r.checkbox.checked);
+            if (parent.checkbox.checked !== allChecked) {
+              parent.checkbox.checked = allChecked;
+              changed = true;
+            }
+            if (allChecked) {
+              parent.checkbox.setAttribute('checked', 'checked');
+            } else {
+              parent.checkbox.removeAttribute('checked');
+            }
+          }
+        }
+        
+        // Persist all checkbox states as attributes for save/reload
+        items.forEach(it => {
+          if (!it.checkbox) return;
+          if (it.checkbox.checked) {
+            it.checkbox.setAttribute('checked', 'checked');
+          } else {
+            it.checkbox.removeAttribute('checked');
+          }
+        });
+      } catch (err) {
+        console.error('syncParentCheckboxes error:', err);
+      }
+    };
+
     // Set initial content only when task first expands
     React.useEffect(() => {
       if (isExpanded && detailsRef.current) {
@@ -1742,6 +1838,8 @@ export default function LittleFires() {
         if (!hasSetInitialContent.current) {
           detailsRef.current.innerHTML = task.details || '';
           hasSetInitialContent.current = true;
+          // After loading, reflect any already-complete child sets on their parents
+          setTimeout(() => syncParentCheckboxes(detailsRef.current), 0);
         }
       }
       
@@ -1794,33 +1892,48 @@ export default function LittleFires() {
       
       // Attach onChange handlers to existing checkboxes
       const detailsArea = taskRef.current?.querySelector('.details-richtext');
+      
+      // Delegated listener - use BOTH click and change for reliability inside
+      // contentEditable (change doesn't always fire for checkboxes there).
+      // After a click, the checked state is updated synchronously, but we defer
+      // with a microtask/timeout to be safe, then sync parents.
+      const runSync = () => {
+        syncParentCheckboxes(detailsArea);
+      };
+      const handleDelegatedClick = (evt) => {
+        if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
+          // Let the browser finish toggling, then sync
+          setTimeout(runSync, 0);
+        }
+      };
+      const handleDelegatedChange = (evt) => {
+        if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
+          runSync();
+        }
+      };
       if (detailsArea) {
+        detailsArea.addEventListener('change', handleDelegatedChange);
+        detailsArea.addEventListener('click', handleDelegatedClick);
+        
         const checkboxes = detailsArea.querySelectorAll('.task-checkbox');
         checkboxes.forEach(checkbox => {
           checkbox.onclick = (evt) => {
-            evt.stopPropagation();
-            // Focus the details area to enable editing if needed
+            // Focus the details area to enable editing if needed.
+            // Do NOT stopPropagation - it would block delegated listeners.
             if (document.activeElement !== detailsArea) {
               detailsArea.focus();
             }
           };
-          checkbox.onchange = (evt) => {
-            evt.stopPropagation();
-            // Just update checkbox attributes, save happens on blur
-            const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
-            allCheckboxes.forEach(cb => {
-              if (cb.checked) {
-                cb.setAttribute('checked', 'checked');
-              } else {
-                cb.removeAttribute('checked');
-              }
-            });
-          };
+          checkbox.onchange = null;
         });
       }
       
       return () => {
         document.removeEventListener('mousedown', handleClickOutside);
+        if (detailsArea) {
+          detailsArea.removeEventListener('change', handleDelegatedChange);
+          detailsArea.removeEventListener('click', handleDelegatedClick);
+        }
       };
     }, [isExpanded, listName, index]);
 
@@ -1997,58 +2110,85 @@ export default function LittleFires() {
                   } else {
                     const range = selection.getRangeAt(0);
                     
-                    // Create a div wrapper for the checkbox line
-                    const checkboxLine = document.createElement('div');
-                    checkboxLine.className = 'checkbox-line';
-                    checkboxLine.style.display = 'block';
-                    
-                    const checkbox = document.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.className = 'task-checkbox';
-                    checkbox.onclick = (evt) => {
-                      evt.stopPropagation();
-                      // Focus the details area to enable editing if needed
-                      const detailsArea = evt.target.closest('.details-richtext');
-                      if (detailsArea && document.activeElement !== detailsArea) {
-                        detailsArea.focus();
-                      }
-                    };
-                    checkbox.onchange = (evt) => {
-                      evt.stopPropagation();
-                      const detailsArea = evt.target.closest('.details-richtext');
-                      if (detailsArea) {
-                        // Just update checkbox attributes, save happens on blur
-                        const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
-                        allCheckboxes.forEach(cb => {
-                          if (cb.checked) {
-                            cb.setAttribute('checked', 'checked');
-                          } else {
-                            cb.removeAttribute('checked');
-                          }
-                        });
-                      }
+                    // Helper to build a fresh checkbox line
+                    const buildCheckboxLine = () => {
+                      const checkbox = document.createElement('input');
+                      checkbox.type = 'checkbox';
+                      checkbox.className = 'task-checkbox';
+                      checkbox.onclick = (evt) => {
+                        // Don't stopPropagation - it blocks the delegated change listener
+                        const detailsArea = evt.target.closest('.details-richtext');
+                        if (detailsArea && document.activeElement !== detailsArea) {
+                          detailsArea.focus();
+                        }
+                      };
+                      // No inline onchange - the delegated change listener on the
+                      // details area handles parent auto-check for all checkboxes.
+                      const line = document.createElement('div');
+                      line.className = 'checkbox-line';
+                      line.style.display = 'block';
+                      const span = document.createElement('span');
+                      span.contentEditable = 'true';
+                      span.innerHTML = '&nbsp;';
+                      line.appendChild(checkbox);
+                      line.appendChild(span);
+                      return { line, span };
                     };
                     
-                    const textSpan = document.createElement('span');
-                    textSpan.innerHTML = '&nbsp;';
-                    textSpan.contentEditable = 'true';
+                    // Find the current line/block the cursor is on
+                    let currentNode = range.startContainer;
+                    let currentLine = currentNode.nodeType === Node.ELEMENT_NODE ?
+                      currentNode : currentNode.parentElement;
                     
-                    checkboxLine.appendChild(checkbox);
-                    checkboxLine.appendChild(textSpan);
+                    // Walk up to find the direct child of detailsArea (the line container)
+                    while (currentLine && currentLine.parentElement !== detailsArea && currentLine !== detailsArea) {
+                      currentLine = currentLine.parentElement;
+                    }
                     
-                    // Insert line break before if needed
-                    const beforeBreak = document.createElement('br');
-                    range.insertNode(beforeBreak);
-                    range.collapse(false);
+                    // If it's a checkbox line that still has a live checkbox, don't double-add.
+                    // But if it's a leftover empty checkbox-line (checkbox was deleted),
+                    // fall through and treat it as a normal empty line.
+                    if (currentLine && currentLine.classList && currentLine.classList.contains('checkbox-line')) {
+                      const hasCheckbox = currentLine.querySelector('.task-checkbox');
+                      const lineText = (currentLine.textContent || '').replace(/\u00A0/g, '').trim();
+                      if (hasCheckbox && lineText !== '') {
+                        // A real, populated checkbox line - don't add another
+                        return;
+                      }
+                      if (hasCheckbox && lineText === '') {
+                        // Empty checkbox line that still has its box - nothing to do
+                        return;
+                      }
+                      // else: leftover markup with no checkbox - fall through to convert it
+                    }
                     
-                    range.insertNode(checkboxLine);
+                    const { line: checkboxLine, span: textSpan } = buildCheckboxLine();
                     
-                    // Insert line break after
-                    const afterBreak = document.createElement('br');
-                    range.collapse(false);
-                    range.insertNode(afterBreak);
+                    // Determine if the current line has text
+                    const isProperLine = currentLine && currentLine !== detailsArea && currentLine.parentElement === detailsArea;
+                    const currentLineText = isProperLine ? (currentLine.textContent || '').replace(/\u00A0/g, '').trim() : '';
                     
-                    // Move cursor into the text span
+                    if (isProperLine && currentLineText === '') {
+                      // Empty line (including leftover empty checkbox-line) - replace with checkbox line
+                      currentLine.parentElement.replaceChild(checkboxLine, currentLine);
+                    } else if (isProperLine && currentLineText !== '') {
+                      // Line has text - add checkbox on the NEXT line
+                      currentLine.parentElement.insertBefore(checkboxLine, currentLine.nextSibling);
+                    } else {
+                      // Cursor is directly in detailsArea (no wrapping line div)
+                      // Check if there's any text content at the cursor position on this "line"
+                      const areaText = (detailsArea.textContent || '').replace(/\u00A0/g, '').trim();
+                      if (areaText === '') {
+                        // Empty details area - just add the checkbox at the start
+                        detailsArea.appendChild(checkboxLine);
+                      } else {
+                        // There's text - insert checkbox line after current position
+                        range.collapse(false);
+                        range.insertNode(checkboxLine);
+                      }
+                    }
+                    
+                    // Move cursor into the checkbox's text span
                     const newRange = document.createRange();
                     newRange.setStart(textSpan, 0);
                     newRange.collapse(true);
@@ -2127,70 +2267,133 @@ export default function LittleFires() {
               onKeyDown={(e) => {
                 e.stopPropagation();
                 
-                // Handle Enter key to auto-create new checkboxes
-                if (e.key === 'Enter') {
-                  const selection = window.getSelection();
-                  if (selection.rangeCount > 0) {
-                    const range = selection.getRangeAt(0);
-                    const currentNode = range.startContainer;
-                    
-                    // Check if we're in a checkbox-line
-                    let checkboxLine = currentNode.nodeType === Node.ELEMENT_NODE ? 
-                      currentNode.closest('.checkbox-line') : 
-                      currentNode.parentElement?.closest('.checkbox-line');
-                    
-                    if (checkboxLine) {
-                      e.preventDefault();
-                      
-                      // Create new checkbox line
-                      const newCheckboxLine = document.createElement('div');
-                      newCheckboxLine.className = 'checkbox-line';
-                      newCheckboxLine.style.display = 'block';
-                      
-                      const newCheckbox = document.createElement('input');
-                      newCheckbox.type = 'checkbox';
-                      newCheckbox.className = 'task-checkbox';
-                      newCheckbox.onclick = (evt) => {
-                        evt.stopPropagation();
-                        // Focus the details area to enable editing if needed
-                        const detailsArea = evt.target.closest('.details-richtext');
-                        if (detailsArea && document.activeElement !== detailsArea) {
-                          detailsArea.focus();
+                const selection = window.getSelection();
+                if (!selection.rangeCount) return;
+                
+                const range = selection.getRangeAt(0);
+                const currentNode = range.startContainer;
+                
+                // Check if we're in a checkbox-line
+                let checkboxLine = currentNode.nodeType === Node.ELEMENT_NODE ? 
+                  currentNode.closest('.checkbox-line') : 
+                  currentNode.parentElement?.closest('.checkbox-line');
+                
+                // Handle Tab key - indent checkbox
+                if (e.key === 'Tab' && checkboxLine) {
+                  e.preventDefault();
+                  const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                  const newIndent = currentIndent + 20;
+                  checkboxLine.style.marginLeft = newIndent + 'px';
+                  
+                  // Auto-bold the parent line: the nearest preceding sibling
+                  // whose indent is strictly less than this line's new indent.
+                  // Use both a CSS class and inline fontWeight so it renders and persists.
+                  let prevLine = checkboxLine.previousElementSibling;
+                  while (prevLine) {
+                    const prevIndent = parseInt(prevLine.style.marginLeft || '0') || 0;
+                    if (prevIndent < newIndent) {
+                      const lineTxt = (prevLine.textContent || '').replace(/\u00A0/g, '').trim();
+                      if (lineTxt) {
+                        prevLine.classList.add('has-children');
+                        prevLine.style.fontWeight = 'bold';
+                        // Also bold the inner span directly so it survives save/reload
+                        const parentSpan = prevLine.querySelector('span');
+                        if (parentSpan) {
+                          parentSpan.style.fontWeight = 'bold';
                         }
-                      };
-                      newCheckbox.onchange = (evt) => {
-                        evt.stopPropagation();
-                        const detailsArea = evt.target.closest('.details-richtext');
-                        if (detailsArea) {
-                          // Just update checkbox attributes, save happens on blur
-                          const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
-                          allCheckboxes.forEach(cb => {
-                            if (cb.checked) {
-                              cb.setAttribute('checked', 'checked');
-                            } else {
-                              cb.removeAttribute('checked');
-                            }
-                          });
-                        }
-                      };
-                      
-                      const newTextSpan = document.createElement('span');
-                      newTextSpan.innerHTML = '&nbsp;';
-                      newTextSpan.contentEditable = 'true';
-                      
-                      newCheckboxLine.appendChild(newCheckbox);
-                      newCheckboxLine.appendChild(newTextSpan);
-                      
-                      // Insert after current checkbox line
-                      checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
-                      
-                      // Move cursor to new checkbox line
-                      const newRange = document.createRange();
-                      newRange.setStart(newTextSpan, 0);
-                      newRange.collapse(true);
-                      selection.removeAllRanges();
-                      selection.addRange(newRange);
+                      }
+                      break;
                     }
+                    prevLine = prevLine.previousElementSibling;
+                  }
+                }
+                
+                // Handle Enter key
+                else if (e.key === 'Enter' && checkboxLine) {
+                  const checkbox = checkboxLine.querySelector('.task-checkbox');
+                  // Read text from the entire line, excluding the checkbox input.
+                  // textContent of the line naturally excludes the input's value,
+                  // so this reliably captures any typed text regardless of span structure.
+                  const lineText = (checkboxLine.textContent || '').replace(/\u00A0/g, ' ').trim();
+                  const isEmpty = lineText === '';
+                  const currentIndent = parseInt(checkboxLine.style.marginLeft || '0');
+                  // Find the text span to reposition cursor (fallback to line itself)
+                  const textSpan = checkboxLine.querySelector('span') || checkboxLine;
+                  
+                  // Case 1: Empty checkbox with no indent - delete checkbox, create normal text line
+                  if (isEmpty && currentIndent === 0) {
+                    e.preventDefault();
+                    
+                    // Create normal text line
+                    const newLine = document.createElement('div');
+                    newLine.style.display = 'block';
+                    const newTextSpan = document.createElement('span');
+                    newTextSpan.innerHTML = '&nbsp;';
+                    newTextSpan.contentEditable = 'true';
+                    newLine.appendChild(newTextSpan);
+                    
+                    // Insert after current line and remove checkbox line
+                    checkboxLine.parentNode.insertBefore(newLine, checkboxLine.nextSibling);
+                    checkboxLine.remove();
+                    
+                    // Move cursor to new line
+                    const newRange = document.createRange();
+                    newRange.setStart(newTextSpan, 0);
+                    newRange.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(newRange);
+                  }
+                  
+                  // Case 2: Empty indented checkbox - outdent (reduce indent)
+                  else if (isEmpty && currentIndent > 0) {
+                    e.preventDefault();
+                    checkboxLine.style.marginLeft = Math.max(0, currentIndent - 20) + 'px';
+                    // Keep focus in the text span
+                    const newRange = document.createRange();
+                    newRange.setStart(textSpan, 0);
+                    newRange.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(newRange);
+                  }
+                  
+                  // Case 3: Checkbox with text - create new checkbox at same indent
+                  else {
+                    e.preventDefault();
+                    
+                    // Create new checkbox line with same indent
+                    const newCheckboxLine = document.createElement('div');
+                    newCheckboxLine.className = 'checkbox-line';
+                    newCheckboxLine.style.display = 'block';
+                    newCheckboxLine.style.marginLeft = currentIndent + 'px';
+                    
+                    const newCheckbox = document.createElement('input');
+                    newCheckbox.type = 'checkbox';
+                    newCheckbox.className = 'task-checkbox';
+                    newCheckbox.onclick = (evt) => {
+                      // Don't stopPropagation - it blocks the delegated change listener
+                      const detailsArea = evt.target.closest('.details-richtext');
+                      if (detailsArea && document.activeElement !== detailsArea) {
+                        detailsArea.focus();
+                      }
+                    };
+                    // No inline onchange - delegated change listener handles sync
+                    
+                    const newTextSpan = document.createElement('span');
+                    newTextSpan.innerHTML = '&nbsp;';
+                    newTextSpan.contentEditable = 'true';
+                    
+                    newCheckboxLine.appendChild(newCheckbox);
+                    newCheckboxLine.appendChild(newTextSpan);
+                    
+                    // Insert after current checkbox line
+                    checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
+                    
+                    // Move cursor to new checkbox line
+                    const newRange = document.createRange();
+                    newRange.setStart(newTextSpan, 0);
+                    newRange.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(newRange);
                   }
                 }
               }}
@@ -4082,6 +4285,13 @@ export default function LittleFires() {
           width: 100%;
         }
 
+        .details-richtext .checkbox-line.has-children,
+        .details-richtext .checkbox-line.has-children span,
+        .note-content .checkbox-line.has-children,
+        .note-content .checkbox-line.has-children span {
+          font-weight: bold;
+        }
+
         .details-richtext .checkbox-line::before {
           content: '';
           display: block;
@@ -5660,6 +5870,12 @@ export default function LittleFires() {
                   Search
                 </div>
                 <div 
+                  className={`menu-item ${appMode === 'reports' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('reports'); setMenuOpen(false); }}
+                >
+                  Reports
+                </div>
+                <div 
                   className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}
                   onClick={() => { setAppMode('archive'); setMenuOpen(false); }}
                 >
@@ -6112,31 +6328,67 @@ export default function LittleFires() {
                               } else {
                                 const range = selection.getRangeAt(0);
                                 
-                                const checkboxLine = document.createElement('div');
-                                checkboxLine.className = 'checkbox-line';
-                                checkboxLine.style.display = 'block';
+                                // Helper to build a fresh checkbox line
+                                const buildCheckboxLine = () => {
+                                  const checkbox = document.createElement('input');
+                                  checkbox.type = 'checkbox';
+                                  checkbox.className = 'task-checkbox';
+                                  checkbox.onclick = (evt) => evt.stopPropagation();
+                                  const line = document.createElement('div');
+                                  line.className = 'checkbox-line';
+                                  line.style.display = 'block';
+                                  const span = document.createElement('span');
+                                  span.contentEditable = 'true';
+                                  span.innerHTML = '&nbsp;';
+                                  line.appendChild(checkbox);
+                                  line.appendChild(span);
+                                  return { line, span };
+                                };
                                 
-                                const checkbox = document.createElement('input');
-                                checkbox.type = 'checkbox';
-                                checkbox.className = 'task-checkbox';
-                                checkbox.onclick = (evt) => evt.stopPropagation();
+                                // Find the current line/block the cursor is on
+                                let currentNode = range.startContainer;
+                                let currentLine = currentNode.nodeType === Node.ELEMENT_NODE ?
+                                  currentNode : currentNode.parentElement;
                                 
-                                const textSpan = document.createElement('span');
-                                textSpan.innerHTML = '&nbsp;';
-                                textSpan.contentEditable = 'true';
+                                while (currentLine && currentLine.parentElement !== noteContent && currentLine !== noteContent) {
+                                  currentLine = currentLine.parentElement;
+                                }
                                 
-                                checkboxLine.appendChild(checkbox);
-                                checkboxLine.appendChild(textSpan);
+                                // If it's a checkbox line that still has a live checkbox, don't double-add.
+                                // But if it's a leftover empty checkbox-line (checkbox was deleted),
+                                // fall through and treat it as a normal empty line.
+                                if (currentLine && currentLine.classList && currentLine.classList.contains('checkbox-line')) {
+                                  const hasCheckbox = currentLine.querySelector('.task-checkbox');
+                                  const lineText = (currentLine.textContent || '').replace(/\u00A0/g, '').trim();
+                                  if (hasCheckbox && lineText !== '') {
+                                    return;
+                                  }
+                                  if (hasCheckbox && lineText === '') {
+                                    return;
+                                  }
+                                  // else: leftover markup with no checkbox - fall through to convert it
+                                }
                                 
-                                const beforeBreak = document.createElement('br');
-                                range.insertNode(beforeBreak);
-                                range.collapse(false);
+                                const { line: checkboxLine, span: textSpan } = buildCheckboxLine();
                                 
-                                range.insertNode(checkboxLine);
+                                const isProperLine = currentLine && currentLine !== noteContent && currentLine.parentElement === noteContent;
+                                const currentLineText = isProperLine ? (currentLine.textContent || '').replace(/\u00A0/g, '').trim() : '';
                                 
-                                const afterBreak = document.createElement('br');
-                                range.collapse(false);
-                                range.insertNode(afterBreak);
+                                if (isProperLine && currentLineText === '') {
+                                  // Empty line (including leftover empty checkbox-line) - replace with checkbox line
+                                  currentLine.parentElement.replaceChild(checkboxLine, currentLine);
+                                } else if (isProperLine && currentLineText !== '') {
+                                  // Line has text - add checkbox on the NEXT line
+                                  currentLine.parentElement.insertBefore(checkboxLine, currentLine.nextSibling);
+                                } else {
+                                  const areaText = (noteContent.textContent || '').replace(/\u00A0/g, '').trim();
+                                  if (areaText === '') {
+                                    noteContent.appendChild(checkboxLine);
+                                  } else {
+                                    range.collapse(false);
+                                    range.insertNode(checkboxLine);
+                                  }
+                                }
                                 
                                 const newRange = document.createRange();
                                 newRange.setStart(textSpan, 0);
@@ -6268,43 +6520,112 @@ export default function LittleFires() {
                           onKeyDown={(e) => {
                             e.stopPropagation();
                             
-                            if (e.key === 'Enter') {
-                              const selection = window.getSelection();
-                              if (selection.rangeCount > 0) {
-                                const range = selection.getRangeAt(0);
-                                const currentNode = range.startContainer;
-                                
-                                let checkboxLine = currentNode.nodeType === Node.ELEMENT_NODE ? 
-                                  currentNode.closest('.checkbox-line') : 
-                                  currentNode.parentElement?.closest('.checkbox-line');
-                                
-                                if (checkboxLine) {
-                                  e.preventDefault();
-                                  
-                                  const newCheckboxLine = document.createElement('div');
-                                  newCheckboxLine.className = 'checkbox-line';
-                                  newCheckboxLine.style.display = 'block';
-                                  
-                                  const newCheckbox = document.createElement('input');
-                                  newCheckbox.type = 'checkbox';
-                                  newCheckbox.className = 'task-checkbox';
-                                  newCheckbox.onclick = (evt) => evt.stopPropagation();
-                                  
-                                  const newTextSpan = document.createElement('span');
-                                  newTextSpan.innerHTML = '&nbsp;';
-                                  newTextSpan.contentEditable = 'true';
-                                  
-                                  newCheckboxLine.appendChild(newCheckbox);
-                                  newCheckboxLine.appendChild(newTextSpan);
-                                  
-                                  checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
-                                  
-                                  const newRange = document.createRange();
-                                  newRange.setStart(newTextSpan, 0);
-                                  newRange.collapse(true);
-                                  selection.removeAllRanges();
-                                  selection.addRange(newRange);
+                            const selection = window.getSelection();
+                            if (!selection.rangeCount) return;
+                            
+                            const range = selection.getRangeAt(0);
+                            const currentNode = range.startContainer;
+                            
+                            let checkboxLine = currentNode.nodeType === Node.ELEMENT_NODE ? 
+                              currentNode.closest('.checkbox-line') : 
+                              currentNode.parentElement?.closest('.checkbox-line');
+                            
+                            // Handle Tab key - indent checkbox
+                            if (e.key === 'Tab' && checkboxLine) {
+                              e.preventDefault();
+                              const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                              const newIndent = currentIndent + 20;
+                              checkboxLine.style.marginLeft = newIndent + 'px';
+                              
+                              // Auto-bold the parent line (nearest preceding sibling with smaller indent)
+                              let prevLine = checkboxLine.previousElementSibling;
+                              while (prevLine) {
+                                const prevIndent = parseInt(prevLine.style.marginLeft || '0') || 0;
+                                if (prevIndent < newIndent) {
+                                  const lineTxt = (prevLine.textContent || '').replace(/\u00A0/g, '').trim();
+                                  if (lineTxt) {
+                                    prevLine.classList.add('has-children');
+                                    prevLine.style.fontWeight = 'bold';
+                                    const parentSpan = prevLine.querySelector('span');
+                                    if (parentSpan) {
+                                      parentSpan.style.fontWeight = 'bold';
+                                    }
+                                  }
+                                  break;
                                 }
+                                prevLine = prevLine.previousElementSibling;
+                              }
+                            }
+                            
+                            // Handle Enter key
+                            else if (e.key === 'Enter' && checkboxLine) {
+                              const checkbox = checkboxLine.querySelector('.task-checkbox');
+                              // Read text from the entire line, excluding the checkbox input.
+                              const lineText = (checkboxLine.textContent || '').replace(/\u00A0/g, ' ').trim();
+                              const isEmpty = lineText === '';
+                              const currentIndent = parseInt(checkboxLine.style.marginLeft || '0');
+                              const textSpan = checkboxLine.querySelector('span') || checkboxLine;
+                              
+                              // Case 1: Empty checkbox with no indent - delete checkbox, create normal text line
+                              if (isEmpty && currentIndent === 0) {
+                                e.preventDefault();
+                                
+                                const newLine = document.createElement('div');
+                                newLine.style.display = 'block';
+                                const newTextSpan = document.createElement('span');
+                                newTextSpan.innerHTML = '&nbsp;';
+                                newTextSpan.contentEditable = 'true';
+                                newLine.appendChild(newTextSpan);
+                                
+                                checkboxLine.parentNode.insertBefore(newLine, checkboxLine.nextSibling);
+                                checkboxLine.remove();
+                                
+                                const newRange = document.createRange();
+                                newRange.setStart(newTextSpan, 0);
+                                newRange.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(newRange);
+                              }
+                              
+                              // Case 2: Empty indented checkbox - outdent
+                              else if (isEmpty && currentIndent > 0) {
+                                e.preventDefault();
+                                checkboxLine.style.marginLeft = Math.max(0, currentIndent - 20) + 'px';
+                                const newRange = document.createRange();
+                                newRange.setStart(textSpan, 0);
+                                newRange.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(newRange);
+                              }
+                              
+                              // Case 3: Checkbox with text - create new checkbox at same indent
+                              else {
+                                e.preventDefault();
+                                
+                                const newCheckboxLine = document.createElement('div');
+                                newCheckboxLine.className = 'checkbox-line';
+                                newCheckboxLine.style.display = 'block';
+                                newCheckboxLine.style.marginLeft = currentIndent + 'px';
+                                
+                                const newCheckbox = document.createElement('input');
+                                newCheckbox.type = 'checkbox';
+                                newCheckbox.className = 'task-checkbox';
+                                newCheckbox.onclick = (evt) => evt.stopPropagation();
+                                
+                                const newTextSpan = document.createElement('span');
+                                newTextSpan.innerHTML = '&nbsp;';
+                                newTextSpan.contentEditable = 'true';
+                                
+                                newCheckboxLine.appendChild(newCheckbox);
+                                newCheckboxLine.appendChild(newTextSpan);
+                                
+                                checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
+                                
+                                const newRange = document.createRange();
+                                newRange.setStart(newTextSpan, 0);
+                                newRange.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(newRange);
                               }
                             }
                           }}
@@ -6559,6 +6880,7 @@ export default function LittleFires() {
                                 setTimeLoggerContext({ type: 'note', id: note.id });
                                 setShowTimeLogger(true);
                                 setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                                 setIsLogging(false);
                                 setLogStartTime(null);
                         setPausedTime(0);
@@ -7424,9 +7746,10 @@ export default function LittleFires() {
                           >
                             <span>{project.goalId ? (goals[selectedProject.listName] || []).find(g => g.id === project.goalId)?.name || 'No Goal' : 'No Goal'}</span>
                             <span style={{
-                              transform: goalDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                              transform: goalDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                               transition: 'transform 0.3s ease',
-                              fontSize: '0.9rem'
+                              fontSize: '0.9rem',
+                              display: 'inline-block'
                             }}>▼</span>
                           </div>
 
@@ -7548,9 +7871,10 @@ export default function LittleFires() {
                               >
                                 <span style={{textTransform: 'capitalize'}}>{projectTaskList}</span>
                                 <span style={{
-                                  transform: taskListDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                                  transform: taskListDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                                   transition: 'transform 0.3s ease',
-                                  fontSize: '0.9rem'
+                                  fontSize: '0.9rem',
+                                  display: 'inline-block'
                                 }}>▼</span>
                               </div>
 
@@ -9220,6 +9544,7 @@ export default function LittleFires() {
                               setTimeLoggerContext({ type: 'goal', id: selectedGoal.id, listName: selectedGoal.listName });
                               setShowTimeLogger(true);
                               setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                               setIsLogging(false);
                               setLogStartTime(null);
                         setPausedTime(0);
@@ -9569,6 +9894,7 @@ export default function LittleFires() {
                 setShowTimeLogger(false);
                 setIsLogging(false);
                 setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                 setLogStartTime(null);
                         setPausedTime(0);
                 setPausedTime(0);
@@ -9588,28 +9914,9 @@ export default function LittleFires() {
                   {/* Fire Logo */}
                   <div 
                     onClick={() => {
-                      if (!isLogging) {
-                        // Resume logging
-                        setIsLogging(true);
-                        if (!logStartTime) {
-                          // First time starting
-                          setLogStartTime(Date.now());
-                          setTotalPausedTime(0);
-                          setPausedTime(0);
-                        setTotalPausedTime(0);
-                        } else {
-                          // Resuming - add pause duration to totalPausedTime
-                          if (pausedTime > 0) {
-                            setTotalPausedTime(prev => prev + (Date.now() - pausedTime));
-                          }
-                          setPausedTime(0);
-                        setTotalPausedTime(0);
-                        }
-                      } else {
-                        // Pause logging - record when we paused
-                        setIsLogging(false);
-                        setPausedTime(Date.now());
-                      }
+                      // Simply toggle logging on/off. loggedSeconds persists
+                      // across pauses, so resuming continues from where it left off.
+                      setIsLogging(prev => !prev);
                     }}
                     style={{
                       cursor: 'pointer',
@@ -9646,21 +9953,22 @@ export default function LittleFires() {
                           stroke="rgba(58, 58, 74, 0.3)"
                           strokeWidth="8"
                         />
-                        {/* Progress circle */}
-                        {isLogging && (
+                        {/* Progress circle - driven by loggedSeconds so it
+                            pauses and resumes in lockstep with the timer.
+                            Offset goes from 597 (empty) to 0 (full ring) as
+                            elapsed time approaches the selected duration. */}
+                        {(isLogging || loggedSeconds > 0) && (
                           <circle
                             cx="105"
                             cy="105"
                             r="95"
                             fill="none"
-                            stroke="#53745f"
+                            stroke={isLogging ? '#53745f' : '#a0aec0'}
                             strokeWidth="8"
                             strokeDasharray="597"
-                            strokeDashoffset="597"
+                            strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
                             strokeLinecap="round"
-                            style={{
-                              animation: `progressRing ${timerDuration || 60}s linear infinite`
-                            }}
+                            style={{ transition: 'stroke 0.3s ease' }}
                           />
                         )}
                       </svg>
@@ -9708,7 +10016,7 @@ export default function LittleFires() {
                   </div>
 
                   {/* Timer Display */}
-                  {loggedMinutes >= 1 && (
+                  {loggedSeconds >= 60 && (
                     <div style={{
                       fontFamily: 'Quicksand, sans-serif',
                       fontSize: '2rem',
@@ -9717,7 +10025,7 @@ export default function LittleFires() {
                       marginBottom: '15px',
                       letterSpacing: '0.05em'
                     }}>
-                      {loggedMinutes} min
+                      {Math.floor(loggedSeconds / 60)} {Math.floor(loggedSeconds / 60) === 1 ? 'Min' : 'Mins'}
                     </div>
                   )}
 
@@ -9752,9 +10060,10 @@ export default function LittleFires() {
                       >
                         <span>{timerDuration === '' || timerDuration === 0 ? 'Timer' : timerDuration === 300 ? '5 Minutes' : timerDuration === 420 ? '7 Minutes' : timerDuration === 900 ? '15 Minutes' : timerDuration === 600 ? '10 Minutes' : timerDuration === 1800 ? '30 Minutes' : timerDuration === 3600 ? '60 Minutes' : 'Timer'}</span>
                         <span style={{
-                          transform: timeDurationDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transform: timeDurationDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                           transition: 'transform 0.3s ease',
-                          fontSize: '0.9rem'
+                          fontSize: '0.9rem',
+                          display: 'inline-block'
                         }}>▼</span>
                       </div>
 
@@ -9777,8 +10086,8 @@ export default function LittleFires() {
                             { value: '', label: 'Timer' },
                             { value: 300, label: '5 Minutes' },
                             { value: 420, label: '7 Minutes' },
-                            { value: 900, label: '15 Minutes' },
                             { value: 600, label: '10 Minutes' },
+                            { value: 900, label: '15 Minutes' },
                             { value: 1800, label: '30 Minutes' },
                             { value: 3600, label: '60 Minutes' }
                           ].map((option, idx) => (
@@ -9947,6 +10256,7 @@ export default function LittleFires() {
                         setShowTimeLogger(false);
                         setIsLogging(false);
                         setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                         setLogStartTime(null);
                         setPausedTime(0);
                         setTimeLogFocus('');
@@ -9964,6 +10274,7 @@ export default function LittleFires() {
                         setShowTimeLogger(false);
                         setIsLogging(false);
                         setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                         setLogStartTime(null);
                         setPausedTime(0);
                         setTimeLogFocus('');
@@ -9985,6 +10296,7 @@ export default function LittleFires() {
               <div className="modal-overlay" onClick={() => {
                 setEditingTimeLog(null);
                 setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                 setTimeLogFocus('');
                 setTimeLogDescription('');
                 setTimeLogTakeAway('');
@@ -10130,6 +10442,7 @@ export default function LittleFires() {
                         }
                         setEditingTimeLog(null);
                         setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                         setTimeLogFocus('');
                         setTimeLogDescription('');
                         setTimeLogTakeAway('');
@@ -10166,6 +10479,7 @@ export default function LittleFires() {
                           }
                           setEditingTimeLog(null);
                           setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                           setTimeLogFocus('');
                           setTimeLogDescription('');
                           setTimeLogTakeAway('');
@@ -10179,6 +10493,7 @@ export default function LittleFires() {
                         onClick={() => {
                           setEditingTimeLog(null);
                           setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                           setTimeLogFocus('');
                           setTimeLogDescription('');
                           setTimeLogTakeAway('');
@@ -10838,6 +11153,7 @@ export default function LittleFires() {
                 setShowTimeLogger(false);
                 setIsLogging(false);
                 setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                 setLogStartTime(null);
                         setPausedTime(0);
                 setTimeLogFocus('');
@@ -10856,26 +11172,8 @@ export default function LittleFires() {
                   {/* Fire Logo with Timer */}
                   <div 
                     onClick={() => {
-                      if (!isLogging) {
-                        setIsLogging(true);
-                        if (!logStartTime) {
-                          // First time starting
-                          setLogStartTime(Date.now());
-                          setTotalPausedTime(0);
-                          setPausedTime(0);
-                        setTotalPausedTime(0);
-                        } else {
-                          // Resuming - add pause duration to totalPausedTime
-                          if (pausedTime > 0) {
-                            setTotalPausedTime(prev => prev + (Date.now() - pausedTime));
-                          }
-                          setPausedTime(0);
-                        setTotalPausedTime(0);
-                        }
-                      } else {
-                        setIsLogging(false);
-                        setPausedTime(Date.now());
-                      }
+                      // Toggle logging; loggedSeconds persists across pauses
+                      setIsLogging(prev => !prev);
                     }}
                     style={{
                       cursor: 'pointer',
@@ -10911,20 +11209,18 @@ export default function LittleFires() {
                           stroke="rgba(58, 58, 74, 0.3)"
                           strokeWidth="8"
                         />
-                        {isLogging && (
+                        {(isLogging || loggedSeconds > 0) && (
                           <circle
                             cx="105"
                             cy="105"
                             r="95"
                             fill="none"
-                            stroke="#53745f"
+                            stroke={isLogging ? '#53745f' : '#a0aec0'}
                             strokeWidth="8"
                             strokeDasharray="597"
-                            strokeDashoffset="597"
+                            strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
                             strokeLinecap="round"
-                            style={{
-                              animation: `progressRing ${timerDuration || 60}s linear infinite`
-                            }}
+                            style={{ transition: 'stroke 0.3s ease' }}
                           />
                         )}
                       </svg>
@@ -10972,7 +11268,7 @@ export default function LittleFires() {
                   </div>
 
                   {/* Timer Display */}
-                  {loggedMinutes >= 1 && (
+                  {loggedSeconds >= 60 && (
                     <div style={{
                       fontFamily: 'Quicksand, sans-serif',
                       fontSize: '2rem',
@@ -10981,7 +11277,7 @@ export default function LittleFires() {
                       marginBottom: '15px',
                       letterSpacing: '0.05em'
                     }}>
-                      {loggedMinutes} min
+                      {Math.floor(loggedSeconds / 60)} {Math.floor(loggedSeconds / 60) === 1 ? 'Min' : 'Mins'}
                     </div>
                   )}
 
@@ -11017,9 +11313,10 @@ export default function LittleFires() {
                       >
                         <span>{timerDuration === '' || timerDuration === 0 ? 'Timer' : timerDuration === 300 ? '5 Minutes' : timerDuration === 420 ? '7 Minutes' : timerDuration === 900 ? '15 Minutes' : timerDuration === 600 ? '10 Minutes' : timerDuration === 1800 ? '30 Minutes' : timerDuration === 3600 ? '60 Minutes' : 'Timer'}</span>
                         <span style={{
-                          transform: timeDurationDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transform: timeDurationDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                           transition: 'transform 0.3s ease',
-                          fontSize: '0.9rem'
+                          fontSize: '0.9rem',
+                          display: 'inline-block'
                         }}>▼</span>
                       </div>
 
@@ -11042,8 +11339,8 @@ export default function LittleFires() {
                             { value: '', label: 'Timer' },
                             { value: 300, label: '5 Minutes' },
                             { value: 420, label: '7 Minutes' },
-                            { value: 900, label: '15 Minutes' },
                             { value: 600, label: '10 Minutes' },
+                            { value: 900, label: '15 Minutes' },
                             { value: 1800, label: '30 Minutes' },
                             { value: 3600, label: '60 Minutes' }
                           ].map((option, idx) => (
@@ -11196,6 +11493,7 @@ export default function LittleFires() {
                         setShowTimeLogger(false);
                         setIsLogging(false);
                         setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                         setLogStartTime(null);
                         setPausedTime(0);
                         setTimeLogFocus('');
@@ -11213,6 +11511,7 @@ export default function LittleFires() {
                         setShowTimeLogger(false);
                         setIsLogging(false);
                         setLoggedMinutes(0);
+                                setLoggedSeconds(0);
                         setLogStartTime(null);
                         setPausedTime(0);
                         setTimeLogFocus('');
@@ -11683,7 +11982,7 @@ export default function LittleFires() {
               >
                 <span style={{ textTransform: 'capitalize' }}>{archiveType}</span>
                 <span style={{
-                  transform: archiveDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                  transform: archiveDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                   transition: 'transform 0.3s ease',
                   fontSize: '1.2rem'
                 }}>▼</span>
@@ -12364,6 +12663,336 @@ export default function LittleFires() {
                 }
               })()}
             </div>
+          </div>
+        )}
+
+        {appMode === 'reports' && (
+          <div className="reports-section" style={{ padding: '0 40px 40px' }}>
+            <h2>Reports</h2>
+
+            {(() => {
+              const listKeys = ['personal', 'work', 'home', 'travel', 'kids'];
+              const listLabels = {
+                personal: 'Personal', work: 'Work', home: 'Home', travel: 'Travel', kids: 'Kids'
+              };
+              const listColors = {
+                personal: '#6a9d5f', work: '#53745f', home: '#4a7a3a', travel: '#6a8f76', kids: '#f472b6'
+              };
+
+              // --- Determine date range and bucketing for the selected timeframe ---
+              const now = new Date();
+              const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+              let rangeStart, rangeEnd, bucketUnit; // bucketUnit: 'day' | 'week' | 'month'
+              rangeEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+              if (reportTimeframe === 'thisMonth') {
+                rangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                bucketUnit = 'day';
+              } else if (reportTimeframe === 'lastMonth') {
+                rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                rangeEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+                bucketUnit = 'day';
+              } else if (reportTimeframe === 'last3') {
+                rangeStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+                bucketUnit = 'week';
+              } else if (reportTimeframe === 'last6') {
+                rangeStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+                bucketUnit = 'week';
+              } else { // allTime
+                bucketUnit = 'month';
+                rangeStart = null; // computed after scanning tasks
+              }
+
+              // --- Gather all completed tasks (active + archived) with completedAt ---
+              const completed = [];
+              listKeys.forEach(key => {
+                const scan = (arr) => {
+                  (Array.isArray(arr) ? arr : []).forEach(t => {
+                    if (t && t.completed && t.completedAt) {
+                      const d = new Date(t.completedAt);
+                      if (!isNaN(d)) completed.push({ list: key, date: d });
+                    }
+                  });
+                };
+                scan(allLists[key]);
+                scan(archivedTasks[key]);
+              });
+
+              // For all-time, set rangeStart to earliest completion (or this month if none)
+              if (reportTimeframe === 'allTime') {
+                if (completed.length > 0) {
+                  const earliest = completed.reduce((min, c) => c.date < min ? c.date : min, completed[0].date);
+                  rangeStart = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
+                } else {
+                  rangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                }
+              }
+
+              // --- Build buckets ---
+              const buckets = []; // { label, start, end }
+              const startOfWeek = (d) => {
+                const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+                x.setDate(x.getDate() - x.getDay()); // Sunday start
+                return x;
+              };
+
+              if (bucketUnit === 'day') {
+                let cur = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate());
+                while (cur <= rangeEnd) {
+                  const start = new Date(cur);
+                  const end = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate(), 23, 59, 59, 999);
+                  buckets.push({
+                    label: String(start.getDate()),
+                    start, end
+                  });
+                  cur.setDate(cur.getDate() + 1);
+                }
+              } else if (bucketUnit === 'week') {
+                let cur = startOfWeek(rangeStart);
+                while (cur <= rangeEnd) {
+                  const start = new Date(cur);
+                  const end = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 6, 23, 59, 59, 999);
+                  buckets.push({
+                    label: `${start.getMonth() + 1}/${start.getDate()}`,
+                    start, end
+                  });
+                  cur.setDate(cur.getDate() + 7);
+                }
+              } else { // month
+                let cur = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+                const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                while (cur <= rangeEnd) {
+                  const start = new Date(cur.getFullYear(), cur.getMonth(), 1);
+                  const end = new Date(cur.getFullYear(), cur.getMonth() + 1, 0, 23, 59, 59, 999);
+                  buckets.push({
+                    label: monthNames[start.getMonth()] + (bucketUnit === 'month' && (reportTimeframe === 'allTime') ? ` '${String(start.getFullYear()).slice(2)}` : ''),
+                    start, end
+                  });
+                  cur.setMonth(cur.getMonth() + 1);
+                }
+              }
+
+              // --- Tally counts per list per bucket ---
+              // series[listKey] = array of counts aligned with buckets
+              const series = {};
+              listKeys.forEach(k => series[k] = new Array(buckets.length).fill(0));
+              const totals = {};
+              listKeys.forEach(k => totals[k] = 0);
+
+              completed.forEach(c => {
+                if (c.date < buckets[0]?.start || c.date > rangeEnd) return;
+                for (let i = 0; i < buckets.length; i++) {
+                  if (c.date >= buckets[i].start && c.date <= buckets[i].end) {
+                    series[c.list][i] += 1;
+                    totals[c.list] += 1;
+                    break;
+                  }
+                }
+              });
+
+              const grandTotal = listKeys.reduce((s, k) => s + totals[k], 0);
+              const maxCount = Math.max(1, ...listKeys.flatMap(k => series[k]));
+
+              // --- Chart dimensions ---
+              const chartW = 720, chartH = 340;
+              const padL = 40, padR = 20, padT = 20, padB = 50;
+              const plotW = chartW - padL - padR;
+              const plotH = chartH - padT - padB;
+              const n = buckets.length;
+              const xFor = (i) => n <= 1 ? padL + plotW / 2 : padL + (plotW * i) / (n - 1);
+              const yFor = (v) => padT + plotH - (plotH * v) / maxCount;
+
+              // Y-axis ticks (integer, up to 5)
+              const tickCount = Math.min(5, maxCount);
+              const yTicks = [];
+              for (let t = 0; t <= tickCount; t++) {
+                yTicks.push(Math.round((maxCount * t) / tickCount));
+              }
+              const uniqueTicks = [...new Set(yTicks)];
+
+              // Bar layout (grouped)
+              const groupWidth = n > 0 ? plotW / n : plotW;
+              const barGroupInner = groupWidth * 0.7;
+              const barWidth = barGroupInner / listKeys.length;
+
+              // Label thinning to avoid crowding
+              const maxLabels = 14;
+              const labelStep = Math.ceil(n / maxLabels);
+
+              return (
+                <div>
+                  {/* Controls */}
+                  <div style={{
+                    display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'flex-end',
+                    marginBottom: '25px'
+                  }}>
+                    {/* Timeframe dropdown */}
+                    <div style={{ minWidth: '200px' }}>
+                      <label style={{ display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
+                        Timeframe:
+                      </label>
+                      <div data-report-timeframe-dropdown style={{ position: 'relative' }}>
+                        <div
+                          onClick={() => setReportTimeframeDropdownOpen(!reportTimeframeDropdownOpen)}
+                          style={{
+                            width: '100%', padding: '10px', background: 'rgba(42, 42, 62, 1)',
+                            border: '2px solid rgba(83, 116, 95, 0.3)', borderRadius: '8px',
+                            color: '#f4e8d8', fontSize: '1rem', fontFamily: 'Quicksand, sans-serif',
+                            cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
+                          }}
+                        >
+                          <span>{({ thisMonth: 'This Month', lastMonth: 'Last Month', last3: 'Last 3 Months', last6: 'Last 6 Months', allTime: 'All Time' })[reportTimeframe]}</span>
+                          <span style={{ transform: reportTimeframeDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)', transition: 'transform 0.3s ease', fontSize: '0.9rem', display: 'inline-block' }}>▼</span>
+                        </div>
+                        {reportTimeframeDropdownOpen && (
+                          <div style={{
+                            position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '-8px',
+                            background: 'rgba(42, 42, 62, 1)', border: '2px solid rgba(83, 116, 95, 0.3)',
+                            borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+                          }}>
+                            {[
+                              { value: 'thisMonth', label: 'This Month' },
+                              { value: 'lastMonth', label: 'Last Month' },
+                              { value: 'last3', label: 'Last 3 Months' },
+                              { value: 'last6', label: 'Last 6 Months' },
+                              { value: 'allTime', label: 'All Time' }
+                            ].map((opt, idx, arr) => (
+                              <div
+                                key={opt.value}
+                                onClick={() => { setReportTimeframe(opt.value); setReportTimeframeDropdownOpen(false); }}
+                                style={{
+                                  padding: '10px', color: '#f4e8d8', fontSize: '1rem', cursor: 'pointer',
+                                  background: reportTimeframe === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
+                                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                  transition: 'background 0.2s ease', fontFamily: 'Quicksand, sans-serif'
+                                }}
+                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOut={(e) => e.currentTarget.style.background = reportTimeframe === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                              >
+                                {opt.label}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Chart type toggle */}
+                    <div>
+                      <label style={{ display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
+                        Chart:
+                      </label>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {['line', 'bar'].map(type => (
+                          <button
+                            key={type}
+                            onClick={() => setReportChartType(type)}
+                            style={{
+                              padding: '10px 20px', borderRadius: '8px', cursor: 'pointer',
+                              fontFamily: 'Quicksand, sans-serif', fontSize: '0.95rem', textTransform: 'capitalize',
+                              border: reportChartType === type ? '2px solid #53745f' : '2px solid rgba(83, 116, 95, 0.3)',
+                              background: reportChartType === type ? 'linear-gradient(135deg, #53745f, #6a8f76)' : 'rgba(42, 42, 62, 1)',
+                              color: reportChartType === type ? '#fff' : '#b8a99a',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            {type}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Summary stat */}
+                  <div style={{
+                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                    borderRadius: '12px', padding: '18px 22px', marginBottom: '20px', display: 'inline-block'
+                  }}>
+                    <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                      Tasks Completed
+                    </div>
+                    <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      {grandTotal}
+                    </div>
+                  </div>
+
+                  {/* Chart card */}
+                  <div style={{
+                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                    borderRadius: '12px', padding: '20px', overflowX: 'auto'
+                  }}>
+                    <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', minWidth: n > 20 ? '900px' : '100%', height: 'auto' }}>
+                      {/* Y gridlines + labels */}
+                      {uniqueTicks.map((tick, i) => (
+                        <g key={'y' + i}>
+                          <line x1={padL} y1={yFor(tick)} x2={chartW - padR} y2={yFor(tick)} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+                          <text x={padL - 8} y={yFor(tick) + 4} textAnchor="end" fill="#b8a99a" fontSize="12" fontFamily="Quicksand, sans-serif">{tick}</text>
+                        </g>
+                      ))}
+
+                      {/* X axis labels */}
+                      {buckets.map((b, i) => (
+                        (i % labelStep === 0 || i === n - 1) && (
+                          <text key={'x' + i} x={reportChartType === 'bar' ? padL + groupWidth * i + groupWidth / 2 : xFor(i)} y={chartH - padB + 18}
+                            textAnchor="middle" fill="#b8a99a" fontSize="11" fontFamily="Quicksand, sans-serif">
+                            {b.label}
+                          </text>
+                        )
+                      ))}
+
+                      {/* Data: bars or lines */}
+                      {reportChartType === 'bar' ? (
+                        buckets.map((b, i) => (
+                          <g key={'bar' + i}>
+                            {listKeys.map((k, ki) => {
+                              const v = series[k][i];
+                              const x = padL + groupWidth * i + (groupWidth - barGroupInner) / 2 + ki * barWidth;
+                              const h = (plotH * v) / maxCount;
+                              return v > 0 ? (
+                                <rect key={k} x={x} y={padT + plotH - h} width={Math.max(1, barWidth - 2)} height={h}
+                                  fill={listColors[k]} rx="2" opacity="0.9" />
+                              ) : null;
+                            })}
+                          </g>
+                        ))
+                      ) : (
+                        listKeys.map(k => {
+                          const pts = series[k].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
+                          return (
+                            <g key={'line' + k}>
+                              <polyline points={pts} fill="none" stroke={listColors[k]} strokeWidth="2.5"
+                                strokeLinejoin="round" strokeLinecap="round" opacity="0.95" />
+                              {series[k].map((v, i) => (
+                                <circle key={i} cx={xFor(i)} cy={yFor(v)} r="3" fill={listColors[k]} />
+                              ))}
+                            </g>
+                          );
+                        })
+                      )}
+                    </svg>
+
+                    {/* Legend */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px', marginTop: '15px', justifyContent: 'center' }}>
+                      {listKeys.map(k => (
+                        <div key={k} style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                          <span style={{ width: '14px', height: '14px', borderRadius: '4px', background: listColors[k], display: 'inline-block' }}></span>
+                          <span style={{ color: '#f4e8d8', fontSize: '0.9rem', fontFamily: 'Quicksand, sans-serif' }}>
+                            {listLabels[k]} <span style={{ color: '#b8a99a' }}>({totals[k]})</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {grandTotal === 0 && (
+                    <div style={{ textAlign: 'center', color: '#b8a99a', fontFamily: 'Quicksand, sans-serif', marginTop: '20px', fontSize: '0.95rem' }}>
+                      No completed tasks in this timeframe.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>

@@ -5863,11 +5863,18 @@ export default function LittleFires() {
                 >
                   Journal
                 </div>
+                <div className="menu-divider"></div>
                 <div 
                   className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
                   onClick={() => { setAppMode('calendar'); setMenuOpen(false); }}
                 >
                   Calendar
+                </div>
+                <div 
+                  className={`menu-item ${appMode === 'reports' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('reports'); setMenuOpen(false); }}
+                >
+                  Reports
                 </div>
                 <div className="menu-divider"></div>
                 <div 
@@ -5875,12 +5882,6 @@ export default function LittleFires() {
                   onClick={() => { setAppMode('search'); setMenuOpen(false); }}
                 >
                   Search
-                </div>
-                <div 
-                  className={`menu-item ${appMode === 'reports' ? 'active' : ''}`}
-                  onClick={() => { setAppMode('reports'); setMenuOpen(false); }}
-                >
-                  Reports
                 </div>
                 <div 
                   className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}

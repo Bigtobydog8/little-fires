@@ -2133,7 +2133,7 @@ export default function LittleFires() {
                       // details area handles parent auto-check for all checkboxes.
                       const line = document.createElement('div');
                       line.className = 'checkbox-line';
-                      line.style.display = 'block';
+                      line.style.display = 'flex';
                       const span = document.createElement('span');
                       span.contentEditable = 'true';
                       span.innerHTML = '&nbsp;';
@@ -2370,7 +2370,7 @@ export default function LittleFires() {
                     // Create new checkbox line with same indent
                     const newCheckboxLine = document.createElement('div');
                     newCheckboxLine.className = 'checkbox-line';
-                    newCheckboxLine.style.display = 'block';
+                    newCheckboxLine.style.display = 'flex';
                     newCheckboxLine.style.marginLeft = currentIndent + 'px';
                     
                     const newCheckbox = document.createElement('input');
@@ -3767,7 +3767,7 @@ export default function LittleFires() {
         }
 
         .section-btn.selected {
-          background: linear-gradient(135deg, #5fb49c, #53745f);
+          background: linear-gradient(135deg, #53745f, #6a8f76);
           color: #ffffff;
           border-color: transparent;
         }
@@ -4012,10 +4012,6 @@ export default function LittleFires() {
           top: 0;
           border-radius: 15px 0 0 15px;
           display: none;
-        }
-
-        .task.expanded .priority-indicator {
-          display: block;
         }
 
         .priority-indicator.high {
@@ -4284,7 +4280,7 @@ export default function LittleFires() {
         }
 
         .details-richtext .checkbox-line {
-          display: flex;
+          display: flex !important;
           align-items: flex-start;
           margin: 5px 0;
           gap: 8px;
@@ -4592,8 +4588,16 @@ export default function LittleFires() {
 
         .archived-task .task-meta {
           display: flex;
-          gap: 15px;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 4px;
           margin-bottom: 15px;
+        }
+
+        .completed-date {
+          color: #6a9d5f;
+          font-size: 0.85rem;
+          font-weight: 600;
         }
 
         .archived-date {
@@ -5750,12 +5754,17 @@ export default function LittleFires() {
         }
 
         .note-content .checkbox-line {
-          display: flex;
+          display: flex !important;
           align-items: flex-start;
           margin: 5px 0;
           gap: 8px;
           clear: both;
           width: 100%;
+        }
+
+        .note-content .checkbox-line span {
+          flex: 1;
+          color: #f4e8d8;
         }
 
         .note-content .task-checkbox {
@@ -5897,12 +5906,17 @@ export default function LittleFires() {
         <header>
           <h1>Little Fires</h1>
           <div className="subtitle">
-            <div style={{
-              width: '80px',
-              height: '80px',
-              position: 'relative',
-              display: 'inline-block'
-            }}>
+            <div
+              onClick={() => { setAppMode('tasks'); setCurrentList('master'); }}
+              title="Go to All Tasks"
+              style={{
+                width: '80px',
+                height: '80px',
+                position: 'relative',
+                display: 'inline-block',
+                cursor: 'pointer'
+              }}
+            >
               {/* Circular Progress Ring */}
               <svg 
                 style={{
@@ -6344,7 +6358,7 @@ export default function LittleFires() {
                                   checkbox.onclick = (evt) => evt.stopPropagation();
                                   const line = document.createElement('div');
                                   line.className = 'checkbox-line';
-                                  line.style.display = 'block';
+                                  line.style.display = 'flex';
                                   const span = document.createElement('span');
                                   span.contentEditable = 'true';
                                   span.innerHTML = '&nbsp;';
@@ -6612,7 +6626,7 @@ export default function LittleFires() {
                                 
                                 const newCheckboxLine = document.createElement('div');
                                 newCheckboxLine.className = 'checkbox-line';
-                                newCheckboxLine.style.display = 'block';
+                                newCheckboxLine.style.display = 'flex';
                                 newCheckboxLine.style.marginLeft = currentIndent + 'px';
                                 
                                 const newCheckbox = document.createElement('input');
@@ -7928,6 +7942,15 @@ export default function LittleFires() {
                                 </div>
                               )}
                             </div>
+                          </div>
+                          <div style={{display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '15px'}}>
+                            <input
+                              type="date"
+                              value={projectTaskDueDate}
+                              onChange={(e) => setProjectTaskDueDate(e.target.value)}
+                              className="date-picker"
+                              style={{width: '50%', textAlign: 'left'}}
+                            />
                             <span 
                               className={`fire-flag-icon clickable ${projectTaskPriority === 'high' ? 'active' : ''}`}
                               onClick={() => setProjectTaskPriority(projectTaskPriority === 'high' ? 'low' : 'high')}
@@ -7936,17 +7959,8 @@ export default function LittleFires() {
                               {projectTaskPriority === 'high' ? <LitFlame /> : <UnlitFlame />}
                             </span>
                           </div>
-                          <div style={{marginBottom: '15px'}}>
-                            <input
-                              type="date"
-                              value={projectTaskDueDate}
-                              onChange={(e) => setProjectTaskDueDate(e.target.value)}
-                              className="date-picker"
-                              style={{width: '50%', textAlign: 'left'}}
-                            />
-                          </div>
                         </div>
-                        <div className="section-btn-group" style={{marginBottom: '15px', gap: '15px'}}>
+                        <div className="section-btn-group" style={{marginBottom: '15px', display: 'flex', gap: '20px'}}>
                           <button
                             className={`section-btn ${projectTaskSection === 'todo' ? 'selected' : ''}`}
                             onClick={() => setProjectTaskSection('todo')}
@@ -12209,6 +12223,11 @@ export default function LittleFires() {
                           <div key={idx} className="archived-task">
                             <div className="task-text">{task.text}</div>
                             <div className="task-meta">
+                              {task.completedAt && (
+                                <span className="completed-date">
+                                  Completed {new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
                               {task.archivedAt && (
                                 <span className="archived-date">
                                   Archived {new Date(task.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -12239,6 +12258,11 @@ export default function LittleFires() {
                     <div key={idx} className="archived-task">
                       <div className="task-text">{task.text}</div>
                       <div className="task-meta">
+                        {task.completedAt && (
+                          <span className="completed-date">
+                            Completed {new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </span>
+                        )}
                         {task.archivedAt && (
                           <span className="archived-date">
                             Archived {new Date(task.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}

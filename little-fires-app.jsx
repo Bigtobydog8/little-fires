@@ -1770,6 +1770,59 @@ export default function LittleFires() {
     // Its direct children are the more-indented lines up until the indent
     // returns to the parent's level or shallower. This does NOT assume a fixed
     // 20px step - it works with any indent values.
+    // Recompute list markers across the editor: which lines are parents
+    // (have indented children below them) and which top-level lines end a
+    // nested group. Runs on every content change so markers never go stale.
+    const refreshListMarkers = (area) => {
+      try {
+        if (!area) return;
+        const lines = Array.from(area.querySelectorAll('.checkbox-line'));
+        const getIndent = (l) => parseInt(l.style.marginLeft || '0') || 0;
+        // Clear existing markers first (both class and inline styles)
+        lines.forEach(l => {
+          l.classList.remove('has-children');
+          l.classList.remove('ends-list');
+          l.style.borderBottom = '';
+          l.style.borderTop = '';
+          // Only clear the spacing we control for markers
+          if (l.style.paddingBottom === '6px') l.style.paddingBottom = '';
+          if (l.style.paddingTop === '8px') l.style.paddingTop = '';
+        });
+        for (let i = 0; i < lines.length; i++) {
+          const indent = getIndent(lines[i]);
+          const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
+          const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
+          // Parent: a line immediately followed by a more-indented line, with text
+          if (nextIndent > indent) {
+            const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
+            if (txt) {
+              lines[i].classList.add('has-children');
+              // Inline styles too, so it persists in saved HTML
+              lines[i].style.fontWeight = 'bold';
+              lines[i].style.borderBottom = '2px solid rgba(83, 116, 95, 0.55)';
+              lines[i].style.paddingBottom = '6px';
+              const sp = lines[i].querySelector('span');
+              if (sp) sp.style.fontWeight = 'bold';
+            }
+          } else {
+            // Not a parent anymore - remove any leftover bold from inline styles
+            lines[i].style.fontWeight = '';
+            const sp = lines[i].querySelector('span');
+            if (sp) sp.style.fontWeight = '';
+          }
+          // End-of-list boundary: a top-level line that comes right after a
+          // more-indented (child) line - i.e. indentation stepped back to 0.
+          if (indent === 0 && prevIndent > 0) {
+            lines[i].classList.add('ends-list');
+            lines[i].style.borderTop = '2px solid rgba(83, 116, 95, 0.55)';
+            lines[i].style.paddingTop = '8px';
+          }
+        }
+      } catch (err) {
+        console.error('refreshListMarkers error:', err);
+      }
+    };
+
     const syncParentCheckboxes = (detailsArea) => {
       try {
         if (!detailsArea) return;
@@ -1847,6 +1900,7 @@ export default function LittleFires() {
           hasSetInitialContent.current = true;
           // After loading, reflect any already-complete child sets on their parents
           setTimeout(() => syncParentCheckboxes(detailsRef.current), 0);
+          setTimeout(() => refreshListMarkers(detailsRef.current), 0);
         }
       }
       
@@ -1908,6 +1962,15 @@ export default function LittleFires() {
         syncParentCheckboxes(detailsArea);
       };
       const handleDelegatedClick = (evt) => {
+        // Open pasted links in a new tab. Inside contentEditable a click would
+        // otherwise just place the cursor instead of following the link.
+        const link = evt.target && evt.target.closest && evt.target.closest('a.task-link');
+        if (link) {
+          evt.preventDefault();
+          const href = link.getAttribute('href');
+          if (href) window.open(href, '_blank', 'noopener,noreferrer');
+          return;
+        }
         if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
           // Let the browser finish toggling, then sync
           setTimeout(runSync, 0);
@@ -2238,6 +2301,7 @@ export default function LittleFires() {
               className="details-richtext"
               contentEditable
               suppressContentEditableWarning
+              onInput={(e) => { refreshListMarkers(e.currentTarget); }}
               onBlur={(e) => {
                 e.stopPropagation();
                 // Update ALL checkboxes' attributes before getting innerHTML
@@ -2260,14 +2324,41 @@ export default function LittleFires() {
                 e.stopPropagation();
                 
                 // Get plain text from clipboard
-                const text = e.clipboardData?.getData('text/plain') || '';
+                const text = (e.clipboardData?.getData('text/plain') || '');
+                const trimmed = text.trim();
                 
-                // Insert plain text without formatting
                 const selection = window.getSelection();
-                if (selection.rangeCount > 0) {
-                  selection.getRangeAt(0).deleteContents();
+                if (!selection.rangeCount) return;
+                const range = selection.getRangeAt(0);
+                range.deleteContents();
+                
+                // If the pasted content is a single URL, insert a compact "Link"
+                // anchor instead of the full URL text.
+                const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);
+                if (isUrl) {
+                  const href = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed;
+                  const a = document.createElement('a');
+                  a.href = href;
+                  a.textContent = 'Link';
+                  a.className = 'task-link';
+                  a.target = '_blank';
+                  a.rel = 'noopener noreferrer';
+                  a.title = href;
+                  // Atomic unit so the label isn't editable and clicks register
+                  a.contentEditable = 'false';
+                  range.insertNode(a);
+                  // Trailing space so typing can continue after the link
+                  const after = document.createTextNode('\u00A0');
+                  a.parentNode.insertBefore(after, a.nextSibling);
+                  const newRange = document.createRange();
+                  newRange.setStart(after, 1);
+                  newRange.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(newRange);
+                } else {
+                  // Insert plain text without formatting
                   const textNode = document.createTextNode(text);
-                  selection.getRangeAt(0).insertNode(textNode);
+                  range.insertNode(textNode);
                   selection.collapseToEnd();
                 }
               }}
@@ -2303,6 +2394,11 @@ export default function LittleFires() {
                       if (lineTxt) {
                         prevLine.classList.add('has-children');
                         prevLine.style.fontWeight = 'bold';
+                        // Inline underline so it survives save/reload even if the
+                        // class-based rule doesn't re-apply on load.
+                        prevLine.style.borderBottom = '2px solid rgba(83, 116, 95, 0.55)';
+                        prevLine.style.paddingBottom = '6px';
+                        prevLine.style.marginBottom = '8px';
                         // Also bold the inner span directly so it survives save/reload
                         const parentSpan = prevLine.querySelector('span');
                         if (parentSpan) {
@@ -2312,6 +2408,58 @@ export default function LittleFires() {
                       break;
                     }
                     prevLine = prevLine.previousElementSibling;
+                  }
+                }
+                
+                // Handle Backspace at the start of a checkbox line - remove the checkbox.
+                // contentEditable's default backspace is unreliable at the boundary
+                // right after a checkbox input, so we handle it explicitly.
+                else if (e.key === 'Backspace' && checkboxLine && selection.isCollapsed) {
+                  const textSpan = checkboxLine.querySelector('span');
+                  // Determine if the caret is at the very start of the line's text.
+                  let atStart = false;
+                  const container = range.startContainer;
+                  const offset = range.startOffset;
+                  if (textSpan) {
+                    if (offset === 0 && (container === textSpan || container === textSpan.firstChild || (textSpan.firstChild && container === textSpan.firstChild))) {
+                      atStart = true;
+                    }
+                    // Also treat "&nbsp;-only" placeholder spans with caret at 0/1 as start
+                    const spanText = (textSpan.textContent || '').replace(/\u00A0/g, '');
+                    if (spanText === '' && offset <= 1) atStart = true;
+                  } else if (container === checkboxLine && offset === 0) {
+                    atStart = true;
+                  }
+                  // If caret is somewhere inside actual text (not at start), let default run
+                  if (atStart) {
+                    e.preventDefault();
+                    const indent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                    const lineHasText = (checkboxLine.textContent || '').replace(/\u00A0/g, '').trim() !== '';
+                    
+                    if (indent > 0) {
+                      // Indented: first backspace outdents rather than deleting
+                      checkboxLine.style.marginLeft = Math.max(0, indent - 20) + 'px';
+                      const r = document.createRange();
+                      r.setStart(textSpan || checkboxLine, 0);
+                      r.collapse(true);
+                      selection.removeAllRanges();
+                      selection.addRange(r);
+                    } else {
+                      // Convert checkbox line into a plain text line, preserving any text
+                      const newLine = document.createElement('div');
+                      newLine.style.display = 'block';
+                      const newSpan = document.createElement('span');
+                      newSpan.contentEditable = 'true';
+                      newSpan.innerHTML = (textSpan && textSpan.innerHTML) ? textSpan.innerHTML : '&nbsp;';
+                      newLine.appendChild(newSpan);
+                      checkboxLine.parentNode.replaceChild(newLine, checkboxLine);
+                      // Place caret at the start of the converted line
+                      const r = document.createRange();
+                      r.setStart(newSpan.firstChild || newSpan, 0);
+                      r.collapse(true);
+                      selection.removeAllRanges();
+                      selection.addRange(r);
+                    }
                   }
                 }
                 
@@ -2402,6 +2550,11 @@ export default function LittleFires() {
                     selection.removeAllRanges();
                     selection.addRange(newRange);
                   }
+                }
+                
+                // After any structural key (Tab/Enter/Backspace), refresh markers
+                if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'Backspace') {
+                  setTimeout(() => refreshListMarkers(e.target.closest('.details-richtext')), 0);
                 }
               }}
               ref={detailsRef}
@@ -4295,6 +4448,22 @@ export default function LittleFires() {
           font-weight: bold;
         }
 
+        .details-richtext .checkbox-line.has-children,
+        .note-content .checkbox-line.has-children {
+          border-bottom: 2px solid rgba(83, 116, 95, 0.55);
+          padding-bottom: 6px;
+          margin-bottom: 8px;
+        }
+
+        /* Boundary line marking the end of a nested child list: a top-level
+           item that follows indented children gets a matcha rule above it. */
+        .details-richtext .checkbox-line.ends-list,
+        .note-content .checkbox-line.ends-list {
+          border-top: 2px solid rgba(83, 116, 95, 0.55);
+          padding-top: 8px;
+          margin-top: 8px;
+        }
+
         .details-richtext .checkbox-line::before {
           content: '';
           display: block;
@@ -4309,6 +4478,27 @@ export default function LittleFires() {
         .details-richtext .checkbox-line span {
           flex: 1;
           color: #f4e8d8;
+        }
+
+        .task-link {
+          display: inline-block;
+          color: #7ba386;
+          background: rgba(83, 116, 95, 0.18);
+          border: 1px solid rgba(83, 116, 95, 0.45);
+          border-radius: 6px;
+          padding: 1px 8px;
+          margin: 0 2px;
+          font-weight: 600;
+          text-decoration: none;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          user-select: none;
+        }
+
+        .task-link:hover {
+          background: rgba(83, 116, 95, 0.35);
+          color: #a8e6cf;
+          border-color: rgba(83, 116, 95, 0.7);
         }
 
         .details-richtext strong {
@@ -6521,21 +6711,70 @@ export default function LittleFires() {
                           className="note-content"
                           contentEditable
                           suppressContentEditableWarning
+                          onInput={(e) => {
+                            const area = e.currentTarget;
+                            try {
+                              const lines = Array.from(area.querySelectorAll('.checkbox-line'));
+                              const gi = (l) => parseInt(l.style.marginLeft || '0') || 0;
+                              lines.forEach(l => { l.classList.remove('has-children'); l.classList.remove('ends-list'); });
+                              for (let i = 0; i < lines.length; i++) {
+                                const ind = gi(lines[i]);
+                                const nxt = i + 1 < lines.length ? gi(lines[i + 1]) : -1;
+                                const prv = i > 0 ? gi(lines[i - 1]) : -1;
+                                if (nxt > ind) {
+                                  const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
+                                  if (txt) lines[i].classList.add('has-children');
+                                }
+                                if (ind === 0 && prv > 0) lines[i].classList.add('ends-list');
+                              }
+                            } catch (err) {}
+                          }}
                           onBlur={(e) => updateNote(note.id, e.currentTarget.innerHTML)}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Open pasted links in a new tab
+                            const link = e.target && e.target.closest && e.target.closest('a.task-link');
+                            if (link) {
+                              e.preventDefault();
+                              const href = link.getAttribute('href');
+                              if (href) window.open(href, '_blank', 'noopener,noreferrer');
+                            }
+                          }}
                           onPaste={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             
-                            // Get plain text from clipboard
-                            const text = e.clipboardData?.getData('text/plain') || '';
+                            const text = (e.clipboardData?.getData('text/plain') || '');
+                            const trimmed = text.trim();
                             
-                            // Insert plain text without formatting
                             const selection = window.getSelection();
-                            if (selection.rangeCount > 0) {
-                              selection.getRangeAt(0).deleteContents();
+                            if (!selection.rangeCount) return;
+                            const range = selection.getRangeAt(0);
+                            range.deleteContents();
+                            
+                            // A single pasted URL becomes a compact "Link" anchor
+                            const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);
+                            if (isUrl) {
+                              const href = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed;
+                              const a = document.createElement('a');
+                              a.href = href;
+                              a.textContent = 'Link';
+                              a.className = 'task-link';
+                              a.target = '_blank';
+                              a.rel = 'noopener noreferrer';
+                              a.title = href;
+                              a.contentEditable = 'false';
+                              range.insertNode(a);
+                              const after = document.createTextNode('\u00A0');
+                              a.parentNode.insertBefore(after, a.nextSibling);
+                              const newRange = document.createRange();
+                              newRange.setStart(after, 1);
+                              newRange.collapse(true);
+                              selection.removeAllRanges();
+                              selection.addRange(newRange);
+                            } else {
                               const textNode = document.createTextNode(text);
-                              selection.getRangeAt(0).insertNode(textNode);
+                              range.insertNode(textNode);
                               selection.collapseToEnd();
                             }
                           }}
@@ -6576,6 +6815,48 @@ export default function LittleFires() {
                                   break;
                                 }
                                 prevLine = prevLine.previousElementSibling;
+                              }
+                            }
+                            
+                            // Handle Backspace at the start of a checkbox line
+                            else if (e.key === 'Backspace' && checkboxLine && selection.isCollapsed) {
+                              const textSpan = checkboxLine.querySelector('span');
+                              let atStart = false;
+                              const container = range.startContainer;
+                              const offset = range.startOffset;
+                              if (textSpan) {
+                                if (offset === 0 && (container === textSpan || container === textSpan.firstChild)) {
+                                  atStart = true;
+                                }
+                                const spanText = (textSpan.textContent || '').replace(/\u00A0/g, '');
+                                if (spanText === '' && offset <= 1) atStart = true;
+                              } else if (container === checkboxLine && offset === 0) {
+                                atStart = true;
+                              }
+                              if (atStart) {
+                                e.preventDefault();
+                                const indent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                                if (indent > 0) {
+                                  checkboxLine.style.marginLeft = Math.max(0, indent - 20) + 'px';
+                                  const r = document.createRange();
+                                  r.setStart(textSpan || checkboxLine, 0);
+                                  r.collapse(true);
+                                  selection.removeAllRanges();
+                                  selection.addRange(r);
+                                } else {
+                                  const newLine = document.createElement('div');
+                                  newLine.style.display = 'block';
+                                  const newSpan = document.createElement('span');
+                                  newSpan.contentEditable = 'true';
+                                  newSpan.innerHTML = (textSpan && textSpan.innerHTML) ? textSpan.innerHTML : '&nbsp;';
+                                  newLine.appendChild(newSpan);
+                                  checkboxLine.parentNode.replaceChild(newLine, checkboxLine);
+                                  const r = document.createRange();
+                                  r.setStart(newSpan.firstChild || newSpan, 0);
+                                  r.collapse(true);
+                                  selection.removeAllRanges();
+                                  selection.addRange(r);
+                                }
                               }
                             }
                             
@@ -6649,6 +6930,29 @@ export default function LittleFires() {
                                 selection.removeAllRanges();
                                 selection.addRange(newRange);
                               }
+                            }
+                            
+                            // Refresh list markers after structural keys
+                            if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'Backspace') {
+                              setTimeout(() => {
+                                const area = e.target.closest('.note-content');
+                                if (!area) return;
+                                try {
+                                  const lines = Array.from(area.querySelectorAll('.checkbox-line'));
+                                  const gi = (l) => parseInt(l.style.marginLeft || '0') || 0;
+                                  lines.forEach(l => { l.classList.remove('has-children'); l.classList.remove('ends-list'); });
+                                  for (let i = 0; i < lines.length; i++) {
+                                    const ind = gi(lines[i]);
+                                    const nxt = i + 1 < lines.length ? gi(lines[i + 1]) : -1;
+                                    const prv = i > 0 ? gi(lines[i - 1]) : -1;
+                                    if (nxt > ind) {
+                                      const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
+                                      if (txt) lines[i].classList.add('has-children');
+                                    }
+                                    if (ind === 0 && prv > 0) lines[i].classList.add('ends-list');
+                                  }
+                                } catch (err) {}
+                              }, 0);
                             }
                           }}
                           dangerouslySetInnerHTML={{ __html: note.content || '' }}

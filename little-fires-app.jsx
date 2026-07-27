@@ -2296,6 +2296,69 @@ export default function LittleFires() {
               >
                 • Bullets
               </button>
+              <button 
+                className="toolbar-btn"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  
+                  const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                  detailsArea.focus();
+                  
+                  // Build a "Follow Up" heading line with the matcha underline
+                  const heading = document.createElement('div');
+                  heading.className = 'follow-up-heading';
+                  heading.style.display = 'block';
+                  heading.style.fontWeight = 'bold';
+                  heading.style.borderBottom = '2px solid rgba(83, 116, 95, 0.55)';
+                  heading.style.paddingBottom = '6px';
+                  heading.style.marginBottom = '8px';
+                  heading.style.marginTop = '18px';
+                  const headingSpan = document.createElement('span');
+                  headingSpan.contentEditable = 'true';
+                  headingSpan.style.fontWeight = 'bold';
+                  headingSpan.textContent = 'Follow Up';
+                  heading.appendChild(headingSpan);
+                  
+                  // Build an open checkbox line beneath the heading
+                  const cbLine = document.createElement('div');
+                  cbLine.className = 'checkbox-line';
+                  cbLine.style.display = 'flex';
+                  const cb = document.createElement('input');
+                  cb.type = 'checkbox';
+                  cb.className = 'task-checkbox';
+                  cb.onclick = (evt) => {
+                    const da = evt.target.closest('.details-richtext');
+                    if (da && document.activeElement !== da) da.focus();
+                  };
+                  const cbSpan = document.createElement('span');
+                  cbSpan.contentEditable = 'true';
+                  cbSpan.innerHTML = '&nbsp;';
+                  cbLine.appendChild(cb);
+                  cbLine.appendChild(cbSpan);
+                  
+                  // Append a spacer + the section a few lines below existing content
+                  const spacer = document.createElement('div');
+                  spacer.innerHTML = '<br>';
+                  detailsArea.appendChild(spacer);
+                  detailsArea.appendChild(heading);
+                  detailsArea.appendChild(cbLine);
+                  
+                  // Place the cursor in the new checkbox line's text
+                  const selection = window.getSelection();
+                  const range = document.createRange();
+                  range.setStart(cbSpan, 0);
+                  range.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  
+                  // Refresh markers so everything stays consistent
+                  setTimeout(() => refreshListMarkers(detailsArea), 0);
+                }}
+                title="Add Follow Up section"
+              >
+                Follow Up
+              </button>
             </div>
             <div 
               className="details-richtext"

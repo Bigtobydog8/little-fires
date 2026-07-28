@@ -72,7 +72,7 @@ export default function LittleFires() {
   const [currentList, setCurrentList] = useState('master');
   const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
   const [archiveDropdownOpen, setArchiveDropdownOpen] = useState(false);
-  const [reportTimeframe, setReportTimeframe] = useState('last3'); // 'thisMonth','lastMonth','last3','last6','allTime'
+  const [reportTimeframe, setReportTimeframe] = useState('thisMonth'); // 'thisMonth','lastMonth','last3','last6','allTime'
   const [reportChartType, setReportChartType] = useState('line'); // 'line' or 'bar'
   const [reportTimeframeDropdownOpen, setReportTimeframeDropdownOpen] = useState(false);
   const [reportHoverIndex, setReportHoverIndex] = useState(null); // hovered bucket index for tooltip
@@ -81,6 +81,11 @@ export default function LittleFires() {
   const [reportStatusDropdownOpen, setReportStatusDropdownOpen] = useState(false);
   const [fireFillAnim, setFireFillAnim] = useState(0); // 0..1 animated multiplier for the rise-on-load effect
   const [fireFlicker, setFireFlicker] = useState(0); // toggles spike pattern for idle flicker
+  // Narrow-screen flag. Many layout values live in inline styles (which media
+  // queries can't reach), so we track viewport width in state instead.
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth <= 700 : false
+  );
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -312,6 +317,17 @@ export default function LittleFires() {
   useEffect(() => {
     localStorage.setItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
   }, [standaloneTimeLogs]);
+
+  // Keep the narrow-screen flag in sync (also fires on device rotation)
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 700);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
+  }, []);
 
   // Fire chart "rise" animation: whenever the Reports view opens or its
   // filters change, animate the fill multiplier from 0 up to 1 so the flame
@@ -6093,6 +6109,10 @@ export default function LittleFires() {
           font-size: 12px;
         }
 
+        .reports-section {
+          padding: 20px 40px 40px;
+        }
+
         @media (max-width: 600px) {
           h1 {
             font-size: 2.5rem;
@@ -6106,6 +6126,23 @@ export default function LittleFires() {
             min-width: 100%;
             flex-direction: column;
             align-items: flex-start;
+          }
+        }
+
+        @media (max-width: 700px) {
+          /* Reclaim horizontal space on phones */
+          .container {
+            padding: 0 12px;
+          }
+
+          .reports-section {
+            padding: 12px 0 24px;
+          }
+
+          /* Larger touch targets */
+          .toolbar-btn {
+            padding: 10px 14px;
+            font-size: 0.9rem;
           }
         }
       `}</style>
@@ -13160,7 +13197,7 @@ export default function LittleFires() {
         )}
 
         {appMode === 'reports' && (
-          <div className="reports-section" style={{ padding: '20px 40px 40px' }}>
+          <div className="reports-section">
 
             {(() => {
               const listKeys = ['personal', 'work', 'home', 'travel', 'kids'];
@@ -13180,17 +13217,20 @@ export default function LittleFires() {
 
               if (reportTimeframe === 'thisMonth') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
-                bucketUnit = 'day';
+                // Daily buckets are unreadable on a phone (~31 points), so step
+                // down to weekly on narrow screens.
+                bucketUnit = isMobile ? 'week' : 'day';
               } else if (reportTimeframe === 'lastMonth') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
                 rangeEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-                bucketUnit = 'day';
+                bucketUnit = isMobile ? 'week' : 'day';
               } else if (reportTimeframe === 'last3') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
                 bucketUnit = 'week';
               } else if (reportTimeframe === 'last6') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-                bucketUnit = 'week';
+                // ~26 weekly points is too dense on a phone
+                bucketUnit = isMobile ? 'month' : 'week';
               } else { // allTime
                 bucketUnit = 'month';
                 rangeStart = null; // computed after scanning tasks
@@ -13345,12 +13385,12 @@ export default function LittleFires() {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {/* Controls */}
                   <div style={{
-                    order: 2,
+                    order: 1,
                     display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'flex-end',
                     marginBottom: '25px', marginTop: '25px'
                   }}>
                     {/* Task Status dropdown */}
-                    <div style={{ minWidth: '200px' }}>
+                    <div style={{ minWidth: isMobile ? '100%' : '200px', flex: isMobile ? '1 1 100%' : '0 1 auto' }}>
                       <label style={{ display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
                         Task Status:
                       </label>
@@ -13399,7 +13439,7 @@ export default function LittleFires() {
                     </div>
 
                     {/* Timeframe dropdown */}
-                    <div style={{ minWidth: '200px' }}>
+                    <div style={{ minWidth: isMobile ? '100%' : '200px', flex: isMobile ? '1 1 100%' : '0 1 auto' }}>
                       <label style={{ display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
                         Timeframe:
                       </label>
@@ -13478,40 +13518,40 @@ export default function LittleFires() {
                   {/* Summary stats */}
                   <div style={{
                     order: 3,
-                    display: 'flex', flexWrap: 'wrap', gap: '15px', marginBottom: '20px'
+                    display: 'flex', flexWrap: 'wrap', gap: isMobile ? '8px' : '15px', marginBottom: '20px'
                   }}>
                     <div style={{
                       background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
-                      borderRadius: '12px', padding: '18px 22px', minWidth: '150px'
+                      borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
-                      <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                      <div style={{ color: '#b8a99a', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
                         {({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
                       </div>
-                      <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      <div style={{ color: '#f4e8d8', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
                         {grandTotal}
                       </div>
                     </div>
 
                     <div style={{
                       background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
-                      borderRadius: '12px', padding: '18px 22px', minWidth: '150px'
+                      borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
-                      <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                      <div style={{ color: '#b8a99a', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
                         Open Tasks
                       </div>
-                      <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      <div style={{ color: '#f4e8d8', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
                         {openTasksCount}
                       </div>
                     </div>
 
                     <div style={{
                       background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
-                      borderRadius: '12px', padding: '18px 22px', minWidth: '150px'
+                      borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
-                      <div style={{ color: '#b8a99a', fontSize: '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px' }}>
+                      <div style={{ color: '#b8a99a', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
                         Backlog
                       </div>
-                      <div style={{ color: '#f4e8d8', fontSize: '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      <div style={{ color: '#f4e8d8', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
                         {backlogTasksCount}
                       </div>
                     </div>
@@ -13638,12 +13678,12 @@ export default function LittleFires() {
 
                   {/* Chart card */}
                   <div style={{
-                    order: 1,
+                    order: 2,
                     background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
-                    borderRadius: '12px', padding: '20px', overflowX: 'auto'
+                    borderRadius: '12px', padding: isMobile ? '12px 8px' : '20px', overflowX: 'auto'
                   }}>
                     <div style={{ position: 'relative' }}>
-                    <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', minWidth: n > 20 ? '900px' : '100%', height: 'auto', display: 'block' }}>
+                    <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: '100%', minWidth: (!isMobile && n > 20) ? '900px' : '100%', height: 'auto', display: 'block' }}>
                       {/* Y gridlines + labels */}
                       {uniqueTicks.map((tick, i) => (
                         <g key={'y' + i}>

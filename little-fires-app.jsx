@@ -72,7 +72,7 @@ export default function LittleFires() {
   const [currentList, setCurrentList] = useState('master');
   const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
   const [archiveDropdownOpen, setArchiveDropdownOpen] = useState(false);
-  const [reportTimeframe, setReportTimeframe] = useState('thisMonth'); // 'thisMonth','lastMonth','last3','last6','allTime'
+  const [reportTimeframe, setReportTimeframe] = useState('thisWeek'); // 'thisWeek','thisMonth','lastMonth','last3','last6','allTime'
   const [reportChartType, setReportChartType] = useState('line'); // 'line' or 'bar'
   const [reportTimeframeDropdownOpen, setReportTimeframeDropdownOpen] = useState(false);
   const [reportHoverIndex, setReportHoverIndex] = useState(null); // hovered bucket index for tooltip
@@ -86,6 +86,9 @@ export default function LittleFires() {
   const [isMobile, setIsMobile] = useState(
     typeof window !== 'undefined' ? window.innerWidth <= 700 : false
   );
+  // How long the report chart takes to draw itself in (lines sweep, bars grow).
+  // The fire chart waits this long before igniting, so they run in sequence.
+  const CHART_DRAW_MS = 1500;
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -331,15 +334,23 @@ export default function LittleFires() {
 
   // Fire chart "rise" animation: whenever the Reports view opens or its
   // filters change, animate the fill multiplier from 0 up to 1 so the flame
-  // looks like it's igniting and rising to its real level.
+  // looks like it's igniting and rising to its real level. It waits for the
+  // chart (lines or bars) to finish drawing itself in first.
   useEffect(() => {
     if (appMode !== 'reports') return;
     let raf;
     const start = performance.now();
     const duration = 3000; // ms - takes 3s to rise to full
+    const delay = CHART_DRAW_MS; // both line and bar charts draw in first
     setFireFillAnim(0);
     const tick = (now) => {
-      const t = Math.min(1, (now - start) / duration);
+      const elapsed = now - start - delay;
+      if (elapsed < 0) {
+        // Still waiting on the lines - hold the flame unlit
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const t = Math.min(1, elapsed / duration);
       // Ease-out so it rises fast then settles
       const eased = 1 - Math.pow(1 - t, 3);
       setFireFillAnim(eased);
@@ -359,7 +370,7 @@ export default function LittleFires() {
       if (raf) cancelAnimationFrame(raf);
       if (flickRaf) cancelAnimationFrame(flickRaf);
     };
-  }, [appMode, reportTimeframe, reportTaskStatus, reportHiddenLists]);
+  }, [appMode, reportTimeframe, reportTaskStatus, reportHiddenLists, reportChartType]);
 
   // Timer for time logging - accumulator approach.
   // While isLogging is true, accumulate elapsed time in fine increments so the
@@ -1817,6 +1828,14 @@ export default function LittleFires() {
     const hasSetInitialContent = React.useRef(false);
     const saveTimeoutRef = React.useRef(null);
     const clickTimeoutRef = React.useRef(null);
+    // Holds the task in place briefly after checking it, so the checkmark is
+    // visible before the task leaves the list.
+    const [isCompleting, setIsCompleting] = React.useState(false);
+    const completeTimeoutRef = React.useRef(null);
+
+    React.useEffect(() => {
+      return () => { if (completeTimeoutRef.current) clearTimeout(completeTimeoutRef.current); };
+    }, []);
 
     // Sync parent checkboxes based on their indented children.
     // A parent is a line whose immediately-following lines are more indented.
@@ -2085,7 +2104,13 @@ export default function LittleFires() {
           
           setExpandedTaskId(isExpanded ? null : `${listName}-${index}`);
         }}
-        style={{pointerEvents: task.isArchived ? 'none' : 'auto', opacity: task.isArchived ? 0.7 : 1}}
+        style={{
+          pointerEvents: task.isArchived ? 'none' : 'auto',
+          opacity: task.isArchived ? 0.7 : (isCompleting ? 0 : 1),
+          transform: isCompleting ? 'translateX(14px) scale(0.97)' : 'none',
+          // Hold briefly at full opacity so the checkmark registers, then fade
+          transition: isCompleting ? 'opacity 0.35s ease 0.3s, transform 0.35s ease 0.3s' : 'none'
+        }}
       >
         {task.priority && task.priority !== 'low' && (
           <div className={`priority-indicator ${task.priority}`}></div>
@@ -2095,10 +2120,21 @@ export default function LittleFires() {
           <div className="checkbox-wrapper">
             <input
               type="checkbox"
-              checked={task.completed}
+              checked={task.completed || isCompleting}
               onChange={(e) => {
                 e.stopPropagation();
-                if (!task.isArchived) toggleTask(listName, index);
+                if (task.isArchived) return;
+                // Un-completing is immediate; completing pauses so the checkmark
+                // and fade-out are visible before the task leaves the list.
+                if (task.completed) {
+                  toggleTask(listName, index);
+                  return;
+                }
+                if (isCompleting) return; // already on its way out
+                setIsCompleting(true);
+                completeTimeoutRef.current = setTimeout(() => {
+                  toggleTask(listName, index);
+                }, 700);
               }}
               onClick={(e) => e.stopPropagation()}
               disabled={task.isArchived}
@@ -3078,7 +3114,7 @@ export default function LittleFires() {
       
       {/* Checkmark */}
       <path d="M 26 40 L 36 50 L 54 30" 
-            stroke="#1a1a2e" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+            stroke="#ffffff" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
     </svg>
   );
 
@@ -3594,6 +3630,24 @@ export default function LittleFires() {
           100% { 
             filter: drop-shadow(0 0 25px rgba(255, 69, 0, 0.8));
           }
+        }
+
+        /* Report chart: draw the series left-to-right.
+           Paths use pathLength="1" so the dash math is resolution-independent. */
+        @keyframes drawLine {
+          from { stroke-dashoffset: 1; }
+          to   { stroke-dashoffset: 0; }
+        }
+
+        @keyframes growBar {
+          from { transform: scaleY(0); }
+          to   { transform: scaleY(1); }
+        }
+
+        @keyframes dotPop {
+          0%   { opacity: 0; transform: scale(0.2); }
+          70%  { opacity: 1; transform: scale(1.15); }
+          100% { opacity: 1; transform: scale(1); }
         }
 
         @keyframes progressRing {
@@ -6139,10 +6193,38 @@ export default function LittleFires() {
             padding: 12px 0 24px;
           }
 
-          /* Larger touch targets */
+          /* Reclaim nested padding: .tasks-container (25px) + .details-richtext
+             (16px) were eating ~66px of horizontal space inside task cards. */
+          .tasks-container {
+            padding: 12px;
+            border-radius: 14px;
+            max-height: 68vh;
+          }
+
+          .details-richtext {
+            padding: 10px 12px;
+          }
+
+          /* Details toolbar (Box / Bullets / Follow Up): the global button rule
+             applies uppercase + 1px letter-spacing, which makes these overflow
+             onto a second row. Tighten them so they fit a single row. */
+          .richtext-toolbar {
+            gap: 5px;
+            padding: 4px;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+          }
+
+          .richtext-toolbar::-webkit-scrollbar {
+            display: none;
+          }
+
           .toolbar-btn {
-            padding: 10px 14px;
-            font-size: 0.9rem;
+            padding: 7px 8px;
+            font-size: 0.68rem;
+            letter-spacing: 0;
+            border-radius: 6px;
           }
 
           /* --- Typography --- */
@@ -13320,18 +13402,29 @@ export default function LittleFires() {
               const now = new Date();
               const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
+              // Weeks run Monday -> Sunday
+              const startOfWeek = (d) => {
+                const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+                x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); // Monday start
+                return x;
+              };
+
               let rangeStart, rangeEnd, bucketUnit; // bucketUnit: 'day' | 'week' | 'month'
               rangeEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
-              if (reportTimeframe === 'thisMonth') {
+              if (reportTimeframe === 'thisWeek') {
+                rangeStart = startOfWeek(now);
+                // Show the full Mon-Sun week so upcoming days appear as empty slots
+                rangeEnd = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate() + 6, 23, 59, 59, 999);
+                bucketUnit = 'day';
+              } else if (reportTimeframe === 'thisMonth') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth(), 1);
-                // Daily buckets are unreadable on a phone (~31 points), so step
-                // down to weekly on narrow screens.
-                bucketUnit = isMobile ? 'week' : 'day';
+                // Weekly reads better than ~30 daily points on any screen size
+                bucketUnit = 'week';
               } else if (reportTimeframe === 'lastMonth') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
                 rangeEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-                bucketUnit = isMobile ? 'week' : 'day';
+                bucketUnit = 'week';
               } else if (reportTimeframe === 'last3') {
                 rangeStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
                 bucketUnit = 'week';
@@ -13397,11 +13490,7 @@ export default function LittleFires() {
 
               // --- Build buckets ---
               const buckets = []; // { label, start, end }
-              const startOfWeek = (d) => {
-                const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-                x.setDate(x.getDate() - x.getDay()); // Sunday start
-                return x;
-              };
+              const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
               if (bucketUnit === 'day') {
                 let cur = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate());
@@ -13409,7 +13498,7 @@ export default function LittleFires() {
                   const start = new Date(cur);
                   const end = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate(), 23, 59, 59, 999);
                   buckets.push({
-                    label: String(start.getDate()),
+                    label: dayNames[start.getDay()],
                     start, end
                   });
                   cur.setDate(cur.getDate() + 1);
@@ -13472,6 +13561,31 @@ export default function LittleFires() {
               const xFor = (i) => n <= 1 ? padL + plotW / 2 : padL + (plotW * i) / (n - 1);
               const yFor = (v) => padT + plotH - (plotH * v) / maxCount;
 
+              // Build a smooth cubic-bezier path through the points (Catmull-Rom).
+              // Control-point Y values are clamped to each segment's own range so
+              // the curve can never overshoot below 0 or above a peak - important
+              // here because task counts can't be negative.
+              const smoothPath = (pts) => {
+                if (pts.length === 0) return '';
+                if (pts.length < 3) return pts.map((p, i) => `${i ? 'L' : 'M'} ${p.x} ${p.y}`).join(' ');
+                let d = `M ${pts[0].x} ${pts[0].y}`;
+                for (let i = 0; i < pts.length - 1; i++) {
+                  const p0 = pts[i - 1] || pts[i];
+                  const p1 = pts[i];
+                  const p2 = pts[i + 1];
+                  const p3 = pts[i + 2] || pts[i + 1];
+                  const loY = Math.min(p1.y, p2.y);
+                  const hiY = Math.max(p1.y, p2.y);
+                  const clamp = (y) => Math.max(loY, Math.min(hiY, y));
+                  const c1x = p1.x + (p2.x - p0.x) / 6;
+                  const c1y = clamp(p1.y + (p2.y - p0.y) / 6);
+                  const c2x = p2.x - (p3.x - p1.x) / 6;
+                  const c2y = clamp(p2.y - (p3.y - p1.y) / 6);
+                  d += ` C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2.x} ${p2.y}`;
+                }
+                return d;
+              };
+
               // Y-axis ticks (integer, up to 5)
               const tickCount = Math.min(5, maxCount);
               const yTicks = [];
@@ -13488,6 +13602,16 @@ export default function LittleFires() {
               // Label thinning to avoid crowding
               const maxLabels = 14;
               const labelStep = Math.ceil(n / maxLabels);
+
+              // Changing this string remounts the series so the draw-in animation
+              // replays. Deliberately excludes hover state and the fire flicker,
+              // which change constantly and would restart the animation.
+              const chartAnimKey = [
+                reportTimeframe,
+                reportTaskStatus,
+                reportChartType,
+                visibleKeys.join(',')
+              ].join('|');
 
               return (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -13561,7 +13685,7 @@ export default function LittleFires() {
                             cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
                           }}
                         >
-                          <span>{({ thisMonth: 'This Month', lastMonth: 'Last Month', last3: 'Last 3 Months', last6: 'Last 6 Months', allTime: 'All Time' })[reportTimeframe]}</span>
+                          <span>{({ thisWeek: 'This Week', thisMonth: 'This Month', lastMonth: 'Last Month', last3: 'Last 3 Months', last6: 'Last 6 Months', allTime: 'All Time' })[reportTimeframe]}</span>
                           <span style={{ transform: reportTimeframeDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)', transition: 'transform 0.3s ease', fontSize: '0.9rem', display: 'inline-block' }}>▼</span>
                         </div>
                         {reportTimeframeDropdownOpen && (
@@ -13571,6 +13695,7 @@ export default function LittleFires() {
                             borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
                           }}>
                             {[
+                              { value: 'thisWeek', label: 'This Week' },
                               { value: 'thisMonth', label: 'This Month' },
                               { value: 'lastMonth', label: 'Last Month' },
                               { value: 'last3', label: 'Last 3 Months' },
@@ -13675,8 +13800,12 @@ export default function LittleFires() {
                     {(() => {
                       const count = grandTotal;
                       // Fill target scales at 30 completed tasks per month of the range.
-                      const monthsInRange = ({ thisMonth: 1, lastMonth: 1, last3: 3, last6: 6, allTime: 12 })[reportTimeframe] || 1;
-                      const target = 30 * monthsInRange;
+                      // Fill target: ~30 completed tasks per month of the range
+                      // (This Week is scaled to 7, i.e. one a day).
+                      const target = ({
+                        thisWeek: 7, thisMonth: 30, lastMonth: 30,
+                        last3: 90, last6: 180, allTime: 360
+                      })[reportTimeframe] || 30;
                       const fillRatio = Math.max(0, Math.min(1, count / target));
                       // Apply the load "rise" animation multiplier
                       const animatedFill = fillRatio * fireFillAnim;
@@ -13733,8 +13862,8 @@ export default function LittleFires() {
                       return (
                         <>
                           <svg
-                            width={130}
-                            height={130}
+                            width={isMobile ? 170 : 220}
+                            height={isMobile ? 170 : 220}
                             viewBox="0 0 1280 1280"
                             preserveAspectRatio="xMidYMid meet"
                             style={{ filter: `drop-shadow(0 0 ${8 + animatedFill * 26}px ${glow})` }}
@@ -13824,33 +13953,69 @@ export default function LittleFires() {
                       {/* Data: bars or lines */}
                       {reportChartType === 'bar' ? (
                         buckets.map((b, i) => (
-                          <g key={'bar' + i}>
+                          <g key={'bar' + i + '-' + chartAnimKey}>
                             {visibleKeys.map((k, ki) => {
                               const v = series[k][i];
                               const x = padL + groupWidth * i + (groupWidth - barGroupInner) / 2 + ki * barWidth;
                               const h = (plotH * v) / maxCount;
+                              const baselineY = padT + plotH;
+                              // Stagger across buckets so bars rise left to right
+                              const delayMs = n <= 1 ? 0 : Math.round((i / (n - 1)) * CHART_DRAW_MS * 0.6);
                               return v > 0 ? (
-                                <rect key={k} x={x} y={padT + plotH - h} width={Math.max(1, barWidth - 2)} height={h}
+                                <rect key={k} x={x} y={baselineY - h} width={Math.max(1, barWidth - 2)} height={h}
                                   fill={listColors[k]} rx="2" opacity={reportHoverIndex === null || reportHoverIndex === i ? 0.9 : 0.35}
-                                  style={{ transition: 'opacity 0.15s ease' }} />
+                                  style={{
+                                    transition: 'opacity 0.15s ease',
+                                    transformOrigin: `${x}px ${baselineY}px`,
+                                    // 'both' holds scaleY(0) during the stagger delay,
+                                    // otherwise the bar would flash full-height first
+                                    animation: `growBar ${Math.round(CHART_DRAW_MS * 0.5)}ms ease-out ${delayMs}ms both`
+                                  }} />
                               ) : null;
                             })}
                           </g>
                         ))
                       ) : (
                         visibleKeys.map(k => {
-                          const pts = series[k].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
+                          const vals = series[k];
+                          // Index of the last bucket that actually has data. Anything
+                          // after this is trailing zeros, which just drag a flat line
+                          // along the axis - so we stop the line there.
+                          const lastIdx = vals.reduce((last, v, i) => (v > 0 ? i : last), -1);
+                          if (lastIdx < 0) return null; // nothing in range at all
+
+                          const pts = vals.slice(0, lastIdx + 1).map((v, i) => ({ x: xFor(i), y: yFor(v) }));
+                          let pathD = smoothPath(pts);
+                          // If the series opens with a value, rise from the baseline so
+                          // the line visibly draws up from zero instead of starting mid-air.
+                          if (vals[0] > 0) {
+                            pathD = `M ${xFor(0)} ${yFor(0)} L ` + pathD.slice(2);
+                          }
+                          const drawMs = CHART_DRAW_MS;
                           return (
-                            <g key={'line' + k}>
-                              <polyline points={pts} fill="none" stroke={listColors[k]} strokeWidth="2.5"
-                                strokeLinejoin="round" strokeLinecap="round" opacity="0.95" />
-                              {series[k].map((v, i) => (
-                                <circle key={i} cx={xFor(i)} cy={yFor(v)}
-                                  r={reportHoverIndex === i ? 5 : 3}
-                                  fill={listColors[k]}
-                                  stroke={reportHoverIndex === i ? '#fff' : 'none'}
-                                  strokeWidth={reportHoverIndex === i ? 1.5 : 0}
-                                  style={{ transition: 'r 0.1s ease' }} />
+                            <g key={'line' + k + '-' + chartAnimKey}>
+                              <path d={pathD} fill="none" stroke={listColors[k]} strokeWidth="4"
+                                strokeLinejoin="round" strokeLinecap="round" opacity="0.95"
+                                pathLength="1"
+                                strokeDasharray="1"
+                                style={{ animation: `drawLine ${drawMs}ms ease-out forwards` }} />
+                              {vals.map((v, i) => (
+                                // Only mark buckets that have data
+                                v > 0 ? (
+                                  <circle key={i} cx={xFor(i)} cy={yFor(v)}
+                                    r={reportHoverIndex === i ? 6 : 4}
+                                    fill={listColors[k]}
+                                    stroke={reportHoverIndex === i ? '#fff' : 'none'}
+                                    strokeWidth={reportHoverIndex === i ? 2 : 0}
+                                    style={{
+                                      transition: 'r 0.1s ease',
+                                      transformOrigin: `${xFor(i)}px ${yFor(v)}px`,
+                                      opacity: 0,
+                                      animation: `dotPop 260ms ease-out forwards`,
+                                      // stagger each dot so it appears as the line reaches it
+                                      animationDelay: `${n <= 1 ? 0 : Math.round((i / (n - 1)) * drawMs)}ms`
+                                    }} />
+                                ) : null
                               ))}
                             </g>
                           );

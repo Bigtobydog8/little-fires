@@ -79,6 +79,8 @@ export default function LittleFires() {
   const [reportHiddenLists, setReportHiddenLists] = useState({}); // { work: true } => hidden from chart
   const [reportTaskStatus, setReportTaskStatus] = useState('complete'); // 'complete','open','both'
   const [reportStatusDropdownOpen, setReportStatusDropdownOpen] = useState(false);
+  const [fireFillAnim, setFireFillAnim] = useState(0); // 0..1 animated multiplier for the rise-on-load effect
+  const [fireFlicker, setFireFlicker] = useState(0); // toggles spike pattern for idle flicker
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -310,6 +312,38 @@ export default function LittleFires() {
   useEffect(() => {
     localStorage.setItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
   }, [standaloneTimeLogs]);
+
+  // Fire chart "rise" animation: whenever the Reports view opens or its
+  // filters change, animate the fill multiplier from 0 up to 1 so the flame
+  // looks like it's igniting and rising to its real level.
+  useEffect(() => {
+    if (appMode !== 'reports') return;
+    let raf;
+    const start = performance.now();
+    const duration = 3000; // ms - takes 3s to rise to full
+    setFireFillAnim(0);
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      // Ease-out so it rises fast then settles
+      const eased = 1 - Math.pow(1 - t, 3);
+      setFireFillAnim(eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    // Idle flicker: advance a continuous phase so the flame edge undulates
+    // smoothly (rather than snapping between two states).
+    let flickRaf;
+    const flickStart = performance.now();
+    const flickTick = (now) => {
+      setFireFlicker((now - flickStart) / 1000); // seconds elapsed, continuous
+      flickRaf = requestAnimationFrame(flickTick);
+    };
+    flickRaf = requestAnimationFrame(flickTick);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      if (flickRaf) cancelAnimationFrame(flickRaf);
+    };
+  }, [appMode, reportTimeframe, reportTaskStatus, reportHiddenLists]);
 
   // Timer for time logging - accumulator approach.
   // While isLogging is true, accumulate elapsed time in fine increments so the
@@ -1237,6 +1271,8 @@ export default function LittleFires() {
       id: Date.now(),
       name,
       description,
+      challenge: '',
+      outcome: '',
       startDate: startDate || null,
       endDate: endDate || null,
       createdAt: new Date().toISOString()
@@ -1403,6 +1439,7 @@ export default function LittleFires() {
       id: Date.now(),
       name,
       description: description || '',
+      challenge: '',
       outcome: '',
       startDate: startDate || null,
       endDate: endDate || null,
@@ -2320,34 +2357,23 @@ export default function LittleFires() {
                   headingSpan.textContent = 'Follow Up';
                   heading.appendChild(headingSpan);
                   
-                  // Build an open checkbox line beneath the heading
-                  const cbLine = document.createElement('div');
-                  cbLine.className = 'checkbox-line';
-                  cbLine.style.display = 'flex';
-                  const cb = document.createElement('input');
-                  cb.type = 'checkbox';
-                  cb.className = 'task-checkbox';
-                  cb.onclick = (evt) => {
-                    const da = evt.target.closest('.details-richtext');
-                    if (da && document.activeElement !== da) da.focus();
-                  };
-                  const cbSpan = document.createElement('span');
-                  cbSpan.contentEditable = 'true';
-                  cbSpan.innerHTML = '&nbsp;';
-                  cbLine.appendChild(cb);
-                  cbLine.appendChild(cbSpan);
+                  // Build a bullet list with one empty bullet beneath the heading
+                  const list = document.createElement('ul');
+                  const item = document.createElement('li');
+                  item.innerHTML = '<br>';
+                  list.appendChild(item);
                   
                   // Append a spacer + the section a few lines below existing content
                   const spacer = document.createElement('div');
                   spacer.innerHTML = '<br>';
                   detailsArea.appendChild(spacer);
                   detailsArea.appendChild(heading);
-                  detailsArea.appendChild(cbLine);
+                  detailsArea.appendChild(list);
                   
-                  // Place the cursor in the new checkbox line's text
+                  // Place the cursor in the new bullet
                   const selection = window.getSelection();
                   const range = document.createRange();
-                  range.setStart(cbSpan, 0);
+                  range.setStart(item, 0);
                   range.collapse(true);
                   selection.removeAllRanges();
                   selection.addRange(range);
@@ -4683,6 +4709,18 @@ export default function LittleFires() {
           color: #53745f;
         }
 
+        /* Primary create/save action - matches the active task tab matcha */
+        .edit-btn.primary-action {
+          background: linear-gradient(135deg, #53745f, #6a8f76);
+          border: 1px solid rgba(83, 116, 95, 0.5);
+          color: #ffffff;
+        }
+
+        .edit-btn.primary-action:hover {
+          background: linear-gradient(135deg, #5d8169, #76a084);
+          box-shadow: 0 0 8px rgba(83, 116, 95, 0.5);
+        }
+
         .delete-btn:hover {
           background: rgba(255, 107, 107, 0.3);
           transform: scale(1.05);
@@ -6123,7 +6161,7 @@ export default function LittleFires() {
                   className={`menu-item ${appMode === 'notes' ? 'active' : ''}`}
                   onClick={() => { setAppMode('notes'); setMenuOpen(false); }}
                 >
-                  Journal
+                  Notes
                 </div>
                 <div className="menu-divider"></div>
                 <div 
@@ -6347,7 +6385,7 @@ export default function LittleFires() {
             }}
           >
             <div className="notes-header" style={{display: 'block', textAlign: 'center'}}>
-              <button className="add-task-btn" onClick={addNote} style={{width: '70%', display: 'inline-block'}}>New Journal Entry</button>
+              <button className="add-task-btn" onClick={addNote} style={{width: '70%', display: 'inline-block'}}>New Note</button>
             </div>
 
             {/* Search bar */}
@@ -7283,7 +7321,7 @@ export default function LittleFires() {
 
                         <div style={{display: 'flex', gap: '15px', marginTop: '10px', justifyContent: 'flex-end'}}>
                           <button 
-                            className="edit-btn"
+                            className="edit-btn primary-action"
                             onClick={(e) => {
                               const noteContent = e.target.closest('.note-entry').querySelector('.note-content');
                               updateNote(note.id, noteContent.innerHTML);
@@ -7463,7 +7501,7 @@ export default function LittleFires() {
                         />
                       </div>
                       <div className="modal-actions">
-                        <button className="edit-btn" onClick={submitProjectForm}>
+                        <button className="edit-btn primary-action" onClick={submitProjectForm}>
                           {editingProject ? 'Save Changes' : 'Create Project'}
                         </button>
                         <button className="delete-btn" onClick={() => {
@@ -7797,6 +7835,37 @@ export default function LittleFires() {
                               border: '2px solid rgba(83, 116, 95, 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
+                            fontSize: '0.95rem',
+                            fontFamily: 'Quicksand, sans-serif',
+                            resize: 'vertical',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                      </div>
+
+                      {/* Challenge Field */}
+                      <div style={{marginBottom: '20px'}}>
+                        <label style={{
+                          display: 'block',
+                          color: '#b8a99a',
+                          fontSize: '0.9rem',
+                          marginBottom: '8px',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}>
+                          Challenge:
+                        </label>
+                        <textarea
+                          value={project.challenge || ''}
+                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { challenge: e.target.value })}
+                          placeholder="Add a challenge..."
+                          style={{
+                            width: '100%',
+                            minHeight: '80px',
+                            padding: '12px',
+                            background: 'rgba(42, 42, 62, 0.8)',
+                            border: '2px solid rgba(83, 116, 95, 0.3)',
+                            borderRadius: '10px',
+                            color: '#f4e8d8',
                             fontSize: '0.95rem',
                             fontFamily: 'Quicksand, sans-serif',
                             resize: 'vertical',
@@ -8697,7 +8766,7 @@ export default function LittleFires() {
                   checked={showNotes}
                   onChange={(e) => setShowNotes(e.target.checked)}
                 />
-                <span>Journal</span>
+                <span>Notes</span>
               </label>
               <label className="calendar-checkbox">
                 <input
@@ -8950,7 +9019,7 @@ export default function LittleFires() {
                       
                       {notes.length > 0 && (
                         <div className="day-section">
-                          <h4>Journal ({notes.length})</h4>
+                          <h4>Notes ({notes.length})</h4>
                           {notes.map((item, idx) => {
                             const noteId = `calendar-note-${item.data.id}`;
                             const isExpanded = expandedCalendarNoteId === noteId;
@@ -9007,7 +9076,7 @@ export default function LittleFires() {
                                         }, 100);
                                       }}
                                     >
-                                      Go to Journal Entry →
+                                      Go to Note →
                                     </button>
                                   </div>
                                 )}
@@ -9527,6 +9596,31 @@ export default function LittleFires() {
                             value={goal.description || ''}
                             onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { description: e.target.value })}
                             placeholder="Add a description..."
+                            style={{
+                              width: '100%',
+                              minHeight: '100px',
+                              padding: '12px',
+                              background: 'rgba(42, 42, 62, 0.8)',
+                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              borderRadius: '10px',
+                              color: '#f4e8d8',
+                              fontSize: '0.95rem',
+                              fontFamily: 'inherit',
+                              resize: 'vertical',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                        </div>
+
+                        {/* Challenge Field */}
+                        <div style={{marginBottom: '20px'}}>
+                          <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
+                            Challenge:
+                          </label>
+                          <textarea
+                            value={goal.challenge || ''}
+                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { challenge: e.target.value })}
+                            placeholder="Add a challenge..."
                             style={{
                               width: '100%',
                               minHeight: '100px',
@@ -10199,7 +10293,7 @@ export default function LittleFires() {
                   </div>
                   <div className="modal-actions">
                     <button 
-                      className="edit-btn"
+                      className="edit-btn primary-action"
                       onClick={() => {
                         if (!goalFormData.name.trim()) return;
                         
@@ -11370,7 +11464,7 @@ export default function LittleFires() {
                             alignItems: 'center',
                             cursor: 'pointer'
                           }}>
-                          <span>Journal Time Logs</span>
+                          <span>Note Time Logs</span>
                           <span style={{
                             color: '#53745f',
                             fontSize: '1rem',
@@ -13423,7 +13517,7 @@ export default function LittleFires() {
                     </div>
                   </div>
 
-                  {/* Fire chart - flame sized by total completed tasks */}
+                  {/* Fire chart - orange fills the flame silhouette by completion */}
                   <div style={{
                     order: 0,
                     background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
@@ -13431,33 +13525,99 @@ export default function LittleFires() {
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
                   }}>
                     {(() => {
-                      // Map the absolute total to a 0..1 "heat" using a curve that
-                      // levels off, so big all-time numbers don't blow out the layout
-                      // while small counts still register.
                       const count = grandTotal;
-                      const heat = count <= 0 ? 0 : Math.min(1, Math.log(count + 1) / Math.log(60));
-                      const baseH = 70;
-                      const maxH = 150;
-                      const flameH = baseH + (maxH - baseH) * heat;
-                      const glow = count <= 0 ? 'rgba(120,120,140,0.15)' : `rgba(255, ${120 + heat * 80}, 40, ${0.25 + heat * 0.4})`;
-                      // Flame fill color intensifies with heat (gray ember -> hot orange/yellow)
-                      const flameFill = count <= 0
-                        ? '#4a4a5a'
-                        : `hsl(${20 + heat * 18}, ${75 + heat * 25}%, ${48 + heat * 12}%)`;
+                      // Fill target scales at 30 completed tasks per month of the range.
+                      const monthsInRange = ({ thisMonth: 1, lastMonth: 1, last3: 3, last6: 6, allTime: 12 })[reportTimeframe] || 1;
+                      const target = 30 * monthsInRange;
+                      const fillRatio = Math.max(0, Math.min(1, count / target));
+                      // Apply the load "rise" animation multiplier
+                      const animatedFill = fillRatio * fireFillAnim;
+
+                      // The flame occupies viewBox y ~[40..1240] in the 1280 space.
+                      // Convert fill ratio to a y-level (top of the orange). Higher
+                      // fill => smaller y (orange reaches higher up the flame).
+                      const flameTopY = 60;
+                      const flameBottomY = 1240;
+                      const span = flameBottomY - flameTopY;
+                      const levelY = flameBottomY - span * animatedFill;
+                      const uid = 'firefill'; // single instance on the page
+
+                      // Build a spiky, fire-like top edge whose spikes oscillate
+                      // smoothly over time. Uses quadratic curves between spike tips
+                      // so the flames flow rather than snap.
+                      const makeFlameEdge = (base, t) => {
+                        const peaks = 8;
+                        const step = 1280 / peaks;
+                        // Compute each spike tip, its height driven by an individual
+                        // sine wave (different speed/phase per spike) for a lively flame.
+                        const tips = [];
+                        for (let i = 0; i <= peaks; i++) {
+                          const x = i * step;
+                          // Base spike height alternates tall/short
+                          const baseAmp = (i % 2 === 0) ? 95 : 45;
+                          // Each spike bobs on its own sine wave
+                          const osc = Math.sin(t * 3 + i * 1.7) * 22 + Math.sin(t * 5.5 + i * 0.9) * 10;
+                          const peakY = base - baseAmp + osc;
+                          tips.push({ x, y: peakY });
+                        }
+                        // Build the path: start bottom-left, curve through spike tips
+                        // with valleys dipping between them.
+                        let d = `M 0 1280 L 0 ${base + 10} L ${tips[0].x} ${tips[0].y}`;
+                        for (let i = 1; i < tips.length; i++) {
+                          const prev = tips[i - 1];
+                          const cur = tips[i];
+                          const valleyX = (prev.x + cur.x) / 2;
+                          const valleyY = base + 12 + Math.sin(t * 4 + i * 2.1) * 8;
+                          // Quadratic down into the valley, then quadratic up to the next tip
+                          d += ` Q ${(prev.x + valleyX) / 2} ${base - 10}, ${valleyX} ${valleyY}`;
+                          d += ` Q ${(valleyX + cur.x) / 2} ${cur.y - 8}, ${cur.x} ${cur.y}`;
+                        }
+                        d += ` L 1280 ${base + 10} L 1280 1280 Z`;
+                        return d;
+                      };
+                      const flameEdge = makeFlameEdge(levelY, fireFlicker);
+
+                      const isFull = fillRatio >= 1;
+                      const glow = count <= 0
+                        ? 'rgba(120,120,140,0.12)'
+                        : `rgba(255, 140, 40, ${0.18 + animatedFill * 0.4})`;
 
                       return (
                         <>
                           <svg
-                            width={flameH * 0.85}
-                            height={flameH}
+                            width={130}
+                            height={130}
                             viewBox="0 0 1280 1280"
                             preserveAspectRatio="xMidYMid meet"
-                            style={{ filter: `drop-shadow(0 0 ${8 + heat * 24}px ${glow})`, transition: 'all 0.4s ease' }}
+                            style={{ filter: `drop-shadow(0 0 ${8 + animatedFill * 26}px ${glow})` }}
                           >
-                            <g transform="translate(0,1280) scale(0.1,-0.1)" fill={flameFill} stroke="none" style={{ transition: 'fill 0.4s ease' }}>
-                              <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/>
-                              <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
-                              <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                            <defs>
+                              {/* Flame silhouette used as a clip for the orange fill.
+                                  Transform is applied directly on each path so the clip
+                                  maps reliably into the 0..1280 viewBox space. */}
+                              <clipPath id={`${uid}-clip`} clipPathUnits="userSpaceOnUse">
+                                <path transform="translate(0,1280) scale(0.1,-0.1)" d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/>
+                                <path transform="translate(0,1280) scale(0.1,-0.1)" d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                                <path transform="translate(0,1280) scale(0.1,-0.1)" d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                              </clipPath>
+                              {/* Vertical gradient: deep red-orange at bottom -> bright yellow-orange at top */}
+                              <linearGradient id={`${uid}-grad`} x1="0" y1="1" x2="0" y2="0">
+                                <stop offset="0%" stopColor="#c1440e" />
+                                <stop offset="45%" stopColor="#f2600f" />
+                                <stop offset="80%" stopColor="#ff9d2f" />
+                                <stop offset="100%" stopColor="#ffd76a" />
+                              </linearGradient>
+                            </defs>
+
+                            {/* Everything below is clipped to the flame silhouette. */}
+                            <g clipPath={`url(#${uid}-clip)`}>
+                              {/* Dark base fills the whole flame (the "unlit" portion) */}
+                              <rect x="0" y="0" width="1280" height="1280" fill="#15141d" />
+                              {/* Orange fill rising from the bottom with a smoothly
+                                  oscillating spiky flame edge (React-driven, no SMIL). */}
+                              {animatedFill > 0.001 && (
+                                <path fill={`url(#${uid}-grad)`} d={flameEdge} />
+                              )}
                             </g>
                           </svg>
                           <div style={{
@@ -13468,6 +13628,7 @@ export default function LittleFires() {
                             </div>
                             <div style={{ color: '#b8a99a', fontSize: '0.8rem', marginTop: '4px' }}>
                               {count === 0 ? 'No tasks yet' : ({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
+                              {isFull && ' 🔥'}
                             </div>
                           </div>
                         </>

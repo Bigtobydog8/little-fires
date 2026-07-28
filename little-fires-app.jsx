@@ -6144,6 +6144,114 @@ export default function LittleFires() {
             padding: 10px 14px;
             font-size: 0.9rem;
           }
+
+          /* --- Typography --- */
+          h1 {
+            font-size: 2.2rem;
+            letter-spacing: 1px;
+          }
+
+          /* --- iOS zoom prevention ---
+             Safari auto-zooms when focusing any field under 16px. */
+          input[type="text"],
+          input[type="date"],
+          input[type="number"],
+          input[type="search"],
+          textarea,
+          select {
+            font-size: 16px;
+          }
+
+          /* --- List tabs: fit more per row --- */
+          .tabs {
+            gap: 6px;
+          }
+
+          .tab {
+            padding: 10px 14px;
+            font-size: 0.8rem;
+            border-radius: 20px;
+          }
+
+          /* --- Task cards --- */
+          .task {
+            padding: 12px;
+            margin-bottom: 10px;
+          }
+
+          .task-actions {
+            gap: 10px;
+            flex-wrap: wrap;
+          }
+
+          /* Due Date and Project stack instead of squeezing side by side */
+          .date-project-row {
+            flex-direction: column;
+            gap: 8px;
+          }
+
+          .due-date-display {
+            width: 100%;
+            flex-wrap: wrap;
+          }
+
+          .project-selector {
+            min-width: 0;
+            flex: 1;
+            width: 100%;
+          }
+
+          /* --- Buttons: meet ~44px touch target --- */
+          .delete-btn, .edit-btn {
+            padding: 11px 16px;
+            font-size: 0.85rem;
+            min-height: 42px;
+          }
+
+          .add-task-btn {
+            padding: 14px 16px;
+          }
+
+          /* --- Calendar: 7 columns need every pixel --- */
+          .calendar-grid {
+            gap: 3px;
+            margin-bottom: 18px;
+          }
+
+          .calendar-day {
+            padding: 2px;
+            border-width: 1px;
+            border-radius: 8px;
+          }
+
+          .calendar-day-header {
+            padding: 4px 0;
+            font-size: 0.7rem;
+          }
+
+          .calendar-header {
+            margin-bottom: 16px;
+          }
+
+          /* --- Modals: keep reachable and scrollable --- */
+          .modal-content {
+            width: 94%;
+            padding: 14px;
+            max-height: 88vh;
+            overflow-y: auto;
+          }
+
+          /* --- Notes / projects --- */
+          .note-entry {
+            padding: 14px;
+            border-radius: 14px;
+          }
+
+          .project-dates-section {
+            gap: 12px;
+            padding: 12px;
+            margin: 14px 0;
+          }
         }
       `}</style>
 
@@ -8422,7 +8530,7 @@ export default function LittleFires() {
                               value={projectTaskDueDate}
                               onChange={(e) => setProjectTaskDueDate(e.target.value)}
                               className="date-picker"
-                              style={{width: '50%', textAlign: 'left'}}
+                              style={{width: isMobile ? '100%' : '50%', textAlign: 'left'}}
                             />
                             <span 
                               className={`fire-flag-icon clickable ${projectTaskPriority === 'high' ? 'active' : ''}`}
@@ -13759,6 +13867,7 @@ export default function LittleFires() {
                             fill="transparent"
                             onMouseEnter={() => setReportHoverIndex(i)}
                             onMouseLeave={() => setReportHoverIndex(null)}
+                            onTouchStart={() => setReportHoverIndex(i)}
                             style={{ cursor: 'pointer' }}
                           />
                         );
@@ -13788,9 +13897,10 @@ export default function LittleFires() {
                           background: 'rgba(30, 30, 46, 0.97)',
                           border: '1px solid rgba(83, 116, 95, 0.5)',
                           borderRadius: '10px',
-                          padding: '10px 14px',
+                          padding: isMobile ? '8px 10px' : '10px 14px',
                           pointerEvents: 'none',
-                          minWidth: '150px',
+                          minWidth: isMobile ? '110px' : '150px',
+                          fontSize: isMobile ? '0.9em' : '1em',
                           boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
                           zIndex: 10,
                           fontFamily: 'Quicksand, sans-serif'

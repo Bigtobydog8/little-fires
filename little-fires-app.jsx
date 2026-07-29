@@ -27,7 +27,7 @@ export default function LittleFires() {
     const ctx = canvas.getContext('2d');
     
     // Matcha green background
-    ctx.fillStyle = '#53745f';
+    ctx.fillStyle = 'var(--accent)';
     ctx.fillRect(0, 0, 180, 180);
     
     // Load and draw the flame SVG
@@ -72,7 +72,12 @@ export default function LittleFires() {
   const [currentList, setCurrentList] = useState('master');
   const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
   const [archiveDropdownOpen, setArchiveDropdownOpen] = useState(false);
-  const [reportTimeframe, setReportTimeframe] = useState('thisWeek'); // 'thisWeek','thisMonth','lastMonth','last3','last6','allTime'
+  const [reportTimeframe, setReportTimeframe] = useState(() => {
+    try {
+      const sv = localStorage.getItem('little_fires_settings');
+      return sv ? (JSON.parse(sv).defaultReportTimeframe || 'thisWeek') : 'thisWeek';
+    } catch { return 'thisWeek'; }
+  }); // 'thisWeek','thisMonth','lastMonth','last3','last6','allTime'
   const [reportChartType, setReportChartType] = useState('line'); // 'line' or 'bar'
   const [reportTimeframeDropdownOpen, setReportTimeframeDropdownOpen] = useState(false);
   const [reportHoverIndex, setReportHoverIndex] = useState(null); // hovered bucket index for tooltip
@@ -89,6 +94,407 @@ export default function LittleFires() {
   // How long the report chart takes to draw itself in (lines sweep, bars grow).
   // The fire chart waits this long before igniting, so they run in sequence.
   const CHART_DRAW_MS = 1500;
+
+  // Curated accent presets. Each is dark enough that white text on the
+  // gradient buttons stays readable - a free-form picker can't guarantee that,
+  // so these are the safe path and the custom picker is the escape hatch.
+  const ACCENT_PRESETS = [
+    { id: 'matcha', name: 'Matcha',  accent: '#53745f', light: '#6a8f76' },
+    { id: 'ember',  name: 'Ember',   accent: '#b45309', light: '#f59e0b' },
+    { id: 'ocean',  name: 'Ocean',   accent: '#2563eb', light: '#60a5fa' },
+    { id: 'plum',   name: 'Plum',    accent: '#7e22ce', light: '#a855f7' },
+    { id: 'rose',   name: 'Rose',    accent: '#be123c', light: '#fb7185' },
+    { id: 'slate',  name: 'Slate',   accent: '#475569', light: '#94a3b8' }
+  ];
+
+  const hexToRgbTriplet = (hex) => {
+    const h = String(hex || '').replace('#', '');
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const n = parseInt(full, 16);
+    if (isNaN(n) || full.length !== 6) return '83, 116, 95';
+    return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+  };
+
+  // Derive a lighter companion shade for gradients by mixing toward white
+  const lightenHex = (hex, amount = 0.22) => {
+    const h = String(hex || '').replace('#', '');
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const n = parseInt(full, 16);
+    if (isNaN(n) || full.length !== 6) return '#6a8f76';
+    const mix = (c) => Math.round(c + (255 - c) * amount);
+    const r = mix((n >> 16) & 255), g = mix((n >> 8) & 255), b = mix(n & 255);
+    return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+  };
+
+  // The canonical task lists. These keys are also the storage keys, so they
+  // never change - renaming only affects the display label.
+  const TASK_LISTS = ['personal', 'work', 'home', 'travel', 'kids', 'partner'];
+  const DEFAULT_LIST_LABELS = {
+    personal: 'Personal', work: 'Work', home: 'Home',
+    travel: 'Travel', kids: 'Kids', partner: 'Partner'
+  };
+
+  // User-configurable settings, persisted like the rest of the app data.
+  const DEFAULT_SETTINGS = {
+    weeklyFireGoal: 7,        // tasks to fully light the flame for a week
+    monthlyFireGoal: 30,      // ...and for a month
+    defaultTimerDuration: '', // '' = open-ended "Timer"
+    defaultReportTimeframe: 'thisWeek',
+    completionDelay: true,    // pause so the checkmark is visible before a task moves
+    accentId: 'matcha',       // preset id, or 'custom'
+    customAccent: '#53745f',
+    reduceMotion: false,
+    listLabels: { ...DEFAULT_LIST_LABELS },
+    hiddenLists: {}           // { travel: true } => hidden from the app
+  };
+  const [settings, setSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('little_fires_settings');
+      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('little_fires_settings', JSON.stringify(settings));
+  }, [settings]);
+
+  // Push the chosen accent into CSS variables on :root, so every rule and
+  // inline style that references var(--accent) updates at once.
+  useEffect(() => {
+    const preset = ACCENT_PRESETS.find(p => p.id === settings.accentId);
+    const accent = preset ? preset.accent : (settings.customAccent || '#53745f');
+    const light = preset ? preset.light : lightenHex(accent);
+    const root = document.documentElement;
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--accent-light', light);
+    root.style.setProperty('--accent-rgb', hexToRgbTriplet(accent));
+  }, [settings.accentId, settings.customAccent]);
+
+  // In-app reduced motion toggle (the OS-level preference is handled in CSS)
+  useEffect(() => {
+    document.body.classList.toggle('reduce-motion', !!settings.reduceMotion);
+    return () => document.body.classList.remove('reduce-motion');
+  }, [settings.reduceMotion]);
+
+  // ---- Backup: export / import -------------------------------------------
+  // The export is a plain, versioned JSON file. Versioning matters: without it
+  // a backup taken today can't be safely interpreted after the data shape
+  // changes, and old backups quietly become unrestorable.
+  const BACKUP_SCHEMA_VERSION = 1;
+  const [backupStatus, setBackupStatus] = useState(null); // { type, message }
+  const importInputRef = React.useRef(null);
+
+  const countKeyed = (obj) =>
+    Object.values(obj || {}).reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0);
+
+  const buildBackup = () => ({
+    app: 'little-fires',
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    summary: {
+      tasks: countKeyed(allLists),
+      archivedTasks: countKeyed(archivedTasks),
+      notes: (notes || []).length,
+      projects: countKeyed(projects),
+      goals: countKeyed(goals),
+      timeLogs: (standaloneTimeLogs || []).length
+    },
+    data: {
+      lists: allLists,
+      archived: archivedTasks,
+      notes: notes,
+      projects: projects,
+      goals: goals,
+      timeLogs: standaloneTimeLogs,
+      settings: settings
+    }
+  });
+
+  const exportBackup = () => {
+    try {
+      const payload = buildBackup();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `little-fires-backup-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Release the object URL so it isn't held in memory
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const s = payload.summary;
+      setBackupStatus({
+        type: 'ok',
+        message: `Exported ${s.tasks} tasks, ${s.archivedTasks} archived, ${s.notes} notes, ${s.projects} projects, ${s.goals} goals.`
+      });
+    } catch (err) {
+      setBackupStatus({ type: 'error', message: 'Export failed: ' + err.message });
+    }
+  };
+
+  // Merge helpers - dedupe by id so re-importing the same file is a no-op
+  const mergeById = (existing, incoming) => {
+    const base = Array.isArray(existing) ? existing : [];
+    const seen = new Set(base.map(x => String(x && x.id)));
+    const add = (Array.isArray(incoming) ? incoming : []).filter(x => x && !seen.has(String(x.id)));
+    return { merged: [...base, ...add], added: add.length };
+  };
+
+  const mergeKeyed = (existing, incoming) => {
+    const out = { ...(existing || {}) };
+    let added = 0;
+    Object.keys(incoming || {}).forEach(k => {
+      const r = mergeById(out[k], incoming[k]);
+      out[k] = r.merged;
+      added += r.added;
+    });
+    return { merged: out, added };
+  };
+
+  const applyBackup = (payload, mode) => {
+    const d = payload.data || {};
+    if (mode === 'replace') {
+      if (d.lists) setAllLists(d.lists);
+      if (d.archived) setArchivedTasks(d.archived);
+      if (Array.isArray(d.notes)) setNotes(d.notes);
+      if (d.projects) setProjects(d.projects);
+      if (d.goals) setGoals(d.goals);
+      if (Array.isArray(d.timeLogs)) setStandaloneTimeLogs(d.timeLogs);
+      if (d.settings) setSettings(prev => ({ ...prev, ...d.settings }));
+      const s = payload.summary || {};
+      return `Replaced everything with the backup: ${s.tasks || 0} tasks, ${s.notes || 0} notes, ${s.projects || 0} projects.`;
+    }
+    // Merge - additive only, never overwrites or deletes what you already have.
+    // Settings are deliberately left alone here; silently changing your theme
+    // and list names during a data merge would be surprising.
+    let counts = { tasks: 0, archived: 0, notes: 0, projects: 0, goals: 0, timeLogs: 0 };
+    if (d.lists) { const r = mergeKeyed(allLists, d.lists); setAllLists(r.merged); counts.tasks = r.added; }
+    if (d.archived) { const r = mergeKeyed(archivedTasks, d.archived); setArchivedTasks(r.merged); counts.archived = r.added; }
+    if (d.projects) { const r = mergeKeyed(projects, d.projects); setProjects(r.merged); counts.projects = r.added; }
+    if (d.goals) { const r = mergeKeyed(goals, d.goals); setGoals(r.merged); counts.goals = r.added; }
+    if (Array.isArray(d.notes)) { const r = mergeById(notes, d.notes); setNotes(r.merged); counts.notes = r.added; }
+    if (Array.isArray(d.timeLogs)) { const r = mergeById(standaloneTimeLogs, d.timeLogs); setStandaloneTimeLogs(r.merged); counts.timeLogs = r.added; }
+
+    const parts = Object.entries(counts).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`);
+    return parts.length
+      ? `Added ${parts.join(', ')}. Existing items were left untouched.`
+      : 'Nothing new to add — everything in that backup is already here.';
+  };
+
+  const handleImportFile = (file, mode) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const payload = JSON.parse(e.target.result);
+
+        // Validate before touching anything
+        if (!payload || payload.app !== 'little-fires') {
+          setBackupStatus({ type: 'error', message: "That doesn't look like a Little Fires backup." });
+          return;
+        }
+        if (Number(payload.schemaVersion) > BACKUP_SCHEMA_VERSION) {
+          setBackupStatus({
+            type: 'error',
+            message: 'That backup was made by a newer version of the app. Update first, then import.'
+          });
+          return;
+        }
+        if (!payload.data || typeof payload.data !== 'object') {
+          setBackupStatus({ type: 'error', message: 'That backup file looks incomplete.' });
+          return;
+        }
+
+        // Snapshot current state first, so a bad import is recoverable
+        try {
+          localStorage.setItem('little_fires_pre_import_backup', JSON.stringify(buildBackup()));
+        } catch (_) { /* storage full - proceed anyway */ }
+
+        const message = applyBackup(payload, mode);
+        setBackupStatus({ type: 'ok', message });
+      } catch (err) {
+        setBackupStatus({ type: 'error', message: 'Could not read that file: ' + err.message });
+      }
+    };
+    reader.onerror = () => setBackupStatus({ type: 'error', message: 'Could not read that file.' });
+    reader.readAsText(file);
+  };
+
+  // ---- CSV export ---------------------------------------------------------
+  // Analysis format, not a backup format: a flat table can't round-trip the
+  // nested detail HTML or the list structure, so JSON stays the restore path.
+
+  // Task details are stored as HTML. Flatten to readable plain text, keeping
+  // checkbox state visible since a lot of the meaning lives in those.
+  const htmlToPlainText = (html) => {
+    if (!html) return '';
+    let s = String(html);
+    // Preserve checkbox state before tags are stripped
+    s = s.replace(/<input[^>]*type=["']checkbox["'][^>]*checked[^>]*>/gi, '[1] ');
+    s = s.replace(/<input[^>]*type=["']checkbox["'][^>]*>/gi, '[0] ');
+    s = s.replace(/<li[^>]*>/gi, '• ');
+    s = s.replace(/<br\s*\/?>/gi, '\n');
+    s = s.replace(/<\/(div|p|li|tr|h[1-6])>/gi, '\n');
+    s = s.replace(/<[^>]+>/g, '');           // remaining tags
+    s = s.replace(/&nbsp;/gi, ' ')
+         .replace(/&amp;/gi, '&')
+         .replace(/&lt;/gi, '<')
+         .replace(/&gt;/gi, '>')
+         .replace(/&quot;/gi, '"')
+         .replace(/&#39;/gi, "'");
+    return s.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+/g, ' ').trim();
+  };
+
+  // RFC 4180 escaping - matters here because details contain commas,
+  // quotes and newlines, any of which would otherwise break the columns.
+  const csvCell = (value) => {
+    const s = value === null || value === undefined ? '' : String(value);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+
+  const toCsv = (headers, rows) =>
+    [headers.map(csvCell).join(','), ...rows.map(r => r.map(csvCell).join(','))].join('\r\n');
+
+  const downloadFile = (content, filename, mime) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const fmtDate = (v) => {
+    if (!v) return '';
+    const d = new Date(v);
+    return isNaN(d) ? '' : d.toISOString().slice(0, 10);
+  };
+
+  const exportTasksCsv = () => {
+    try {
+      const headers = [
+        'List', 'Task', 'Completed', 'Section', 'High Priority',
+        'Subtasks', 'Subtasks Done',
+        'Due Date', 'Created', 'Completed Date', 'Archived', 'Archived Date',
+        'Project', 'Details'
+      ];
+      const projectNameById = {};
+      Object.values(projects || {}).forEach(arr =>
+        (arr || []).forEach(p => { if (p && p.id != null) projectNameById[String(p.id)] = p.name; })
+      );
+
+      const rows = [];
+      const push = (task, listKey, archived) => {
+        if (!task) return;
+        const detailText = htmlToPlainText(task.details);
+        // Roll the detail checkboxes up into counts so they're pivotable
+        const subTotal = (detailText.match(/\[[01]\]/g) || []).length;
+        const subDone = (detailText.match(/\[1\]/g) || []).length;
+        rows.push([
+          listLabel(listKey),
+          task.text || '',
+          task.completed ? 1 : 0,
+          task.section === 'backlog' ? 'Backlog' : 'To Do',
+          task.priority === 'high' ? 1 : 0,
+          subTotal,
+          subDone,
+          fmtDate(task.dueDate),
+          fmtDate(task.createdAt),
+          fmtDate(task.completedAt),
+          archived ? 1 : 0,
+          archived ? fmtDate(task.archivedAt) : '',
+          task.projectId != null ? (projectNameById[String(task.projectId)] || '') : '',
+          detailText
+        ]);
+      };
+
+      TASK_LISTS.forEach(key => {
+        (allLists[key] || []).forEach(t => push(t, key, false));
+        (archivedTasks[key] || []).forEach(t => push(t, key, true));
+      });
+
+      if (rows.length === 0) {
+        setBackupStatus({ type: 'error', message: 'No tasks to export yet.' });
+        return;
+      }
+
+      // BOM so Excel opens UTF-8 correctly (accents, emoji) on Windows
+      const csv = '\uFEFF' + toCsv(headers, rows);
+      downloadFile(csv, `little-fires-tasks-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8;');
+      setBackupStatus({ type: 'ok', message: `Exported ${rows.length} tasks to CSV.` });
+    } catch (err) {
+      setBackupStatus({ type: 'error', message: 'CSV export failed: ' + err.message });
+    }
+  };
+
+  const exportTimeLogsCsv = () => {
+    try {
+      const headers = ['Date', 'Minutes', 'Focus', 'Description', 'Take Away', 'Source'];
+      const rows = [];
+      (standaloneTimeLogs || []).forEach(l => {
+        if (!l) return;
+        rows.push([fmtDate(l.date || l.createdAt), l.minutes ?? '', l.focus || '', l.description || '', l.takeAway || '', 'Standalone']);
+      });
+      Object.entries(goals || {}).forEach(([listKey, arr]) =>
+        (arr || []).forEach(g => (g.timeLogs || []).forEach(l => {
+          rows.push([fmtDate(l.date || l.createdAt), l.minutes ?? '', l.focus || '', l.description || '', l.takeAway || '', `Goal: ${g.name}`]);
+        }))
+      );
+
+      if (rows.length === 0) {
+        setBackupStatus({ type: 'error', message: 'No time logs to export yet.' });
+        return;
+      }
+      const csv = '\uFEFF' + toCsv(headers, rows);
+      downloadFile(csv, `little-fires-timelogs-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8;');
+      setBackupStatus({ type: 'ok', message: `Exported ${rows.length} time logs to CSV.` });
+    } catch (err) {
+      setBackupStatus({ type: 'error', message: 'CSV export failed: ' + err.message });
+    }
+  };
+
+  const updateSetting = (key, value) => setSettings(prev => ({ ...prev, [key]: value }));
+
+  // Display label for a list. Falls back to the built-in name if unset/blank.
+  const listLabel = (key) => {
+    const custom = settings.listLabels && settings.listLabels[key];
+    return (custom && String(custom).trim()) || DEFAULT_LIST_LABELS[key] || key;
+  };
+  // Section heading used in All Tasks / Search ("Work Tasks")
+  const listSectionLabel = (key) => `${listLabel(key)} Tasks`;
+  const isListHidden = (key) => !!(settings.hiddenLists && settings.hiddenLists[key]);
+  // Lists the user has switched on. Used for anything user-facing; data
+  // operations (auto-archive, project cleanup) still walk TASK_LISTS.
+  const visibleTaskLists = TASK_LISTS.filter(k => !isListHidden(k));
+
+  const toggleListVisibility = (key) => {
+    setSettings(prev => {
+      const hidden = { ...(prev.hiddenLists || {}) };
+      if (hidden[key]) {
+        delete hidden[key];
+      } else {
+        // Never let the user hide every list - the app would have nothing to show
+        const remaining = TASK_LISTS.filter(k => k !== key && !hidden[k]);
+        if (remaining.length === 0) return prev;
+        hidden[key] = true;
+      }
+      return { ...prev, hiddenLists: hidden };
+    });
+  };
+
+  // If the list you're viewing gets hidden, fall back to All Tasks
+  useEffect(() => {
+    if (currentList !== 'master' && isListHidden(currentList)) {
+      setCurrentList('master');
+    }
+  }, [settings.hiddenLists, currentList]);
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -144,6 +550,11 @@ export default function LittleFires() {
       parsed.kids = [];
     }
     
+    // Migration: Add partner list if it doesn't exist
+    if (!parsed.partner) {
+      parsed.partner = [];
+    }
+    
     return parsed;
   });
 
@@ -160,6 +571,11 @@ export default function LittleFires() {
     // Migration: Add kids if it doesn't exist
     if (!parsed.kids) {
       parsed.kids = [];
+    }
+    
+    // Migration: Add partner list if it doesn't exist
+    if (!parsed.partner) {
+      parsed.partner = [];
     }
     
     return parsed;
@@ -226,7 +642,13 @@ export default function LittleFires() {
   const [isLogging, setIsLogging] = useState(false);
   const [loggedMinutes, setLoggedMinutes] = useState(0);
   const [loggedSeconds, setLoggedSeconds] = useState(0); // Accumulated seconds while logging
-  const [timerDuration, setTimerDuration] = useState(''); // Duration in seconds for progress ring, blank by default
+  const [timerDuration, setTimerDuration] = useState(() => {
+    try {
+      const sv = localStorage.getItem('little_fires_settings');
+      const d = sv ? JSON.parse(sv).defaultTimerDuration : '';
+      return d === undefined || d === null ? '' : d;
+    } catch { return ''; }
+  }); // Duration in seconds for progress ring
   const [logStartTime, setLogStartTime] = useState(null);
   const [pausedTime, setPausedTime] = useState(0); // Track when pause started
   const [totalPausedTime, setTotalPausedTime] = useState(0); // Track cumulative pause duration in ms
@@ -280,6 +702,7 @@ export default function LittleFires() {
   const [showHomeTasks, setShowHomeTasks] = useState(true);
   const [showTravelTasks, setShowTravelTasks] = useState(true);
   const [showKidsTasks, setShowKidsTasks] = useState(true);
+  const [showPartnerTasks, setShowPartnerTasks] = useState(true);
   const [showPersonalGoals, setShowPersonalGoals] = useState(true);
   const [showWorkGoals, setShowWorkGoals] = useState(true);
   const [showHomeGoals, setShowHomeGoals] = useState(true);
@@ -477,7 +900,7 @@ export default function LittleFires() {
   const getCurrentTasks = () => {
     if (currentList === 'master') {
       const masterTasks = [];
-      ['personal', 'work', 'home', 'travel', 'kids'].forEach(listName => {
+      visibleTaskLists.forEach(listName => {
         if (allLists[listName]) {
           allLists[listName].forEach((task, index) => {
             masterTasks.push({
@@ -1122,7 +1545,7 @@ export default function LittleFires() {
     const items = [];
     
     // Get tasks based on filters
-    const allTaskLists = ['personal', 'work', 'home', 'travel', 'kids'];
+    const allTaskLists = visibleTaskLists;
     allTaskLists.forEach(listName => {
       (allLists[listName] || []).forEach(task => {
         // Show incomplete tasks on their due date (both To Do and Backlog)
@@ -1257,7 +1680,7 @@ export default function LittleFires() {
     const now = new Date();
     const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     
-    const allTaskLists = ['personal', 'work', 'home', 'travel', 'kids'];
+    const allTaskLists = TASK_LISTS;
     
     allTaskLists.forEach(listName => {
       const tasksToArchive = (allLists[listName] || []).filter(task => {
@@ -1419,7 +1842,7 @@ export default function LittleFires() {
 
   const deleteProject = (listName, id) => {
     // Also remove project assignment from all tasks
-    const allTaskLists = ['personal', 'work', 'home', 'travel', 'kids'];
+    const allTaskLists = TASK_LISTS;
     setAllLists(prev => {
       const newLists = { ...prev };
       allTaskLists.forEach(taskListName => {
@@ -1775,7 +2198,7 @@ export default function LittleFires() {
 
   const getProjectTasks = (projectId) => {
     const tasks = [];
-    const allTaskLists = ['personal', 'work', 'home', 'travel', 'kids'];
+    const allTaskLists = TASK_LISTS;
     
     allTaskLists.forEach(listName => {
       (allLists[listName] || []).forEach((task, index) => {
@@ -1871,7 +2294,7 @@ export default function LittleFires() {
               lines[i].classList.add('has-children');
               // Inline styles too, so it persists in saved HTML
               lines[i].style.fontWeight = 'bold';
-              lines[i].style.borderBottom = '2px solid rgba(83, 116, 95, 0.55)';
+              lines[i].style.borderBottom = '2px solid rgba(var(--accent-rgb), 0.55)';
               lines[i].style.paddingBottom = '6px';
               const sp = lines[i].querySelector('span');
               if (sp) sp.style.fontWeight = 'bold';
@@ -1886,7 +2309,7 @@ export default function LittleFires() {
           // more-indented (child) line - i.e. indentation stepped back to 0.
           if (indent === 0 && prevIndent > 0) {
             lines[i].classList.add('ends-list');
-            lines[i].style.borderTop = '2px solid rgba(83, 116, 95, 0.55)';
+            lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
             lines[i].style.paddingTop = '8px';
           }
         }
@@ -2131,6 +2554,10 @@ export default function LittleFires() {
                   return;
                 }
                 if (isCompleting) return; // already on its way out
+                if (!settings.completionDelay) {
+                  toggleTask(listName, index);
+                  return;
+                }
                 setIsCompleting(true);
                 completeTimeoutRef.current = setTimeout(() => {
                   toggleTask(listName, index);
@@ -2163,7 +2590,7 @@ export default function LittleFires() {
                   width: '100%',
                   padding: '8px 12px',
                   background: 'rgba(42, 42, 62, 0.8)',
-                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                   borderRadius: '8px',
                   color: '#f4e8d8',
                   fontSize: '1rem',
@@ -2399,7 +2826,7 @@ export default function LittleFires() {
                   heading.className = 'follow-up-heading';
                   heading.style.display = 'block';
                   heading.style.fontWeight = 'bold';
-                  heading.style.borderBottom = '2px solid rgba(83, 116, 95, 0.55)';
+                  heading.style.borderBottom = '2px solid rgba(var(--accent-rgb), 0.55)';
                   heading.style.paddingBottom = '6px';
                   heading.style.marginBottom = '8px';
                   heading.style.marginTop = '18px';
@@ -2537,7 +2964,7 @@ export default function LittleFires() {
                         prevLine.style.fontWeight = 'bold';
                         // Inline underline so it survives save/reload even if the
                         // class-based rule doesn't re-apply on load.
-                        prevLine.style.borderBottom = '2px solid rgba(83, 116, 95, 0.55)';
+                        prevLine.style.borderBottom = '2px solid rgba(var(--accent-rgb), 0.55)';
                         prevLine.style.paddingBottom = '6px';
                         prevLine.style.marginBottom = '8px';
                         // Also bold the inner span directly so it survives save/reload
@@ -2749,7 +3176,7 @@ export default function LittleFires() {
                   }}
                   onClick={(e) => e.stopPropagation()}
                   className="project-selector"
-                  style={{color: '#53745f'}}
+                  style={{color: 'var(--accent)'}}
                 >
                   <option value=""></option>
                   <option value="Stella">Stella</option>
@@ -3161,21 +3588,16 @@ export default function LittleFires() {
 
   const renderTasks = () => {
     if (currentList === 'master') {
-      const listNames = ['personal', 'work', 'home', 'travel', 'kids'];
-      const listLabels = {
-        personal: 'Personal Tasks',
-        work: 'Work Tasks',
-        home: 'Home Projects',
-        travel: 'Travel Plans',
-        kids: 'Kids Tasks'
-      };
+      const listNames = visibleTaskLists;
+      const listLabels = Object.fromEntries(TASK_LISTS.map(k => [k, listSectionLabel(k)]));
       
       const showStates = {
         personal: showPersonalTasks,
         work: showWorkTasks,
         home: showHomeTasks,
         travel: showTravelTasks,
-        kids: showKidsTasks
+        kids: showKidsTasks,
+        partner: showPartnerTasks
       };
       
       const toggleStates = {
@@ -3183,7 +3605,8 @@ export default function LittleFires() {
         work: setShowWorkTasks,
         home: setShowHomeTasks,
         travel: setShowTravelTasks,
-        kids: setShowKidsTasks
+        kids: setShowKidsTasks,
+        partner: setShowPartnerTasks
       };
 
       let hasAnyTasks = false;
@@ -3588,6 +4011,31 @@ export default function LittleFires() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap');
 
+        /* Theme tokens. Everything accent-colored resolves through these, so
+           changing them recolors the whole app. --accent-rgb is kept as a raw
+           triplet so it can be composed into rgba() at any opacity. */
+        :root {
+          --accent: #53745f;
+          --accent-light: #6a8f76;
+          --accent-rgb: 83, 116, 95;
+        }
+
+        /* Respect the OS "reduce motion" setting, and the in-app toggle.
+           This app animates a lot (flame fill, chart draw-in, dot pops). */
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after {
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.001ms !important;
+          }
+        }
+
+        .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+
         .little-fires-container {
           font-family: 'Nunito', sans-serif;
           background: linear-gradient(135deg, #1a1a2e 0%, #2d2d44 50%, #3a3a52 100%);
@@ -3606,7 +4054,7 @@ export default function LittleFires() {
           width: 200%;
           height: 200%;
           background: 
-            radial-gradient(circle at 20% 30%, rgba(83, 116, 95, 0.15) 0%, transparent 50%),
+            radial-gradient(circle at 20% 30%, rgba(var(--accent-rgb), 0.15) 0%, transparent 50%),
             radial-gradient(circle at 80% 70%, rgba(127, 176, 105, 0.1) 0%, transparent 50%),
             radial-gradient(circle at 50% 50%, rgba(168, 230, 207, 0.08) 0%, transparent 50%);
           animation: float 20s ease-in-out infinite;
@@ -3730,8 +4178,8 @@ export default function LittleFires() {
         }
 
         .menu-item.active {
-          background: rgba(83, 116, 95, 0.2);
-          color: #53745f;
+          background: rgba(var(--accent-rgb), 0.2);
+          color: var(--accent);
         }
 
         .menu-divider {
@@ -3806,7 +4254,7 @@ export default function LittleFires() {
         .tab {
           background: rgba(42, 42, 62, 0.8);
           backdrop-filter: blur(10px);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           padding: 12px 24px;
           color: #f4e8d8;
           font-family: 'Quicksand', sans-serif;
@@ -3820,17 +4268,17 @@ export default function LittleFires() {
 
         .tab:hover {
           transform: translateY(-3px);
-          box-shadow: 0 6px 20px rgba(83, 116, 95, 0.3);
+          box-shadow: 0 6px 20px rgba(var(--accent-rgb), 0.3);
           background: rgba(52, 52, 72, 0.9);
-          border-color: rgba(83, 116, 95, 0.4);
+          border-color: rgba(var(--accent-rgb), 0.4);
         }
 
         .tab.active {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           color: #fff;
-          box-shadow: 0 0 8px rgba(83, 116, 95, 0.6), 0 0 12px rgba(106, 143, 118, 0.4);
+          box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.6), 0 0 12px rgba(106, 143, 118, 0.4);
           transform: scale(1.05);
-          border: 2px solid rgba(83, 116, 95, 0.5);
+          border: 2px solid rgba(var(--accent-rgb), 0.5);
         }
 
         .search-filter-bar {
@@ -3848,7 +4296,7 @@ export default function LittleFires() {
           flex: 1;
           background: rgba(42, 42, 62, 0.8);
           backdrop-filter: blur(10px);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 25px;
           padding: 12px 20px;
           color: #f4e8d8;
@@ -3859,8 +4307,8 @@ export default function LittleFires() {
         }
 
         .search-box:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 20px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
         }
 
         .input-container {
@@ -3880,7 +4328,7 @@ export default function LittleFires() {
         input[type="text"] {
           background: rgba(42, 42, 62, 0.8);
           backdrop-filter: blur(10px);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 25px;
           padding: 16px 24px;
           color: #f4e8d8;
@@ -3897,7 +4345,7 @@ export default function LittleFires() {
         input[type="date"] {
           background: rgba(42, 42, 62, 0.8);
           backdrop-filter: blur(10px);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 20px;
           padding: 10px 12px;
           color: #f4e8d8;
@@ -3933,14 +4381,14 @@ export default function LittleFires() {
         }
 
         input[type="text"]:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 30px rgba(83, 116, 95, 0.4);
+          border-color: var(--accent);
+          box-shadow: 0 0 30px rgba(var(--accent-rgb), 0.4);
           transform: translateY(-2px);
         }
 
         input[type="date"]:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 30px rgba(83, 116, 95, 0.4);
+          border-color: var(--accent);
+          box-shadow: 0 0 30px rgba(var(--accent-rgb), 0.4);
           transform: translateY(-2px);
         }
 
@@ -3951,10 +4399,10 @@ export default function LittleFires() {
 
         .project-selector {
           background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 20px;
           padding: 12px 16px;
-          color: #53745f;
+          color: var(--accent);
           font-family: 'Nunito', sans-serif;
           font-size: 0.9rem;
           cursor: pointer;
@@ -3964,13 +4412,13 @@ export default function LittleFires() {
         }
 
         .project-selector:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 20px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
         }
 
         .project-selector option {
           background: #2a2a3e;
-          color: #53745f;
+          color: var(--accent);
         }
 
         .task-options {
@@ -3995,9 +4443,9 @@ export default function LittleFires() {
         .child-btn {
           padding: 8px 16px;
           background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(83, 116, 95, 0.3);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 10px;
-          color: #53745f;
+          color: var(--accent);
           font-family: 'Quicksand', sans-serif;
           font-size: 0.9rem;
           font-weight: 600;
@@ -4007,15 +4455,15 @@ export default function LittleFires() {
         }
 
         .child-btn:hover {
-          border-color: rgba(83, 116, 95, 0.6);
+          border-color: rgba(var(--accent-rgb), 0.6);
           transform: translateY(-2px);
         }
 
         .child-btn.active {
-          background: linear-gradient(135deg, #5a7a5f, #53745f);
+          background: linear-gradient(135deg, #5a7a5f, var(--accent));
           border-color: transparent;
           color: #fff;
-          box-shadow: 0 4px 15px rgba(83, 116, 95, 0.4);
+          box-shadow: 0 4px 15px rgba(var(--accent-rgb), 0.4);
         }
 
         .fire-flag-icon {
@@ -4061,7 +4509,7 @@ export default function LittleFires() {
 
         .section-btn {
           background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           padding: 8px 16px;
           color: #f4e8d8;
           font-family: 'Quicksand', sans-serif;
@@ -4074,12 +4522,12 @@ export default function LittleFires() {
 
         .section-btn:hover {
           background: rgba(52, 52, 72, 0.9);
-          border-color: rgba(83, 116, 95, 0.4);
+          border-color: rgba(var(--accent-rgb), 0.4);
           transform: scale(1.05);
         }
 
         .section-btn.selected {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           color: #ffffff;
           border-color: transparent;
         }
@@ -4115,7 +4563,7 @@ export default function LittleFires() {
         }
 
         button {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           border: none;
           border-radius: 25px;
           padding: 16px 32px;
@@ -4125,18 +4573,18 @@ export default function LittleFires() {
           font-size: 1rem;
           cursor: pointer;
           transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-          box-shadow: 0 6px 20px rgba(83, 116, 95, 0.4);
+          box-shadow: 0 6px 20px rgba(var(--accent-rgb), 0.4);
           text-transform: uppercase;
           letter-spacing: 1px;
         }
 
         button:hover {
           transform: translateY(-3px);
-          box-shadow: 0 8px 30px rgba(83, 116, 95, 0.6);
+          box-shadow: 0 8px 30px rgba(var(--accent-rgb), 0.6);
         }
 
         .add-task-btn {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           color: #fff;
           box-shadow: 0 6px 20px rgba(45, 106, 79, 0.4);
           padding: 16px 20px;
@@ -4177,7 +4625,7 @@ export default function LittleFires() {
           border-radius: 20px;
           padding: 25px;
           box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-          border: 2px solid rgba(83, 116, 95, 0.1);
+          border: 2px solid rgba(var(--accent-rgb), 0.1);
           max-height: 600px;
           overflow-y: auto;
         }
@@ -4187,12 +4635,12 @@ export default function LittleFires() {
         }
 
         .tasks-container::-webkit-scrollbar-track {
-          background: rgba(83, 116, 95, 0.1);
+          background: rgba(var(--accent-rgb), 0.1);
           border-radius: 10px;
         }
 
         .tasks-container::-webkit-scrollbar-thumb {
-          background: #53745f;
+          background: var(--accent);
           border-radius: 10px;
         }
 
@@ -4253,7 +4701,7 @@ export default function LittleFires() {
         }
 
         .checkbox-icon svg {
-          filter: drop-shadow(0 0 6px rgba(83, 116, 95, 0.5)) drop-shadow(0 0 10px rgba(168, 230, 207, 0.3));
+          filter: drop-shadow(0 0 6px rgba(var(--accent-rgb), 0.5)) drop-shadow(0 0 10px rgba(168, 230, 207, 0.3));
         }
 
         .list-section-header .badge {
@@ -4265,29 +4713,29 @@ export default function LittleFires() {
         }
 
         .badge.personal {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
         }
 
         .badge.work {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
         }
 
         .badge.home {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
         }
 
         .badge.travel {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
         }
 
         .badge.kids {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
         }
 
         .task {
           background: rgba(52, 52, 72, 0.6);
           backdrop-filter: blur(10px);
-          border: 2px solid rgba(83, 116, 95, 0.15);
+          border: 2px solid rgba(var(--accent-rgb), 0.15);
           border-radius: 15px;
           padding: 16px;
           margin-bottom: 12px;
@@ -4302,9 +4750,9 @@ export default function LittleFires() {
 
         .task:not(.expanded):hover {
           background: rgba(62, 62, 82, 0.8);
-          border-color: rgba(83, 116, 95, 0.3);
+          border-color: rgba(var(--accent-rgb), 0.3);
           transform: translateX(5px);
-          box-shadow: 0 4px 20px rgba(83, 116, 95, 0.2);
+          box-shadow: 0 4px 20px rgba(var(--accent-rgb), 0.2);
         }
 
         .task.completed {
@@ -4348,7 +4796,7 @@ export default function LittleFires() {
           appearance: none;
           width: 24px;
           height: 24px;
-          border: 2px solid #53745f;
+          border: 2px solid var(--accent);
           border-radius: 8px;
           cursor: pointer;
           position: relative;
@@ -4357,8 +4805,8 @@ export default function LittleFires() {
         }
 
         .checkbox-wrapper input[type="checkbox"]:checked {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
-          border-color: #53745f;
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border-color: var(--accent);
         }
 
         .checkbox-wrapper input[type="checkbox"]:checked::after {
@@ -4449,7 +4897,7 @@ export default function LittleFires() {
         .task-details-section {
           margin-top: 15px;
           padding-top: 15px;
-          border-top: 2px solid rgba(83, 116, 95, 0.2);
+          border-top: 2px solid rgba(var(--accent-rgb), 0.2);
           animation: slideDown 0.3s ease-out;
         }
 
@@ -4475,7 +4923,7 @@ export default function LittleFires() {
         .details-textarea {
           width: 100%;
           background: rgba(30, 30, 46, 0.6);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 12px;
           padding: 12px 16px;
           color: #f4e8d8;
@@ -4491,14 +4939,14 @@ export default function LittleFires() {
         }
 
         .details-textarea:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 20px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
         }
 
         .details-richtext {
           width: 100%;
           background: rgba(30, 30, 46, 0.6);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 12px;
           padding: 12px 16px;
           color: #f4e8d8;
@@ -4517,8 +4965,8 @@ export default function LittleFires() {
         }
 
         .details-richtext:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 20px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
         }
 
         .details-richtext:empty:before {
@@ -4551,7 +4999,7 @@ export default function LittleFires() {
         }
 
         .details-richtext li::marker {
-          color: #53745f !important;
+          color: var(--accent) !important;
           font-weight: bold;
         }
 
@@ -4563,7 +5011,7 @@ export default function LittleFires() {
           cursor: pointer;
           vertical-align: middle;
           background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(83, 116, 95, 0.3);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 8px;
           transition: all 0.3s ease;
           position: relative;
@@ -4571,13 +5019,13 @@ export default function LittleFires() {
         }
 
         .details-richtext .task-checkbox:hover {
-          border-color: rgba(83, 116, 95, 0.5);
+          border-color: rgba(var(--accent-rgb), 0.5);
           transform: scale(1.1);
         }
 
         .details-richtext .task-checkbox:checked {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
-          border-color: #53745f;
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border-color: var(--accent);
         }
 
         .details-richtext .task-checkbox:checked::after {
@@ -4609,7 +5057,7 @@ export default function LittleFires() {
 
         .details-richtext .checkbox-line.has-children,
         .note-content .checkbox-line.has-children {
-          border-bottom: 2px solid rgba(83, 116, 95, 0.55);
+          border-bottom: 2px solid rgba(var(--accent-rgb), 0.55);
           padding-bottom: 6px;
           margin-bottom: 8px;
         }
@@ -4618,7 +5066,7 @@ export default function LittleFires() {
            item that follows indented children gets a matcha rule above it. */
         .details-richtext .checkbox-line.ends-list,
         .note-content .checkbox-line.ends-list {
-          border-top: 2px solid rgba(83, 116, 95, 0.55);
+          border-top: 2px solid rgba(var(--accent-rgb), 0.55);
           padding-top: 8px;
           margin-top: 8px;
         }
@@ -4642,8 +5090,8 @@ export default function LittleFires() {
         .task-link {
           display: inline-block;
           color: #7ba386;
-          background: rgba(83, 116, 95, 0.18);
-          border: 1px solid rgba(83, 116, 95, 0.45);
+          background: rgba(var(--accent-rgb), 0.18);
+          border: 1px solid rgba(var(--accent-rgb), 0.45);
           border-radius: 6px;
           padding: 1px 8px;
           margin: 0 2px;
@@ -4655,9 +5103,9 @@ export default function LittleFires() {
         }
 
         .task-link:hover {
-          background: rgba(83, 116, 95, 0.35);
+          background: rgba(var(--accent-rgb), 0.35);
           color: #a8e6cf;
-          border-color: rgba(83, 116, 95, 0.7);
+          border-color: rgba(var(--accent-rgb), 0.7);
         }
 
         .details-richtext strong {
@@ -4682,8 +5130,8 @@ export default function LittleFires() {
 
         .toolbar-btn {
           padding: 6px 12px;
-          background: rgba(83, 116, 95, 0.2);
-          border: 1px solid rgba(83, 116, 95, 0.3);
+          background: rgba(var(--accent-rgb), 0.2);
+          border: 1px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 5px;
           color: #f4e8d8;
           cursor: pointer;
@@ -4695,8 +5143,8 @@ export default function LittleFires() {
         }
 
         .toolbar-btn:hover {
-          background: rgba(83, 116, 95, 0.3);
-          border-color: rgba(83, 116, 95, 0.5);
+          background: rgba(var(--accent-rgb), 0.3);
+          border-color: rgba(var(--accent-rgb), 0.5);
         }
 
         .toolbar-btn:active {
@@ -4774,21 +5222,21 @@ export default function LittleFires() {
         }
 
         .edit-btn {
-          background: rgba(83, 116, 95, 0.2);
-          border-color: rgba(83, 116, 95, 0.3);
-          color: #53745f;
+          background: rgba(var(--accent-rgb), 0.2);
+          border-color: rgba(var(--accent-rgb), 0.3);
+          color: var(--accent);
         }
 
         /* Primary create/save action - matches the active task tab matcha */
         .edit-btn.primary-action {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
-          border: 1px solid rgba(83, 116, 95, 0.5);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border: 1px solid rgba(var(--accent-rgb), 0.5);
           color: #ffffff;
         }
 
         .edit-btn.primary-action:hover {
           background: linear-gradient(135deg, #5d8169, #76a084);
-          box-shadow: 0 0 8px rgba(83, 116, 95, 0.5);
+          box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.5);
         }
 
         .delete-btn:hover {
@@ -4797,7 +5245,7 @@ export default function LittleFires() {
         }
 
         .edit-btn:hover {
-          background: rgba(83, 116, 95, 0.3);
+          background: rgba(var(--accent-rgb), 0.3);
           transform: scale(1.05);
         }
 
@@ -4853,9 +5301,9 @@ export default function LittleFires() {
         .ocr-status {
           margin-top: 10px;
           padding: 8px 12px;
-          background: rgba(83, 116, 95, 0.2);
+          background: rgba(var(--accent-rgb), 0.2);
           border-radius: 8px;
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.9rem;
           font-weight: 600;
           text-align: center;
@@ -4866,11 +5314,11 @@ export default function LittleFires() {
           padding: 12px;
           background: rgba(42, 42, 62, 0.6);
           border-radius: 8px;
-          border-left: 4px solid #53745f;
+          border-left: 4px solid var(--accent);
         }
 
         .extracted-text-label {
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.85rem;
           font-weight: 600;
           margin-bottom: 8px;
@@ -4919,7 +5367,7 @@ export default function LittleFires() {
           color: #f4e8d8;
           margin-bottom: 15px;
           padding-bottom: 10px;
-          border-bottom: 4px solid rgba(83, 116, 95, 0.3);
+          border-bottom: 4px solid rgba(var(--accent-rgb), 0.3);
           display: flex;
           align-items: center;
           gap: 10px;
@@ -4962,7 +5410,7 @@ export default function LittleFires() {
         }
 
         .archived-date {
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.85rem;
           font-weight: 600;
         }
@@ -4997,7 +5445,7 @@ export default function LittleFires() {
           backdrop-filter: blur(10px);
           border-radius: 20px;
           padding: 20px;
-          border: 2px solid rgba(83, 116, 95, 0.3);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
           transition: all 0.3s ease;
           user-select: none;
           -webkit-user-select: none;
@@ -5007,7 +5455,7 @@ export default function LittleFires() {
         }
 
         .goal-card:hover {
-          border-color: rgba(83, 116, 95, 0.5);
+          border-color: rgba(var(--accent-rgb), 0.5);
           transform: translateY(-2px);
         }
 
@@ -5024,10 +5472,10 @@ export default function LittleFires() {
         }
 
         .goal-project-count {
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.9rem;
           font-weight: 600;
-          background: rgba(83, 116, 95, 0.2);
+          background: rgba(var(--accent-rgb), 0.2);
           padding: 4px 12px;
           border-radius: 12px;
         }
@@ -5090,7 +5538,7 @@ export default function LittleFires() {
           padding: 20px;
           background: rgba(42, 42, 62, 0.4);
           border-radius: 15px;
-          border: 2px solid rgba(83, 116, 95, 0.3);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
         }
 
         .projects-header {
@@ -5160,9 +5608,9 @@ export default function LittleFires() {
 
         .project-due-date {
           padding: 4px 12px;
-          background: rgba(83, 116, 95, 0.2);
+          background: rgba(var(--accent-rgb), 0.2);
           border-radius: 12px;
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.85rem;
           font-weight: 600;
         }
@@ -5208,7 +5656,7 @@ export default function LittleFires() {
           font-weight: 700;
           color: #f4e8d8;
           background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(83, 116, 95, 0.3);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 12px;
           padding: 10px 20px;
           text-align: center;
@@ -5218,8 +5666,8 @@ export default function LittleFires() {
         }
 
         .project-name-edit:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 15px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.3);
         }
 
         .project-dates-section {
@@ -5257,8 +5705,8 @@ export default function LittleFires() {
         }
 
         .project-name-edit:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 15px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.3);
         }
 
         .back-btn {
@@ -5276,7 +5724,7 @@ export default function LittleFires() {
         }
 
         .back-btn:hover {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           border-color: transparent;
         }
 
@@ -5309,10 +5757,10 @@ export default function LittleFires() {
 
         .cancel-project-btn {
           padding: 8px 14px;
-          background: rgba(83, 116, 95, 0.2);
-          border: 1px solid rgba(83, 116, 95, 0.3);
+          background: rgba(var(--accent-rgb), 0.2);
+          border: 1px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 10px;
-          color: #53745f;
+          color: var(--accent);
           font-family: 'Quicksand', sans-serif;
           font-size: 0.8rem;
           font-weight: 600;
@@ -5324,7 +5772,7 @@ export default function LittleFires() {
         }
 
         .cancel-project-btn:hover {
-          background: rgba(83, 116, 95, 0.3);
+          background: rgba(var(--accent-rgb), 0.3);
           transform: scale(1.05);
         }
 
@@ -5387,7 +5835,7 @@ export default function LittleFires() {
 
         .form-field label {
           display: block;
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.95rem;
           font-weight: 600;
           margin-bottom: 8px;
@@ -5399,7 +5847,7 @@ export default function LittleFires() {
           width: 100%;
           max-width: 100%;
           background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 12px;
           padding: 12px 16px;
           color: #f4e8d8;
@@ -5422,8 +5870,8 @@ export default function LittleFires() {
 
         .form-field input:focus,
         .form-field textarea:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 15px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.3);
         }
 
         .modal-actions {
@@ -5482,7 +5930,7 @@ export default function LittleFires() {
           font-family: 'Quicksand', sans-serif;
           font-weight: 600;
           font-size: 1.1rem;
-          color: #53745f;
+          color: var(--accent);
         }
 
         .note-toggle {
@@ -5492,7 +5940,7 @@ export default function LittleFires() {
 
         .note-content {
           background: rgba(30, 30, 46, 0.6);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 12px;
           padding: 20px;
           color: #f4e8d8;
@@ -5507,8 +5955,8 @@ export default function LittleFires() {
 
         .note-content:focus {
           outline: none;
-          border-color: #53745f;
-          box-shadow: 0 0 15px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.3);
         }
 
         .note-content:empty:before {
@@ -5546,7 +5994,7 @@ export default function LittleFires() {
         }
 
         .tag-pill.active {
-          background: linear-gradient(135deg, #5a7a5f, #53745f);
+          background: linear-gradient(135deg, #5a7a5f, var(--accent));
           border-color: transparent;
           color: #fff;
         }
@@ -5556,7 +6004,7 @@ export default function LittleFires() {
           align-items: center;
           gap: 6px;
           padding: 5px 12px;
-          background: linear-gradient(135deg, #5a7a5f, #53745f);
+          background: linear-gradient(135deg, #5a7a5f, var(--accent));
           border-radius: 15px;
           color: #fff;
           font-size: 0.85rem;
@@ -5587,7 +6035,7 @@ export default function LittleFires() {
 
         .tag-input {
           background: rgba(30, 30, 46, 0.6);
-          border: 2px solid rgba(83, 116, 95, 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 12px;
           padding: 8px 14px;
           color: #f4e8d8;
@@ -5599,8 +6047,8 @@ export default function LittleFires() {
         }
 
         .tag-input:focus {
-          border-color: #53745f;
-          box-shadow: 0 0 10px rgba(83, 116, 95, 0.3);
+          border-color: var(--accent);
+          box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.3);
         }
 
         .calendar-section {
@@ -5652,7 +6100,7 @@ export default function LittleFires() {
           appearance: none;
           width: 18px;
           height: 18px;
-          border: 2px solid rgba(83, 116, 95, 0.4);
+          border: 2px solid rgba(var(--accent-rgb), 0.4);
           border-radius: 4px;
           cursor: pointer;
           position: relative;
@@ -5661,8 +6109,8 @@ export default function LittleFires() {
         }
 
         .calendar-checkbox input[type="checkbox"]:checked {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
-          border-color: #53745f;
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border-color: var(--accent);
         }
 
         .calendar-checkbox input[type="checkbox"]:checked::after {
@@ -5688,7 +6136,7 @@ export default function LittleFires() {
         }
 
         .month-nav-btn:hover {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           border-color: transparent;
           transform: scale(1.1);
         }
@@ -5751,7 +6199,7 @@ export default function LittleFires() {
         .calendar-day-header {
           text-align: center;
           font-weight: 700;
-          color: #53745f;
+          color: var(--accent);
           padding: 10px;
           font-size: 0.9rem;
         }
@@ -5783,13 +6231,13 @@ export default function LittleFires() {
         }
 
         .calendar-day.today {
-          border-color: #53745f;
-          background: rgba(83, 116, 95, 0.1);
+          border-color: var(--accent);
+          background: rgba(var(--accent-rgb), 0.1);
         }
 
         .calendar-day.selected {
           background: linear-gradient(135deg, rgba(45, 106, 79, 0.3), rgba(64, 145, 108, 0.3));
-          border-color: #6a8f76;
+          border-color: var(--accent-light);
         }
 
         .calendar-day.has-items {
@@ -5816,7 +6264,7 @@ export default function LittleFires() {
         }
 
         .task-indicator {
-          color: #53745f;
+          color: var(--accent);
         }
 
         .note-indicator {
@@ -5836,7 +6284,7 @@ export default function LittleFires() {
 
         .day-details h3 {
           font-family: 'Quicksand', sans-serif;
-          color: #53745f;
+          color: var(--accent);
           margin: 0 0 20px 0;
           font-size: 1.5rem;
         }
@@ -5852,7 +6300,7 @@ export default function LittleFires() {
           color: #f4e8d8;
           margin: 0 0 15px 0;
           padding-bottom: 10px;
-          border-bottom: 4px solid rgba(83, 116, 95, 0.3);
+          border-bottom: 4px solid rgba(var(--accent-rgb), 0.3);
         }
 
         .calendar-item {
@@ -5865,12 +6313,12 @@ export default function LittleFires() {
         }
 
         .calendar-item:hover {
-          border-color: rgba(83, 116, 95, 0.4);
+          border-color: rgba(var(--accent-rgb), 0.4);
           background: rgba(30, 30, 46, 0.8);
         }
 
         .calendar-item.expanded {
-          border-color: rgba(83, 116, 95, 0.6);
+          border-color: rgba(var(--accent-rgb), 0.6);
           background: rgba(30, 30, 46, 0.9);
         }
 
@@ -5896,7 +6344,7 @@ export default function LittleFires() {
         .go-to-btn {
           margin-top: 15px;
           padding: 10px 20px;
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           color: #fff;
           border: none;
           border-radius: 10px;
@@ -5910,7 +6358,7 @@ export default function LittleFires() {
         }
 
         .go-to-btn:hover {
-          background: linear-gradient(135deg, #6a8f76, #52b788);
+          background: linear-gradient(135deg, var(--accent-light), #52b788);
           box-shadow: 0 6px 20px rgba(45, 106, 79, 0.5);
           transform: translateY(-2px);
         }
@@ -5943,7 +6391,7 @@ export default function LittleFires() {
         }
 
         .note-item {
-          border-left: 4px solid #53745f;
+          border-left: 4px solid var(--accent);
         }
 
         .project-item {
@@ -5975,7 +6423,7 @@ export default function LittleFires() {
         }
 
         .project-date-info {
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.8rem;
           font-weight: 600;
         }
@@ -6001,7 +6449,7 @@ export default function LittleFires() {
         }
 
         .list-badge.work {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           color: #ffffff;
         }
 
@@ -6026,10 +6474,10 @@ export default function LittleFires() {
 
         .project-badge {
           padding: 4px 10px;
-          background: rgba(83, 116, 95, 0.2);
-          border: 1px solid rgba(83, 116, 95, 0.4);
+          background: rgba(var(--accent-rgb), 0.2);
+          border: 1px solid rgba(var(--accent-rgb), 0.4);
           border-radius: 12px;
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.75rem;
           font-weight: 600;
           text-transform: capitalize;
@@ -6042,7 +6490,7 @@ export default function LittleFires() {
         }
 
         .task-dot {
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.8rem;
           margin-right: 6px;
         }
@@ -6051,9 +6499,9 @@ export default function LittleFires() {
           display: inline-block;
           margin-top: 8px;
           padding: 3px 10px;
-          background: rgba(83, 116, 95, 0.2);
+          background: rgba(var(--accent-rgb), 0.2);
           border-radius: 10px;
-          color: #53745f;
+          color: var(--accent);
           font-size: 0.8rem;
           font-weight: 600;
         }
@@ -6087,7 +6535,7 @@ export default function LittleFires() {
 
         .mini-tag {
           padding: 3px 8px;
-          background: linear-gradient(135deg, #53745f, #6a8f76);
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
           border-radius: 10px;
           color: #fff;
           font-size: 0.75rem;
@@ -6105,12 +6553,12 @@ export default function LittleFires() {
         }
 
         .note-content ul li::marker {
-          color: #53745f;
+          color: var(--accent);
           font-weight: bold;
         }
 
         .note-content ol li::marker {
-          color: #53745f;
+          color: var(--accent);
           font-weight: bold;
         }
 
@@ -6132,7 +6580,7 @@ export default function LittleFires() {
           appearance: none;
           width: 20px;
           height: 20px;
-          border: 2px solid rgba(83, 116, 95, 0.3);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 8px;
           cursor: pointer;
           position: relative;
@@ -6143,13 +6591,13 @@ export default function LittleFires() {
         }
 
         .note-content .task-checkbox:hover {
-          border-color: rgba(83, 116, 95, 0.5);
+          border-color: rgba(var(--accent-rgb), 0.5);
           transform: scale(1.1);
         }
 
         .note-content .task-checkbox:checked {
-          background: linear-gradient(135deg, #53745f, #6a8f76);
-          border-color: #53745f;
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border-color: var(--accent);
         }
 
         .note-content .task-checkbox:checked::after {
@@ -6416,6 +6864,13 @@ export default function LittleFires() {
                 >
                   Archive
                 </div>
+                <div className="menu-divider"></div>
+                <div 
+                  className={`menu-item ${appMode === 'settings' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('settings'); setMenuOpen(false); }}
+                >
+                  Settings
+                </div>
               </div>
             </>
           )}
@@ -6508,36 +6963,15 @@ export default function LittleFires() {
                 All Tasks
               </button>
               <div className="tabs">
-                <button
-                  className={`tab ${currentList === 'personal' ? 'active' : ''}`}
-                  onClick={() => setCurrentList('personal')}
-                >
-                  Personal
-                </button>
-                <button
-                  className={`tab ${currentList === 'work' ? 'active' : ''}`}
-                  onClick={() => setCurrentList('work')}
-                >
-                  Work
-                </button>
-                <button
-                  className={`tab ${currentList === 'home' ? 'active' : ''}`}
-                  onClick={() => setCurrentList('home')}
-                >
-                  Home
-                </button>
-                <button
-                  className={`tab ${currentList === 'travel' ? 'active' : ''}`}
-                  onClick={() => setCurrentList('travel')}
-                >
-                  Travel
-                </button>
-                <button
-                  className={`tab ${currentList === 'kids' ? 'active' : ''}`}
-                  onClick={() => setCurrentList('kids')}
-                >
-                  Kids
-                </button>
+                {visibleTaskLists.map(key => (
+                  <button
+                    key={key}
+                    className={`tab ${currentList === key ? 'active' : ''}`}
+                    onClick={() => setCurrentList(key)}
+                  >
+                    {listLabel(key)}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -6755,10 +7189,10 @@ export default function LittleFires() {
                           fontFamily: 'Quicksand, sans-serif',
                           fontSize: '1.5rem',
                           fontWeight: '700',
-                          color: '#53745f',
+                          color: 'var(--accent)',
                           marginBottom: '15px',
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)',
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)',
                           cursor: 'pointer',
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -6833,7 +7267,7 @@ export default function LittleFires() {
                           padding: '20px',
                           background: 'rgba(42, 42, 62, 0.8)',
                           borderRadius: '15px',
-                          border: '2px solid rgba(83, 116, 95, 0.3)'
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           <div style={{
                             fontFamily: 'Quicksand, sans-serif',
@@ -6843,7 +7277,7 @@ export default function LittleFires() {
                             marginBottom: '15px',
                             marginTop: 0,
                             paddingBottom: '10px',
-                            borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                            borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                           }}>
                             Note
                           </div>
@@ -7353,7 +7787,7 @@ export default function LittleFires() {
                                     position: 'relative',
                                     borderRadius: '8px',
                                     overflow: 'hidden',
-                                    border: '2px solid rgba(83, 116, 95, 0.3)',
+                                    border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                     aspectRatio: '1',
                                   }}
                                 >
@@ -7429,7 +7863,7 @@ export default function LittleFires() {
                                 width: '100%',
                                 padding: '8px 12px',
                                 background: 'rgba(42, 42, 62, 0.8)',
-                                border: '2px solid rgba(83, 116, 95, 0.3)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                 borderRadius: '8px',
                                 color: '#f4e8d8',
                                 fontSize: '0.9rem',
@@ -7493,7 +7927,7 @@ export default function LittleFires() {
                           padding: '20px',
                           background: 'rgba(42, 42, 62, 0.8)',
                           borderRadius: '15px',
-                          border: '2px solid rgba(83, 116, 95, 0.3)'
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           <div style={{
                             fontFamily: 'Quicksand, sans-serif',
@@ -7502,7 +7936,7 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             marginBottom: '15px',
                             paddingBottom: '10px',
-                            borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                            borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                           }}>
                             Time Logged
                           </div>
@@ -7942,8 +8376,8 @@ export default function LittleFires() {
                           style={{
                             opacity: isDragging ? 0.5 : 1,
                             cursor: currentProjectList !== 'master' ? 'move' : 'default',
-                            borderTop: isDragOver && draggedProject?.index > index ? '3px solid #53745f' : undefined,
-                            borderBottom: isDragOver && draggedProject?.index < index ? '3px solid #53745f' : undefined,
+                            borderTop: isDragOver && draggedProject?.index > index ? '3px solid var(--accent)' : undefined,
+                            borderBottom: isDragOver && draggedProject?.index < index ? '3px solid var(--accent)' : undefined,
                             transition: 'opacity 0.2s, border 0.2s'
                           }}
                         >
@@ -8002,7 +8436,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -8012,7 +8446,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Project
                         </div>
@@ -8059,7 +8493,7 @@ export default function LittleFires() {
                               minHeight: '80px',
                               padding: '12px',
                               background: 'rgba(42, 42, 62, 0.8)',
-                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
                             fontSize: '0.95rem',
@@ -8090,7 +8524,7 @@ export default function LittleFires() {
                             minHeight: '80px',
                             padding: '12px',
                             background: 'rgba(42, 42, 62, 0.8)',
-                            border: '2px solid rgba(83, 116, 95, 0.3)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
                             borderRadius: '10px',
                             color: '#f4e8d8',
                             fontSize: '0.95rem',
@@ -8121,7 +8555,7 @@ export default function LittleFires() {
                             minHeight: '80px',
                             padding: '12px',
                             background: 'rgba(42, 42, 62, 0.8)',
-                            border: '2px solid rgba(83, 116, 95, 0.3)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
                             borderRadius: '10px',
                             color: '#f4e8d8',
                             fontSize: '0.95rem',
@@ -8160,7 +8594,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -8170,7 +8604,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Before Photos
                         </div>
@@ -8229,7 +8663,7 @@ export default function LittleFires() {
                                   position: 'relative',
                                   borderRadius: '8px',
                                   overflow: 'hidden',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   aspectRatio: '1',
                                 }}
                               >
@@ -8278,7 +8712,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -8288,7 +8722,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           After Photos
                         </div>
@@ -8347,7 +8781,7 @@ export default function LittleFires() {
                                   position: 'relative',
                                   borderRadius: '8px',
                                   overflow: 'hidden',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   aspectRatio: '1',
                                 }}
                               >
@@ -8397,7 +8831,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -8407,7 +8841,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Goal
                         </div>
@@ -8417,7 +8851,7 @@ export default function LittleFires() {
                             style={{
                               padding: '10px',
                               background: 'rgba(42, 42, 62, 1)',
-                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
@@ -8447,7 +8881,7 @@ export default function LittleFires() {
                               right: '0',
                               marginTop: '-8px',
                               background: 'rgba(42, 42, 62, 1)',
-                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               overflow: 'hidden',
                               zIndex: 1000,
@@ -8463,12 +8897,12 @@ export default function LittleFires() {
                                   color: '#f4e8d8',
                                   fontSize: '0.95rem',
                                   cursor: 'pointer',
-                                  background: !project.goalId ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                  borderBottom: '1px solid rgba(83, 116, 95, 0.2)',
+                                  background: !project.goalId ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                  borderBottom: '1px solid rgba(var(--accent-rgb), 0.2)',
                                   transition: 'background 0.2s ease'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                                onMouseOut={(e) => e.currentTarget.style.background = !project.goalId ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                                onMouseOut={(e) => e.currentTarget.style.background = !project.goalId ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                               >
                                 No Goal
                               </div>
@@ -8484,12 +8918,12 @@ export default function LittleFires() {
                                     color: '#f4e8d8',
                                     fontSize: '0.95rem',
                                     cursor: 'pointer',
-                                    background: project.goalId === goal.id ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                    borderBottom: idx < (goals[selectedProject.listName]?.length - 1 || 0) ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                    background: project.goalId === goal.id ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                    borderBottom: idx < (goals[selectedProject.listName]?.length - 1 || 0) ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                     transition: 'background 0.2s ease'
                                   }}
-                                  onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                                  onMouseOut={(e) => e.currentTarget.style.background = project.goalId === goal.id ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                  onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                                  onMouseOut={(e) => e.currentTarget.style.background = project.goalId === goal.id ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                                 >
                                   {goal.name}
                                 </div>
@@ -8505,7 +8939,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -8515,7 +8949,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Tasks
                         </div>
@@ -8542,7 +8976,7 @@ export default function LittleFires() {
                                 style={{
                                   padding: '10px',
                                   background: 'rgba(42, 42, 62, 1)',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   borderRadius: '10px',
                                   color: '#f4e8d8',
                                   fontSize: '0.95rem',
@@ -8554,7 +8988,7 @@ export default function LittleFires() {
                                   fontFamily: 'Nunito, sans-serif'
                                 }}
                               >
-                                <span style={{textTransform: 'capitalize'}}>{projectTaskList}</span>
+                                <span>{listLabel(projectTaskList)}</span>
                                 <span style={{
                                   transform: taskListDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                                   transition: 'transform 0.3s ease',
@@ -8572,13 +9006,13 @@ export default function LittleFires() {
                                   right: '0',
                                   marginTop: '-8px',
                                   background: 'rgba(42, 42, 62, 1)',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   borderRadius: '10px',
                                   overflow: 'hidden',
                                   zIndex: 1000,
                                   boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
                                 }}>
-                                  {['personal', 'work', 'home', 'travel', 'kids'].map((list, idx) => (
+                                  {visibleTaskLists.map((list, idx) => (
                                     <div
                                       key={list}
                                       onClick={() => {
@@ -8590,16 +9024,16 @@ export default function LittleFires() {
                                         color: '#f4e8d8',
                                         fontSize: '0.95rem',
                                         cursor: 'pointer',
-                                        background: projectTaskList === list ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                        borderBottom: idx < 4 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                        background: projectTaskList === list ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                        borderBottom: idx < 4 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                         transition: 'background 0.2s ease',
                                         textTransform: 'capitalize',
                                         fontFamily: 'Nunito, sans-serif'
                                       }}
-                                      onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                                      onMouseOut={(e) => e.currentTarget.style.background = projectTaskList === list ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                      onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                                      onMouseOut={(e) => e.currentTarget.style.background = projectTaskList === list ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                                     >
-                                      {list}
+                                      {listLabel(list)}
                                     </div>
                                   ))}
                                 </div>
@@ -8905,10 +9339,10 @@ export default function LittleFires() {
                           }}
                           style={{
                             padding: '10px 20px',
-                            background: 'rgba(83, 116, 95, 0.2)',
-                            border: '2px solid rgba(83, 116, 95, 0.4)',
+                            background: 'rgba(var(--accent-rgb), 0.2)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
                             borderRadius: '8px',
-                            color: '#53745f',
+                            color: 'var(--accent)',
                             fontSize: '0.9rem',
                             fontWeight: '600',
                             fontFamily: 'Quicksand, sans-serif',
@@ -9043,10 +9477,11 @@ export default function LittleFires() {
                     
                     const colors = {
                       personal: '#6a9d5f',
-                      work: '#53745f',
+                      work: 'var(--accent)',
                       home: '#4a7a3a',
-                      travel: '#6a8f76',
-                      kids: '#f472b6'
+                      travel: 'var(--accent-light)',
+                      kids: '#f472b6',
+                      partner: '#f59e0b'
                     };
                     
                     // If project spans multiple weeks, create multiple segments
@@ -9621,8 +10056,8 @@ export default function LittleFires() {
                                       style={{
                                         opacity: isDragging ? 0.5 : 1,
                                         cursor: 'move',
-                                        borderTop: isDragOver && draggedGoal?.index > index ? '3px solid #53745f' : undefined,
-                                        borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid #53745f' : undefined,
+                                        borderTop: isDragOver && draggedGoal?.index > index ? '3px solid var(--accent)' : undefined,
+                                        borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid var(--accent)' : undefined,
                                         transition: 'opacity 0.2s, border 0.2s'
                                       }}
                                     >
@@ -9716,8 +10151,8 @@ export default function LittleFires() {
                           style={{
                             opacity: isDragging ? 0.5 : 1,
                             cursor: currentGoalList !== 'master' ? 'move' : 'default',
-                            borderTop: isDragOver && draggedGoal?.index > index ? '3px solid #53745f' : undefined,
-                            borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid #53745f' : undefined,
+                            borderTop: isDragOver && draggedGoal?.index > index ? '3px solid var(--accent)' : undefined,
+                            borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid var(--accent)' : undefined,
                             transition: 'opacity 0.2s, border 0.2s'
                           }}
                         >
@@ -9777,7 +10212,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -9787,7 +10222,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Goal
                         </div>
@@ -9828,7 +10263,7 @@ export default function LittleFires() {
                               minHeight: '100px',
                               padding: '12px',
                               background: 'rgba(42, 42, 62, 0.8)',
-                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
@@ -9853,7 +10288,7 @@ export default function LittleFires() {
                               minHeight: '100px',
                               padding: '12px',
                               background: 'rgba(42, 42, 62, 0.8)',
-                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
@@ -9878,7 +10313,7 @@ export default function LittleFires() {
                               minHeight: '100px',
                               padding: '12px',
                               background: 'rgba(42, 42, 62, 0.8)',
-                              border: '2px solid rgba(83, 116, 95, 0.3)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               color: '#f4e8d8',
                               fontSize: '0.95rem',
@@ -9920,7 +10355,7 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             marginBottom: '10px',
                             paddingBottom: '8px',
-                            borderBottom: '2px solid rgba(83, 116, 95, 0.2)'
+                            borderBottom: '2px solid rgba(var(--accent-rgb), 0.2)'
                           }}>
                             Before Photos
                           </div>
@@ -9979,7 +10414,7 @@ export default function LittleFires() {
                                     position: 'relative',
                                     borderRadius: '8px',
                                     overflow: 'hidden',
-                                    border: '2px solid rgba(83, 116, 95, 0.3)',
+                                    border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                     aspectRatio: '1',
                                   }}
                                 >
@@ -10031,7 +10466,7 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             marginBottom: '10px',
                             paddingBottom: '8px',
-                            borderBottom: '2px solid rgba(83, 116, 95, 0.2)'
+                            borderBottom: '2px solid rgba(var(--accent-rgb), 0.2)'
                           }}>
                             After Photos
                           </div>
@@ -10090,7 +10525,7 @@ export default function LittleFires() {
                                     position: 'relative',
                                     borderRadius: '8px',
                                     overflow: 'hidden',
-                                    border: '2px solid rgba(83, 116, 95, 0.3)',
+                                    border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                     aspectRatio: '1',
                                   }}
                                 >
@@ -10144,7 +10579,7 @@ export default function LittleFires() {
                           marginBottom: '15px',
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Projects ({goalProjects.length})
                         </h3>
@@ -10214,7 +10649,7 @@ export default function LittleFires() {
                         padding: '20px',
                         background: 'rgba(42, 42, 62, 0.8)',
                         borderRadius: '15px',
-                        border: '2px solid rgba(83, 116, 95, 0.3)'
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
                           fontFamily: 'Quicksand, sans-serif',
@@ -10223,7 +10658,7 @@ export default function LittleFires() {
                           color: '#f4e8d8',
                           marginBottom: '15px',
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(83, 116, 95, 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           Time Logged
                         </div>
@@ -10276,7 +10711,7 @@ export default function LittleFires() {
                               marginBottom: '15px',
                               marginTop: 0,
                               paddingBottom: '10px',
-                              borderBottom: '2px solid rgba(83, 116, 95, 0.2)'
+                              borderBottom: '2px solid rgba(var(--accent-rgb), 0.2)'
                             }}>
                               History
                             </h3>
@@ -10296,17 +10731,17 @@ export default function LittleFires() {
                                   background: 'rgba(52, 52, 72, 0.6)',
                                   borderRadius: '10px',
                                   marginBottom: '10px',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   cursor: 'pointer',
                                   transition: 'all 0.2s ease'
                                 }}
                                 onMouseEnter={(e) => {
                                   e.currentTarget.style.background = 'rgba(52, 52, 72, 0.8)';
-                                  e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.5)';
+                                  e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.5)';
                                 }}
                                 onMouseLeave={(e) => {
                                   e.currentTarget.style.background = 'rgba(52, 52, 72, 0.6)';
-                                  e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)';
+                                  e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)';
                                 }}
                               >
                                 <div style={{
@@ -10365,14 +10800,14 @@ export default function LittleFires() {
                                     lineHeight: '1.5',
                                     marginTop: '10px',
                                     padding: '12px',
-                                    background: 'rgba(83, 116, 95, 0.1)',
+                                    background: 'rgba(var(--accent-rgb), 0.1)',
                                     borderRadius: '8px',
-                                    border: '1px solid rgba(83, 116, 95, 0.3)',
+                                    border: '1px solid rgba(var(--accent-rgb), 0.3)',
                                     fontWeight: '500'
                                   }}>
                                     <div style={{
                                       fontSize: '0.75rem',
-                                      color: '#53745f',
+                                      color: 'var(--accent)',
                                       marginBottom: '5px',
                                       textTransform: 'uppercase',
                                       letterSpacing: '0.5px',
@@ -10399,10 +10834,10 @@ export default function LittleFires() {
                           }}
                           style={{
                             padding: '10px 20px',
-                            background: 'rgba(83, 116, 95, 0.2)',
-                            border: '2px solid rgba(83, 116, 95, 0.4)',
+                            background: 'rgba(var(--accent-rgb), 0.2)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
                             borderRadius: '8px',
-                            color: '#53745f',
+                            color: 'var(--accent)',
                             fontSize: '0.9rem',
                             fontWeight: '600',
                             fontFamily: 'Quicksand, sans-serif',
@@ -10447,7 +10882,7 @@ export default function LittleFires() {
                       width: '100%',
                       padding: '12px',
                       background: 'rgba(42, 42, 62, 0.8)',
-                      border: '2px solid rgba(83, 116, 95, 0.3)',
+                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
                       borderRadius: '10px',
                       color: '#f4e8d8',
                       fontSize: '1rem',
@@ -10463,7 +10898,7 @@ export default function LittleFires() {
                       width: '100%',
                       padding: '12px',
                       background: 'rgba(42, 42, 62, 0.8)',
-                      border: '2px solid rgba(83, 116, 95, 0.3)',
+                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
                       borderRadius: '10px',
                       color: '#f4e8d8',
                       fontSize: '1rem',
@@ -10488,7 +10923,7 @@ export default function LittleFires() {
                         boxSizing: 'border-box',
                         padding: '10px 8px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.2)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.2)',
                         borderRadius: '10px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -10510,7 +10945,7 @@ export default function LittleFires() {
                         boxSizing: 'border-box',
                         padding: '10px 8px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.2)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.2)',
                         borderRadius: '10px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -10673,7 +11108,7 @@ export default function LittleFires() {
                             cy="105"
                             r="95"
                             fill="none"
-                            stroke={isLogging ? '#53745f' : '#a0aec0'}
+                            stroke={isLogging ? 'var(--accent)' : '#a0aec0'}
                             strokeWidth="8"
                             strokeDasharray="597"
                             strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
@@ -10731,7 +11166,7 @@ export default function LittleFires() {
                       fontFamily: 'Quicksand, sans-serif',
                       fontSize: '2rem',
                       fontWeight: '600',
-                      color: isLogging ? '#53745f' : '#a0aec0',
+                      color: isLogging ? 'var(--accent)' : '#a0aec0',
                       marginBottom: '15px',
                       letterSpacing: '0.05em'
                     }}>
@@ -10757,7 +11192,7 @@ export default function LittleFires() {
                           width: '100%',
                           padding: '10px',
                           background: 'rgba(42, 42, 62, 1)',
-                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
                           borderRadius: '8px',
                           color: '#f4e8d8',
                           fontSize: '1rem',
@@ -10786,7 +11221,7 @@ export default function LittleFires() {
                           right: '0',
                           marginTop: '-8px',
                           background: 'rgba(42, 42, 62, 1)',
-                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
                           borderRadius: '8px',
                           overflow: 'hidden',
                           zIndex: 1000,
@@ -10812,13 +11247,13 @@ export default function LittleFires() {
                                 color: '#f4e8d8',
                                 fontSize: '1rem',
                                 cursor: 'pointer',
-                                background: timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                borderBottom: idx < 6 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                background: timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                borderBottom: idx < 6 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                 transition: 'background 0.2s ease',
                                 fontFamily: 'Quicksand, sans-serif'
                               }}
-                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                              onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                             >
                               {option.label}
                             </div>
@@ -10848,7 +11283,7 @@ export default function LittleFires() {
                         width: '100%',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -10874,7 +11309,7 @@ export default function LittleFires() {
                         minHeight: '60px',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -10904,7 +11339,7 @@ export default function LittleFires() {
                         minHeight: '100px',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -11038,7 +11473,7 @@ export default function LittleFires() {
                         width: '100%',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '1.2rem',
@@ -11067,7 +11502,7 @@ export default function LittleFires() {
                         width: '100%',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem'
@@ -11095,7 +11530,7 @@ export default function LittleFires() {
                         minHeight: '80px',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -11125,7 +11560,7 @@ export default function LittleFires() {
                         minHeight: '120px',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -11309,7 +11744,7 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             marginBottom: '15px',
                             paddingBottom: '10px',
-                            borderBottom: '4px solid rgba(83, 116, 95, 0.3)',
+                            borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)',
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center',
@@ -11317,7 +11752,7 @@ export default function LittleFires() {
                           }}>
                           <span>Time Logs</span>
                           <span style={{
-                            color: '#53745f',
+                            color: 'var(--accent)',
                             fontSize: '1rem',
                             fontWeight: '700'
                           }}>
@@ -11333,7 +11768,7 @@ export default function LittleFires() {
                                 padding: '15px',
                                 background: 'rgba(52, 52, 72, 0.6)',
                                 borderRadius: '15px',
-                                border: '2px solid rgba(83, 116, 95, 0.15)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.15)',
                                 cursor: 'pointer',
                                 transition: 'all 0.2s ease'
                               }}
@@ -11369,7 +11804,7 @@ export default function LittleFires() {
                                     )}
                                   </div>
                                   <div style={{
-                                    color: '#53745f',
+                                    color: 'var(--accent)',
                                     fontSize: '1rem',
                                     fontWeight: '700',
                                     fontFamily: 'Quicksand, sans-serif'
@@ -11379,7 +11814,7 @@ export default function LittleFires() {
                                 </div>
                                 
                                 {isExpanded && (
-                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(83, 116, 95, 0.2)'}}>
+                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(var(--accent-rgb), 0.2)'}}>
                                     {log.focus && (
                                       <div style={{marginBottom: '10px'}}>
                                         <div style={{
@@ -11448,10 +11883,10 @@ export default function LittleFires() {
                                         }}
                                         style={{
                                           padding: '8px 16px',
-                                          background: 'rgba(83, 116, 95, 0.2)',
-                                          border: '1px solid rgba(83, 116, 95, 0.4)',
+                                          background: 'rgba(var(--accent-rgb), 0.2)',
+                                          border: '1px solid rgba(var(--accent-rgb), 0.4)',
                                           borderRadius: '20px',
-                                          color: '#53745f',
+                                          color: 'var(--accent)',
                                           fontSize: '0.85rem',
                                           fontFamily: 'Quicksand, sans-serif',
                                           cursor: 'pointer',
@@ -11503,7 +11938,7 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             marginBottom: '15px',
                             paddingBottom: '10px',
-                            borderBottom: '4px solid rgba(83, 116, 95, 0.3)',
+                            borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)',
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center',
@@ -11511,7 +11946,7 @@ export default function LittleFires() {
                           }}>
                           <span>Goal Time Logs</span>
                           <span style={{
-                            color: '#53745f',
+                            color: 'var(--accent)',
                             fontSize: '1rem',
                             fontWeight: '700'
                           }}>
@@ -11527,7 +11962,7 @@ export default function LittleFires() {
                                 padding: '15px',
                                 background: 'rgba(52, 52, 72, 0.6)',
                                 borderRadius: '15px',
-                                border: '2px solid rgba(83, 116, 95, 0.15)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.15)',
                                 cursor: 'pointer',
                                 transition: 'all 0.2s ease'
                               }}
@@ -11561,7 +11996,7 @@ export default function LittleFires() {
                                     </div>
                                   </div>
                                   <div style={{
-                                    color: '#53745f',
+                                    color: 'var(--accent)',
                                     fontSize: '1rem',
                                     fontWeight: '700',
                                     fontFamily: 'Quicksand, sans-serif'
@@ -11571,7 +12006,7 @@ export default function LittleFires() {
                                 </div>
                                 
                                 {isExpanded && (
-                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(83, 116, 95, 0.2)'}}>
+                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(var(--accent-rgb), 0.2)'}}>
                                     <div 
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -11685,7 +12120,7 @@ export default function LittleFires() {
                             color: '#f4e8d8',
                             marginBottom: '15px',
                             paddingBottom: '10px',
-                            borderBottom: '4px solid rgba(83, 116, 95, 0.3)',
+                            borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)',
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center',
@@ -11693,7 +12128,7 @@ export default function LittleFires() {
                           }}>
                           <span>Note Time Logs</span>
                           <span style={{
-                            color: '#53745f',
+                            color: 'var(--accent)',
                             fontSize: '1rem',
                             fontWeight: '700'
                           }}>
@@ -11709,7 +12144,7 @@ export default function LittleFires() {
                                 padding: '15px',
                                 background: 'rgba(52, 52, 72, 0.6)',
                                 borderRadius: '15px',
-                                border: '2px solid rgba(83, 116, 95, 0.15)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.15)',
                                 cursor: 'pointer',
                                 transition: 'all 0.2s ease'
                               }}
@@ -11743,7 +12178,7 @@ export default function LittleFires() {
                                     </div>
                                   </div>
                                   <div style={{
-                                    color: '#53745f',
+                                    color: 'var(--accent)',
                                     fontSize: '1rem',
                                     fontWeight: '700',
                                     fontFamily: 'Quicksand, sans-serif'
@@ -11753,7 +12188,7 @@ export default function LittleFires() {
                                 </div>
                                 
                                 {isExpanded && (
-                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(83, 116, 95, 0.2)'}}>
+                                  <div style={{marginTop: '15px', paddingTop: '15px', borderTop: '1px solid rgba(var(--accent-rgb), 0.2)'}}>
                                     <div 
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -11925,7 +12360,7 @@ export default function LittleFires() {
                             cy="105"
                             r="95"
                             fill="none"
-                            stroke={isLogging ? '#53745f' : '#a0aec0'}
+                            stroke={isLogging ? 'var(--accent)' : '#a0aec0'}
                             strokeWidth="8"
                             strokeDasharray="597"
                             strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
@@ -11983,7 +12418,7 @@ export default function LittleFires() {
                       fontFamily: 'Quicksand, sans-serif',
                       fontSize: '2rem',
                       fontWeight: '600',
-                      color: isLogging ? '#53745f' : '#a0aec0',
+                      color: isLogging ? 'var(--accent)' : '#a0aec0',
                       marginBottom: '15px',
                       letterSpacing: '0.05em'
                     }}>
@@ -12009,7 +12444,7 @@ export default function LittleFires() {
                           width: '100%',
                           padding: '10px',
                           background: 'rgba(42, 42, 62, 1)',
-                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
                           borderRadius: '8px',
                           color: '#f4e8d8',
                           fontSize: '1rem',
@@ -12039,7 +12474,7 @@ export default function LittleFires() {
                           right: '0',
                           marginTop: '-8px',
                           background: 'rgba(42, 42, 62, 1)',
-                          border: '2px solid rgba(83, 116, 95, 0.3)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
                           borderRadius: '8px',
                           overflow: 'hidden',
                           zIndex: 1000,
@@ -12065,13 +12500,13 @@ export default function LittleFires() {
                                 color: '#f4e8d8',
                                 fontSize: '1rem',
                                 cursor: 'pointer',
-                                background: timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                borderBottom: idx < 6 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                background: timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                borderBottom: idx < 6 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                 transition: 'background 0.2s ease',
                                 fontFamily: 'Quicksand, sans-serif'
                               }}
-                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                              onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                             >
                               {option.label}
                             </div>
@@ -12101,7 +12536,7 @@ export default function LittleFires() {
                         width: '100%',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -12130,7 +12565,7 @@ export default function LittleFires() {
                         minHeight: '60px',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -12161,7 +12596,7 @@ export default function LittleFires() {
                         minHeight: '100px',
                         padding: '10px',
                         background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(83, 116, 95, 0.3)',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
                         borderRadius: '8px',
                         color: '#f4e8d8',
                         fontSize: '0.95rem',
@@ -12257,7 +12692,7 @@ export default function LittleFires() {
                   padding: '12px',
                   marginBottom: '20px',
                   background: 'rgba(52, 52, 72, 0.6)',
-                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                   borderRadius: '10px',
                   color: '#f4e8d8',
                   fontSize: '1rem',
@@ -12348,14 +12783,8 @@ export default function LittleFires() {
                     const query = searchQuery.toLowerCase();
                     
                     // Search Tasks
-                    const listNames = ['personal', 'work', 'home', 'travel', 'kids'];
-                    const listLabels = {
-                      personal: 'Personal Tasks',
-                      work: 'Work Tasks',
-                      home: 'Home Projects',
-                      travel: 'Travel Plans',
-                      kids: 'Kids Tasks'
-                    };
+                    const listNames = visibleTaskLists;
+                    const listLabels = Object.fromEntries(TASK_LISTS.map(k => [k, listSectionLabel(k)]));
 
                     listNames.forEach(listName => {
                       if (!allLists[listName]) return;
@@ -12497,11 +12926,11 @@ export default function LittleFires() {
                                   borderRadius: '10px',
                                   marginBottom: '10px',
                                   cursor: 'pointer',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   transition: 'all 0.2s'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
-                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)'}
                               >
                                 <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
                                   {result.label}
@@ -12538,11 +12967,11 @@ export default function LittleFires() {
                                   borderRadius: '10px',
                                   marginBottom: '10px',
                                   cursor: 'pointer',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   transition: 'all 0.2s'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
-                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)'}
                               >
                                 <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
                                   {result.label}
@@ -12576,11 +13005,11 @@ export default function LittleFires() {
                                   borderRadius: '10px',
                                   marginBottom: '10px',
                                   cursor: 'pointer',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   transition: 'all 0.2s'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
-                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)'}
                               >
                                 <div style={{fontSize: '1.1rem', fontWeight: '600', color: '#f4e8d8', marginBottom: '5px'}}>
                                   {result.item.title || 'Untitled Note'}
@@ -12594,7 +13023,7 @@ export default function LittleFires() {
                                   <div style={{display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '8px'}}>
                                     {result.item.tags.map((tag, idx) => (
                                       <span key={tag || idx} style={{
-                                        background: 'rgba(83, 116, 95, 0.3)',
+                                        background: 'rgba(var(--accent-rgb), 0.3)',
                                         padding: '3px 8px',
                                         borderRadius: '12px',
                                         fontSize: '0.75rem',
@@ -12626,11 +13055,11 @@ export default function LittleFires() {
                                   borderRadius: '10px',
                                   marginBottom: '10px',
                                   cursor: 'pointer',
-                                  border: '2px solid rgba(83, 116, 95, 0.3)',
+                                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   transition: 'all 0.2s'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.6)'}
-                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(83, 116, 95, 0.3)'}
+                                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.6)'}
+                                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)'}
                               >
                                 <div style={{fontSize: '1rem', color: '#f4e8d8', marginBottom: '5px'}}>
                                   {new Date(result.item.startTime).toLocaleString()}
@@ -12675,7 +13104,7 @@ export default function LittleFires() {
                   width: '100%',
                   padding: '16px 24px',
                   background: 'rgba(42, 42, 62, 1)',
-                  border: '2px solid rgba(83, 116, 95, 0.4)',
+                  border: '2px solid rgba(var(--accent-rgb), 0.4)',
                   borderRadius: '50px',
                   color: '#f4e8d8',
                   fontSize: '1rem',
@@ -12707,7 +13136,7 @@ export default function LittleFires() {
                   right: '40px',
                   marginTop: '-10px',
                   background: 'rgba(42, 42, 62, 1)',
-                  border: '2px solid rgba(83, 116, 95, 0.4)',
+                  border: '2px solid rgba(var(--accent-rgb), 0.4)',
                   borderRadius: '20px',
                   overflow: 'hidden',
                   zIndex: 1000,
@@ -12726,13 +13155,13 @@ export default function LittleFires() {
                         fontSize: '1rem',
                         fontFamily: 'Nunito, sans-serif',
                         cursor: 'pointer',
-                        background: archiveType === option ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                        borderBottom: idx < 2 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                        background: archiveType === option ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                        borderBottom: idx < 2 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                         transition: 'background 0.2s ease',
                         textTransform: 'capitalize'
                       }}
-                      onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                      onMouseOut={(e) => e.currentTarget.style.background = archiveType === option ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                      onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                      onMouseOut={(e) => e.currentTarget.style.background = archiveType === option ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                     >
                       {option}
                     </div>
@@ -12744,7 +13173,7 @@ export default function LittleFires() {
             {/* Seafoam Divider */}
             <div style={{
               height: '2px',
-              background: 'rgba(83, 116, 95, 0.3)',
+              background: 'rgba(var(--accent-rgb), 0.3)',
               margin: '20px 40px',
               borderRadius: '2px'
             }} />
@@ -12768,36 +13197,15 @@ export default function LittleFires() {
 
             {/* Other List Buttons */}
             <div className="tabs">
-              <button 
-                className={`tab ${currentList === 'personal' ? 'active' : ''}`}
-                onClick={() => setCurrentList('personal')}
-              >
-                Personal
-              </button>
-              <button 
-                className={`tab ${currentList === 'work' ? 'active' : ''}`}
-                onClick={() => setCurrentList('work')}
-              >
-                Work
-              </button>
-              <button 
-                className={`tab ${currentList === 'home' ? 'active' : ''}`}
-                onClick={() => setCurrentList('home')}
-              >
-                Home
-              </button>
-              <button 
-                className={`tab ${currentList === 'travel' ? 'active' : ''}`}
-                onClick={() => setCurrentList('travel')}
-              >
-                Travel
-              </button>
-              <button 
-                className={`tab ${currentList === 'kids' ? 'active' : ''}`}
-                onClick={() => setCurrentList('kids')}
-              >
-                Kids
-              </button>
+              {visibleTaskLists.map(key => (
+                <button
+                  key={key}
+                  className={`tab ${currentList === key ? 'active' : ''}`}
+                  onClick={() => setCurrentList(key)}
+                >
+                  {listLabel(key)}
+                </button>
+              ))}
             </div>
 
             <div className="archived-tasks-container">
@@ -13089,7 +13497,7 @@ export default function LittleFires() {
                             )}
                             <div className="task-meta">
                               {goal.startDate && goal.endDate && (
-                                <span style={{color: '#53745f', fontSize: '0.85rem', marginRight: '15px'}}>
+                                <span style={{color: 'var(--accent)', fontSize: '0.85rem', marginRight: '15px'}}>
                                   {new Date(goal.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(goal.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                 </span>
                               )}
@@ -13139,7 +13547,7 @@ export default function LittleFires() {
                         )}
                         <div className="task-meta">
                           {goal.startDate && goal.endDate && (
-                            <span style={{color: '#53745f', fontSize: '0.85rem', marginRight: '15px'}}>
+                            <span style={{color: 'var(--accent)', fontSize: '0.85rem', marginRight: '15px'}}>
                               {new Date(goal.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(goal.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                             </span>
                           )}
@@ -13292,7 +13700,7 @@ export default function LittleFires() {
                             )}
                             <div className="task-meta">
                               {project.startDate && project.endDate && (
-                                <span style={{color: '#53745f', fontSize: '0.85rem', marginRight: '15px'}}>
+                                <span style={{color: 'var(--accent)', fontSize: '0.85rem', marginRight: '15px'}}>
                                   {new Date(project.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(project.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                 </span>
                               )}
@@ -13342,7 +13750,7 @@ export default function LittleFires() {
                         )}
                         <div className="task-meta">
                           {project.startDate && project.endDate && (
-                            <span style={{color: '#53745f', fontSize: '0.85rem', marginRight: '15px'}}>
+                            <span style={{color: 'var(--accent)', fontSize: '0.85rem', marginRight: '15px'}}>
                               {new Date(project.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(project.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                             </span>
                           )}
@@ -13386,16 +13794,457 @@ export default function LittleFires() {
           </div>
         )}
 
+        {appMode === 'settings' && (
+          <div className="settings-section" style={{ padding: isMobile ? '12px 0 32px' : '20px 40px 40px' }}>
+            {(() => {
+              const card = {
+                background: 'rgba(52, 52, 72, 0.4)',
+                border: '2px solid rgba(var(--accent-rgb), 0.2)',
+                borderRadius: '12px',
+                padding: isMobile ? '16px' : '20px 24px',
+                marginBottom: '18px'
+              };
+              const heading = {
+                color: '#f4e8d8', fontSize: '1.05rem', fontWeight: '700',
+                fontFamily: 'Quicksand, sans-serif', marginBottom: '4px'
+              };
+              const sub = {
+                color: '#b8a99a', fontSize: '0.82rem',
+                fontFamily: 'Quicksand, sans-serif', marginBottom: '16px', lineHeight: 1.45
+              };
+              const row = {
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: '14px', flexWrap: 'wrap', marginBottom: '14px'
+              };
+              const label = {
+                color: '#f4e8d8', fontSize: '0.92rem', fontFamily: 'Quicksand, sans-serif'
+              };
+              const hint = {
+                color: '#b8a99a', fontSize: '0.76rem',
+                fontFamily: 'Quicksand, sans-serif', marginTop: '2px'
+              };
+              const numInput = {
+                width: '90px', padding: '9px 10px', background: 'rgba(42, 42, 62, 1)',
+                border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
+                color: '#f4e8d8', fontSize: '0.95rem', fontFamily: 'Quicksand, sans-serif',
+                textAlign: 'center', boxSizing: 'border-box'
+              };
+
+              // Simple pill toggle
+              const Toggle = ({ on, onChange }) => (
+                <div
+                  onClick={() => onChange(!on)}
+                  style={{
+                    width: '52px', height: '30px', borderRadius: '15px', cursor: 'pointer',
+                    background: on ? 'linear-gradient(135deg, var(--accent), var(--accent-light))' : 'rgba(42, 42, 62, 1)',
+                    border: '2px solid rgba(var(--accent-rgb), 0.4)', position: 'relative',
+                    transition: 'background 0.25s ease', flexShrink: 0
+                  }}
+                >
+                  <div style={{
+                    width: '20px', height: '20px', borderRadius: '50%', background: '#f4e8d8',
+                    position: 'absolute', top: '3px', left: on ? '25px' : '3px',
+                    transition: 'left 0.25s ease'
+                  }} />
+                </div>
+              );
+
+              return (
+                <div>
+                  {/* ---- Appearance ---- */}
+                  <div style={card}>
+                    <div style={heading}>Accent Color</div>
+                    <div style={sub}>
+                      Recolors buttons, highlights, and the app's accents. Backgrounds stay dark.
+                    </div>
+
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: isMobile ? 'repeat(3, 1fr)' : 'repeat(6, 1fr)',
+                      gap: '10px', marginBottom: '18px'
+                    }}>
+                      {ACCENT_PRESETS.map(preset => {
+                        const active = settings.accentId === preset.id;
+                        return (
+                          <div
+                            key={preset.id}
+                            onClick={() => updateSetting('accentId', preset.id)}
+                            style={{
+                              cursor: 'pointer', textAlign: 'center',
+                              padding: '10px 4px', borderRadius: '10px',
+                              border: active ? '2px solid #f4e8d8' : '2px solid rgba(255,255,255,0.08)',
+                              background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            <div style={{
+                              width: '34px', height: '34px', borderRadius: '50%', margin: '0 auto 7px',
+                              background: `linear-gradient(135deg, ${preset.accent}, ${preset.light})`,
+                              boxShadow: active ? '0 0 10px rgba(255,255,255,0.25)' : 'none'
+                            }} />
+                            <div style={{
+                              color: active ? '#f4e8d8' : '#b8a99a',
+                              fontSize: '0.72rem', fontFamily: 'Quicksand, sans-serif'
+                            }}>
+                              {preset.name}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={{ flex: 1, minWidth: '160px' }}>
+                        <div style={label}>Custom color</div>
+                        <div style={hint}>
+                          Pick your own. Very light colors may reduce text contrast on buttons.
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <input
+                          type="color"
+                          value={settings.customAccent}
+                          onChange={(e) => {
+                            updateSetting('customAccent', e.target.value);
+                            updateSetting('accentId', 'custom');
+                          }}
+                          style={{
+                            width: '46px', height: '38px', padding: '2px', cursor: 'pointer',
+                            background: 'rgba(42, 42, 62, 1)',
+                            border: settings.accentId === 'custom'
+                              ? '2px solid #f4e8d8'
+                              : '2px solid rgba(var(--accent-rgb), 0.3)',
+                            borderRadius: '8px'
+                          }}
+                        />
+                        <button
+                          onClick={() => updateSetting('accentId', 'matcha')}
+                          style={{
+                            padding: '9px 14px', borderRadius: '8px', cursor: 'pointer',
+                            background: 'rgba(42, 42, 62, 1)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            color: '#b8a99a', fontSize: '0.8rem',
+                            fontFamily: 'Quicksand, sans-serif'
+                          }}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ---- Lists ---- */}
+                  <div style={card}>
+                    <div style={heading}>Lists</div>
+                    <div style={sub}>
+                      Rename your lists, or switch them off to hide them. Hidden lists are
+                      removed from the tabs and excluded from the All Tasks roll-up — their
+                      tasks are kept, not deleted.
+                    </div>
+
+                    {TASK_LISTS.map(key => {
+                      const hidden = isListHidden(key);
+                      const count = (allLists[key] || []).filter(t => !t.completed).length;
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '12px',
+                            padding: '10px 0', flexWrap: 'wrap',
+                            borderBottom: '1px solid rgba(255,255,255,0.05)',
+                            opacity: hidden ? 0.55 : 1, transition: 'opacity 0.2s ease'
+                          }}
+                        >
+                          <input
+                            type="text"
+                            value={(settings.listLabels && settings.listLabels[key]) ?? DEFAULT_LIST_LABELS[key]}
+                            onChange={(e) => updateSetting('listLabels', {
+                              ...(settings.listLabels || {}),
+                              [key]: e.target.value
+                            })}
+                            placeholder={DEFAULT_LIST_LABELS[key]}
+                            maxLength={18}
+                            style={{
+                              flex: 1, minWidth: '120px', padding: '9px 10px',
+                              background: 'rgba(42, 42, 62, 1)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                              borderRadius: '8px', color: '#f4e8d8', fontSize: '0.92rem',
+                              fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                            }}
+                          />
+                          <span style={{
+                            color: '#b8a99a', fontSize: '0.75rem',
+                            fontFamily: 'Quicksand, sans-serif', minWidth: '54px'
+                          }}>
+                            {count} open
+                          </span>
+                          <Toggle on={!hidden} onChange={() => toggleListVisibility(key)} />
+                        </div>
+                      );
+                    })}
+
+                    <div style={{ ...hint, marginTop: '12px' }}>
+                      Leave a name blank to restore its default. At least one list must stay on.
+                    </div>
+                  </div>
+
+                  {/* ---- Reports ---- */}
+                  <div style={card}>
+                    <div style={heading}>Fire Goal</div>
+                    <div style={sub}>
+                      How many completed tasks fully light the flame on the Reports page.
+                    </div>
+
+                    <div style={row}>
+                      <div>
+                        <div style={label}>Per week</div>
+                        <div style={hint}>Used by the This Week view</div>
+                      </div>
+                      <input
+                        type="number" min="1" max="500"
+                        value={settings.weeklyFireGoal}
+                        onChange={(e) => updateSetting('weeklyFireGoal', e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
+                        style={numInput}
+                      />
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div>
+                        <div style={label}>Per month</div>
+                        <div style={hint}>Longer ranges scale from this</div>
+                      </div>
+                      <input
+                        type="number" min="1" max="2000"
+                        value={settings.monthlyFireGoal}
+                        onChange={(e) => updateSetting('monthlyFireGoal', e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
+                        style={numInput}
+                      />
+                    </div>
+                  </div>
+
+                  {/* ---- Defaults ---- */}
+                  <div style={card}>
+                    <div style={heading}>Defaults</div>
+                    <div style={sub}>What the app starts on each time you open it.</div>
+
+                    <div style={row}>
+                      <div style={label}>Reports timeframe</div>
+                      <select
+                        value={settings.defaultReportTimeframe}
+                        onChange={(e) => updateSetting('defaultReportTimeframe', e.target.value)}
+                        style={{ ...numInput, width: 'auto', minWidth: '150px', textAlign: 'left' }}
+                      >
+                        <option value="thisWeek">This Week</option>
+                        <option value="thisMonth">This Month</option>
+                        <option value="lastMonth">Last Month</option>
+                        <option value="last3">Last 3 Months</option>
+                        <option value="last6">Last 6 Months</option>
+                        <option value="allTime">All Time</option>
+                      </select>
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={label}>Timer duration</div>
+                      <select
+                        value={settings.defaultTimerDuration}
+                        onChange={(e) => updateSetting('defaultTimerDuration', e.target.value === '' ? '' : parseInt(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '150px', textAlign: 'left' }}
+                      >
+                        <option value="">Timer (open-ended)</option>
+                        <option value="300">5 Minutes</option>
+                        <option value="420">7 Minutes</option>
+                        <option value="600">10 Minutes</option>
+                        <option value="900">15 Minutes</option>
+                        <option value="1800">30 Minutes</option>
+                        <option value="3600">60 Minutes</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* ---- Behavior ---- */}
+                  <div style={card}>
+                    <div style={heading}>Behavior</div>
+                    <div style={sub}>How the app responds as you work.</div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Pause on completion</div>
+                        <div style={hint}>
+                          Hold a task briefly so you see the checkmark before it moves to Complete
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.completionDelay}
+                        onChange={(v) => updateSetting('completionDelay', v)}
+                      />
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Reduce motion</div>
+                        <div style={hint}>
+                          Turns off the flame fill, chart draw-in, and other animations.
+                          Your device's system setting is honored automatically.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.reduceMotion}
+                        onChange={(v) => updateSetting('reduceMotion', v)}
+                      />
+                    </div>
+                  </div>
+
+                  {/* ---- Backup ---- */}
+                  <div style={card}>
+                    <div style={heading}>Backup &amp; Restore</div>
+                    <div style={sub}>
+                      Everything lives in this browser's storage. Clearing site data or losing
+                      the device loses it all — so export a copy somewhere safe.
+                    </div>
+
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
+                      <button
+                        onClick={exportBackup}
+                        style={{
+                          padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+                          background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                          border: '1px solid rgba(var(--accent-rgb), 0.5)',
+                          color: '#ffffff', fontSize: '0.85rem', fontWeight: '600',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}
+                      >
+                        Export Backup
+                      </button>
+
+                      <button
+                        onClick={() => { importInputRef.current.dataset.mode = 'merge'; importInputRef.current.click(); }}
+                        style={{
+                          padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                          color: '#f4e8d8', fontSize: '0.85rem', fontWeight: '600',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}
+                      >
+                        Import &amp; Merge
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          const ok = window.confirm(
+                            'Replace ALL current data with the backup?\n\n' +
+                            'Everything currently in the app will be overwritten. ' +
+                            'If you only want to add missing items, cancel and use "Import & Merge" instead.'
+                          );
+                          if (!ok) return;
+                          importInputRef.current.dataset.mode = 'replace';
+                          importInputRef.current.click();
+                        }}
+                        style={{
+                          padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(255, 107, 107, 0.4)',
+                          color: '#ff8f8f', fontSize: '0.85rem', fontWeight: '600',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}
+                      >
+                        Import &amp; Replace
+                      </button>
+                    </div>
+
+                    <input
+                      ref={importInputRef}
+                      type="file"
+                      accept="application/json,.json"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const mode = e.target.dataset.mode || 'merge';
+                        handleImportFile(e.target.files && e.target.files[0], mode);
+                        e.target.value = ''; // allow re-importing the same file
+                      }}
+                    />
+
+                    {backupStatus && (
+                      <div style={{
+                        padding: '11px 14px', borderRadius: '8px', marginBottom: '14px',
+                        background: backupStatus.type === 'error'
+                          ? 'rgba(255, 107, 107, 0.12)'
+                          : 'rgba(var(--accent-rgb), 0.15)',
+                        border: `1px solid ${backupStatus.type === 'error'
+                          ? 'rgba(255, 107, 107, 0.4)'
+                          : 'rgba(var(--accent-rgb), 0.4)'}`,
+                        color: backupStatus.type === 'error' ? '#ff8f8f' : '#f4e8d8',
+                        fontSize: '0.82rem', fontFamily: 'Quicksand, sans-serif', lineHeight: 1.5
+                      }}>
+                        {backupStatus.message}
+                      </div>
+                    )}
+
+                    <div style={hint}>
+                      <strong style={{ color: '#f4e8d8' }}>Merge</strong> only adds what's missing —
+                      it never overwrites or deletes, and re-importing the same file does nothing.
+                      <strong style={{ color: '#f4e8d8' }}> Replace</strong> wipes everything first.
+                      Either way, a snapshot of your current data is saved beforehand as a fallback.
+                    </div>
+                  </div>
+
+                  {/* ---- Spreadsheet export ---- */}
+                  <div style={card}>
+                    <div style={heading}>Export to Spreadsheet</div>
+                    <div style={sub}>
+                      CSV files for analysis in Excel, Sheets, or Numbers. These are for reading
+                      and reporting — they can't be imported back, so use the JSON backup above
+                      if what you want is a restore point.
+                    </div>
+
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+                      <button
+                        onClick={exportTasksCsv}
+                        style={{
+                          padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                          color: '#f4e8d8', fontSize: '0.85rem', fontWeight: '600',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}
+                      >
+                        Tasks (.csv)
+                      </button>
+                      <button
+                        onClick={exportTimeLogsCsv}
+                        style={{
+                          padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                          color: '#f4e8d8', fontSize: '0.85rem', fontWeight: '600',
+                          fontFamily: 'Quicksand, sans-serif'
+                        }}
+                      >
+                        Time Logs (.csv)
+                      </button>
+                    </div>
+
+                    <div style={hint}>
+                      Tasks export includes every list, active and archived, with due dates,
+                      priority, project, and details flattened to plain text.
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         {appMode === 'reports' && (
           <div className="reports-section">
 
             {(() => {
-              const listKeys = ['personal', 'work', 'home', 'travel', 'kids'];
+              const listKeys = visibleTaskLists;
               const listLabels = {
-                personal: 'Personal', work: 'Work', home: 'Home', travel: 'Travel', kids: 'Kids'
+                ...Object.fromEntries(TASK_LISTS.map(k => [k, listLabel(k)]))
               };
               const listColors = {
-                personal: '#6a9d5f', work: '#3b82f6', home: '#4a7a3a', travel: '#7dd3fc', kids: '#f472b6'
+                personal: '#6a9d5f', work: '#3b82f6', home: '#4a7a3a', travel: '#7dd3fc', kids: '#f472b6', partner: '#f59e0b'
               };
 
               // --- Determine date range and bucketing for the selected timeframe ---
@@ -13631,7 +14480,7 @@ export default function LittleFires() {
                           onClick={() => setReportStatusDropdownOpen(!reportStatusDropdownOpen)}
                           style={{
                             width: '100%', padding: '10px', background: 'rgba(42, 42, 62, 1)',
-                            border: '2px solid rgba(83, 116, 95, 0.3)', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
                             color: '#f4e8d8', fontSize: '1rem', fontFamily: 'Quicksand, sans-serif',
                             cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
                           }}
@@ -13642,7 +14491,7 @@ export default function LittleFires() {
                         {reportStatusDropdownOpen && (
                           <div style={{
                             position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '-8px',
-                            background: 'rgba(42, 42, 62, 1)', border: '2px solid rgba(83, 116, 95, 0.3)',
+                            background: 'rgba(42, 42, 62, 1)', border: '2px solid rgba(var(--accent-rgb), 0.3)',
                             borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
                           }}>
                             {[
@@ -13655,12 +14504,12 @@ export default function LittleFires() {
                                 onClick={() => { setReportTaskStatus(opt.value); setReportStatusDropdownOpen(false); }}
                                 style={{
                                   padding: '10px', color: '#f4e8d8', fontSize: '1rem', cursor: 'pointer',
-                                  background: reportTaskStatus === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                  background: reportTaskStatus === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                   transition: 'background 0.2s ease', fontFamily: 'Quicksand, sans-serif'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                                onMouseOut={(e) => e.currentTarget.style.background = reportTaskStatus === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                                onMouseOut={(e) => e.currentTarget.style.background = reportTaskStatus === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                               >
                                 {opt.label}
                               </div>
@@ -13680,7 +14529,7 @@ export default function LittleFires() {
                           onClick={() => setReportTimeframeDropdownOpen(!reportTimeframeDropdownOpen)}
                           style={{
                             width: '100%', padding: '10px', background: 'rgba(42, 42, 62, 1)',
-                            border: '2px solid rgba(83, 116, 95, 0.3)', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
                             color: '#f4e8d8', fontSize: '1rem', fontFamily: 'Quicksand, sans-serif',
                             cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
                           }}
@@ -13691,7 +14540,7 @@ export default function LittleFires() {
                         {reportTimeframeDropdownOpen && (
                           <div style={{
                             position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '-8px',
-                            background: 'rgba(42, 42, 62, 1)', border: '2px solid rgba(83, 116, 95, 0.3)',
+                            background: 'rgba(42, 42, 62, 1)', border: '2px solid rgba(var(--accent-rgb), 0.3)',
                             borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
                           }}>
                             {[
@@ -13707,12 +14556,12 @@ export default function LittleFires() {
                                 onClick={() => { setReportTimeframe(opt.value); setReportTimeframeDropdownOpen(false); }}
                                 style={{
                                   padding: '10px', color: '#f4e8d8', fontSize: '1rem', cursor: 'pointer',
-                                  background: reportTimeframe === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent',
-                                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(83, 116, 95, 0.2)' : 'none',
+                                  background: reportTimeframe === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
+                                  borderBottom: idx < arr.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                   transition: 'background 0.2s ease', fontFamily: 'Quicksand, sans-serif'
                                 }}
-                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(83, 116, 95, 0.3)'}
-                                onMouseOut={(e) => e.currentTarget.style.background = reportTimeframe === opt.value ? 'rgba(83, 116, 95, 0.4)' : 'transparent'}
+                                onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
+                                onMouseOut={(e) => e.currentTarget.style.background = reportTimeframe === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
                               >
                                 {opt.label}
                               </div>
@@ -13735,8 +14584,8 @@ export default function LittleFires() {
                             style={{
                               padding: '10px 20px', borderRadius: '8px', cursor: 'pointer',
                               fontFamily: 'Quicksand, sans-serif', fontSize: '0.95rem', textTransform: 'capitalize',
-                              border: reportChartType === type ? '2px solid #53745f' : '2px solid rgba(83, 116, 95, 0.3)',
-                              background: reportChartType === type ? 'linear-gradient(135deg, #53745f, #6a8f76)' : 'rgba(42, 42, 62, 1)',
+                              border: reportChartType === type ? '2px solid var(--accent)' : '2px solid rgba(var(--accent-rgb), 0.3)',
+                              background: reportChartType === type ? 'linear-gradient(135deg, var(--accent), var(--accent-light))' : 'rgba(42, 42, 62, 1)',
                               color: reportChartType === type ? '#fff' : '#b8a99a',
                               transition: 'all 0.2s ease'
                             }}
@@ -13754,7 +14603,7 @@ export default function LittleFires() {
                     display: 'flex', flexWrap: 'wrap', gap: isMobile ? '8px' : '15px', marginBottom: '20px'
                   }}>
                     <div style={{
-                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                       borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
                       <div style={{ color: '#b8a99a', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
@@ -13766,7 +14615,7 @@ export default function LittleFires() {
                     </div>
 
                     <div style={{
-                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                       borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
                       <div style={{ color: '#b8a99a', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
@@ -13778,7 +14627,7 @@ export default function LittleFires() {
                     </div>
 
                     <div style={{
-                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                      background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                       borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
                       <div style={{ color: '#b8a99a', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
@@ -13793,7 +14642,7 @@ export default function LittleFires() {
                   {/* Fire chart - orange fills the flame silhouette by completion */}
                   <div style={{
                     order: 0,
-                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                     borderRadius: '12px', padding: '18px 22px', marginBottom: '20px',
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
                   }}>
@@ -13802,10 +14651,12 @@ export default function LittleFires() {
                       // Fill target scales at 30 completed tasks per month of the range.
                       // Fill target: ~30 completed tasks per month of the range
                       // (This Week is scaled to 7, i.e. one a day).
+                      const wk = Number(settings.weeklyFireGoal) || 7;
+                      const mo = Number(settings.monthlyFireGoal) || 30;
                       const target = ({
-                        thisWeek: 7, thisMonth: 30, lastMonth: 30,
-                        last3: 90, last6: 180, allTime: 360
-                      })[reportTimeframe] || 30;
+                        thisWeek: wk, thisMonth: mo, lastMonth: mo,
+                        last3: mo * 3, last6: mo * 6, allTime: mo * 12
+                      })[reportTimeframe] || mo;
                       const fillRatio = Math.max(0, Math.min(1, count / target));
                       // Apply the load "rise" animation multiplier
                       const animatedFill = fillRatio * fireFillAnim;
@@ -13916,7 +14767,7 @@ export default function LittleFires() {
                   {/* Chart card */}
                   <div style={{
                     order: 2,
-                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(83, 116, 95, 0.2)',
+                    background: 'rgba(52, 52, 72, 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                     borderRadius: '12px', padding: isMobile ? '12px 8px' : '20px', overflowX: 'auto'
                   }}>
                     <div style={{ position: 'relative' }}>
@@ -14060,7 +14911,7 @@ export default function LittleFires() {
                           top: '8px',
                           transform: onRightHalf ? 'translateX(-105%)' : 'translateX(5%)',
                           background: 'rgba(30, 30, 46, 0.97)',
-                          border: '1px solid rgba(83, 116, 95, 0.5)',
+                          border: '1px solid rgba(var(--accent-rgb), 0.5)',
                           borderRadius: '10px',
                           padding: isMobile ? '8px 10px' : '10px 14px',
                           pointerEvents: 'none',

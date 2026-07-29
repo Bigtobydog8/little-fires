@@ -148,6 +148,8 @@ export default function LittleFires() {
     hiddenLists: {},          // { travel: true } => hidden from the app
     hiddenFeatures: {}        // { goals: true } => section switched off
   };
+  // Bump when the settings shape changes in a way that needs migrating
+  const SETTINGS_VERSION = 1;
   const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('little_fires_settings');
@@ -157,8 +159,17 @@ export default function LittleFires() {
     }
   });
 
+  // Persist only what the user has actually changed. Writing the whole object
+  // would freeze today's defaults into their storage forever - so a default we
+  // change later would never reach anyone who'd already opened the app once.
   useEffect(() => {
-    localStorage.setItem('little_fires_settings', JSON.stringify(settings));
+    const overrides = { _v: SETTINGS_VERSION };
+    Object.keys(DEFAULT_SETTINGS).forEach(k => {
+      if (JSON.stringify(settings[k]) !== JSON.stringify(DEFAULT_SETTINGS[k])) {
+        overrides[k] = settings[k];
+      }
+    });
+    localStorage.setItem('little_fires_settings', JSON.stringify(overrides));
   }, [settings]);
 
   // Push the chosen accent into CSS variables on :root, so every rule and
@@ -544,7 +555,6 @@ export default function LittleFires() {
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
   const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({}); // Track which archive sections are collapsed
   const [selectedPriority, setSelectedPriority] = useState('low');
-  const [selectedChild, setSelectedChild] = useState(null);
   const [selectedSection, setSelectedSection] = useState('todo');
   const [searchQuery, setSearchQuery] = useState('');
   const [taskInput, setTaskInput] = useState('');
@@ -799,45 +809,81 @@ export default function LittleFires() {
     };
   }, []);
 
-  // Fire chart "rise" animation: whenever the Reports view opens or its
-  // filters change, animate the fill multiplier from 0 up to 1 so the flame
-  // looks like it's igniting and rising to its real level. It waits for the
-  // chart (lines or bars) to finish drawing itself in first.
+  // Which chart modes have already played their intro this session. Reports
+  // animates the first time you open it, and again the first time you switch
+  // to a mode you haven't seen yet - then snaps for every change after that.
+  const animatedChartModes = React.useRef(new Set());
+  const [chartAnimate, setChartAnimate] = useState(false);
+  const [chartAnimToken, setChartAnimToken] = useState(0);
+
   useEffect(() => {
     if (appMode !== 'reports') return;
-    let raf;
+    const seen = animatedChartModes.current;
+    if (!seen.has(reportChartType)) {
+      seen.add(reportChartType);
+      setChartAnimate(true);
+      setChartAnimToken(t => t + 1); // remounts the series so the draw replays
+    } else {
+      setChartAnimate(false);
+    }
+  }, [appMode, reportChartType]);
+
+  // Fire chart "rise": fills from 0 up to the real level after the chart has
+  // drawn itself in. On a snap (any later filter change) it jumps straight to
+  // the final value with no animation and no flicker loop.
+  useEffect(() => {
+    if (appMode !== 'reports') return;
+
+    if (!chartAnimate) {
+      setFireFillAnim(1); // already introduced - show the final state
+      return;
+    }
+
+    let raf, flickRaf;
     const start = performance.now();
-    const duration = 3000; // ms - takes 3s to rise to full
-    const delay = CHART_DRAW_MS; // both line and bar charts draw in first
+    const duration = 3000; // ms to rise to full
+    const delay = CHART_DRAW_MS; // let the chart draw first
+    let fillDone = false;
     setFireFillAnim(0);
+
     const tick = (now) => {
       const elapsed = now - start - delay;
       if (elapsed < 0) {
-        // Still waiting on the lines - hold the flame unlit
-        raf = requestAnimationFrame(tick);
+        raf = requestAnimationFrame(tick); // still waiting on the chart
         return;
       }
       const t = Math.min(1, elapsed / duration);
-      // Ease-out so it rises fast then settles
-      const eased = 1 - Math.pow(1 - t, 3);
-      setFireFillAnim(eased);
-      if (t < 1) raf = requestAnimationFrame(tick);
+      setFireFillAnim(1 - Math.pow(1 - t, 3)); // ease-out
+      if (t < 1) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        fillDone = true; // this also ends the flicker loop below
+      }
     };
     raf = requestAnimationFrame(tick);
-    // Idle flicker: advance a continuous phase so the flame edge undulates
-    // smoothly (rather than snapping between two states).
-    let flickRaf;
+
+    // Flame edge flicker. Two deliberate limits: it runs at ~15fps rather than
+    // 60 (each tick re-renders the whole Reports view, and a rippling edge
+    // doesn't need frame-perfect motion), and it stops entirely once the flame
+    // is full rather than looping for as long as the page is open.
+    const FLICKER_INTERVAL = 1000 / 15;
     const flickStart = performance.now();
+    let lastFlick = 0;
     const flickTick = (now) => {
-      setFireFlicker((now - flickStart) / 1000); // seconds elapsed, continuous
+      if (fillDone) return; // stop once filled
+      if (now - lastFlick >= FLICKER_INTERVAL) {
+        setFireFlicker((now - flickStart) / 1000);
+        lastFlick = now;
+      }
       flickRaf = requestAnimationFrame(flickTick);
     };
     flickRaf = requestAnimationFrame(flickTick);
+
     return () => {
       if (raf) cancelAnimationFrame(raf);
       if (flickRaf) cancelAnimationFrame(flickRaf);
     };
-  }, [appMode, reportTimeframe, reportTaskStatus, reportHiddenLists, reportChartType]);
+  }, [appMode, chartAnimate, chartAnimToken, reportTimeframe, reportTaskStatus, reportHiddenLists]);
 
   // Timer for time logging - accumulator approach.
   // While isLogging is true, accumulate elapsed time in fine increments so the
@@ -998,8 +1044,7 @@ export default function LittleFires() {
       details: '',
       id: Date.now(),
       createdAt: new Date().toISOString(),
-      projectId: null,
-      assignedChild: selectedChild
+      projectId: null
     };
 
     setAllLists(prev => ({
@@ -1011,7 +1056,6 @@ export default function LittleFires() {
     setDueDate('');
     setSelectedPriority('low');
     setSelectedSection('todo');
-    setSelectedChild(null);
   };
 
   const toggleTask = (listName, index) => {
@@ -3237,27 +3281,6 @@ export default function LittleFires() {
               )}
             </div>
 
-            {listName === 'kids' && (
-              <div className="date-field">
-                <label className="details-label" style={{ margin: 0 }}>Assigned to:</label>
-                <select
-                  value={task.assignedChild || ''}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    const value = e.target.value;
-                    updateTask(listName, index, { assignedChild: value || null });
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  className="project-selector"
-                  style={{color: 'var(--accent)'}}
-                >
-                  <option value=""></option>
-                  <option value="Stella">Stella</option>
-                  <option value="Liam">Liam</option>
-                </select>
-              </div>
-            )}
-
             <div className="fire-flag-selector">
               <span 
                 className={`fire-flag-icon clickable ${task.priority === 'high' ? 'active' : ''}`}
@@ -4507,37 +4530,9 @@ export default function LittleFires() {
           gap: 8px;
         }
 
-        .child-selector {
-          display: flex;
-          gap: 8px;
-          align-items: center;
-        }
 
-        .child-btn {
-          padding: 8px 16px;
-          background: rgba(42, 42, 62, 0.8);
-          border: 2px solid rgba(var(--accent-rgb), 0.3);
-          border-radius: 10px;
-          color: var(--accent);
-          font-family: 'Quicksand', sans-serif;
-          font-size: 0.9rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          outline: none;
-        }
 
-        .child-btn:hover {
-          border-color: rgba(var(--accent-rgb), 0.6);
-          transform: translateY(-2px);
-        }
 
-        .child-btn.active {
-          background: linear-gradient(135deg, #5a7a5f, var(--accent));
-          border-color: transparent;
-          color: #fff;
-          box-shadow: 0 4px 15px rgba(var(--accent-rgb), 0.4);
-        }
 
         .fire-flag-icon {
           width: 40px;
@@ -7074,22 +7069,6 @@ export default function LittleFires() {
                 <button className="add-task-btn" onClick={addTask}>Add Task</button>
               </div>
               <div className="task-options">
-                {currentList === 'kids' && (
-                  <div className="child-selector">
-                    <button
-                      className={`child-btn ${selectedChild === 'Stella' ? 'active' : ''}`}
-                      onClick={() => setSelectedChild(selectedChild === 'Stella' ? null : 'Stella')}
-                    >
-                      Stella
-                    </button>
-                    <button
-                      className={`child-btn ${selectedChild === 'Liam' ? 'active' : ''}`}
-                      onClick={() => setSelectedChild(selectedChild === 'Liam' ? null : 'Liam')}
-                    >
-                      Liam
-                    </button>
-                  </div>
-                )}
                 <input
                   type="date"
                   value={dueDate}
@@ -14599,12 +14578,9 @@ export default function LittleFires() {
               // Changing this string remounts the series so the draw-in animation
               // replays. Deliberately excludes hover state and the fire flicker,
               // which change constantly and would restart the animation.
-              const chartAnimKey = [
-                reportTimeframe,
-                reportTaskStatus,
-                reportChartType,
-                visibleKeys.join(',')
-              ].join('|');
+              // Only changes when an intro should actually replay, so routine
+              // filter changes re-render without remounting the series.
+              const chartAnimKey = `${reportChartType}|${chartAnimToken}`;
 
               return (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -14959,13 +14935,13 @@ export default function LittleFires() {
                               return v > 0 ? (
                                 <rect key={k} x={x} y={baselineY - h} width={Math.max(1, barWidth - 2)} height={h}
                                   fill={listColors[k]} rx="2" opacity={reportHoverIndex === null || reportHoverIndex === i ? 0.9 : 0.35}
-                                  style={{
+                                  style={chartAnimate ? {
                                     transition: 'opacity 0.15s ease',
                                     transformOrigin: `${x}px ${baselineY}px`,
                                     // 'both' holds scaleY(0) during the stagger delay,
                                     // otherwise the bar would flash full-height first
                                     animation: `growBar ${Math.round(CHART_DRAW_MS * 0.5)}ms ease-out ${delayMs}ms both`
-                                  }} />
+                                  } : { transition: 'opacity 0.15s ease' }} />
                               ) : null;
                             })}
                           </g>
@@ -14993,7 +14969,9 @@ export default function LittleFires() {
                                 strokeLinejoin="round" strokeLinecap="round" opacity="0.95"
                                 pathLength="1"
                                 strokeDasharray="1"
-                                style={{ animation: `drawLine ${drawMs}ms ease-out forwards` }} />
+                                style={chartAnimate
+                                  ? { animation: `drawLine ${drawMs}ms ease-out forwards` }
+                                  : undefined} />
                               {vals.map((v, i) => (
                                 // Only mark buckets that have data
                                 v > 0 ? (
@@ -15002,14 +14980,14 @@ export default function LittleFires() {
                                     fill={listColors[k]}
                                     stroke={reportHoverIndex === i ? '#fff' : 'none'}
                                     strokeWidth={reportHoverIndex === i ? 2 : 0}
-                                    style={{
+                                    style={chartAnimate ? {
                                       transition: 'r 0.1s ease',
                                       transformOrigin: `${xFor(i)}px ${yFor(v)}px`,
                                       opacity: 0,
                                       animation: `dotPop 260ms ease-out forwards`,
                                       // stagger each dot so it appears as the line reaches it
                                       animationDelay: `${n <= 1 ? 0 : Math.round((i / (n - 1)) * drawMs)}ms`
-                                    }} />
+                                    } : { transition: 'r 0.1s ease', opacity: 1 }} />
                                 ) : null
                               ))}
                             </g>

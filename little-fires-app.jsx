@@ -4301,19 +4301,8 @@ export default function LittleFires() {
           color: #000000;
           filter: drop-shadow(2px 4px 4px rgba(0, 0, 0, 0.2));
           margin: 0;
-          animation: blackGlow 4s ease-in-out infinite;
         }
 
-        @keyframes blackGlow {
-          0%, 100% {
-            filter: drop-shadow(2px 4px 4px rgba(0, 0, 0, 0.2));
-            text-shadow: 0 0 2px rgba(0, 0, 0, 0.1);
-          }
-          50% {
-            filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 8px rgba(45, 106, 79, 0.2));
-            text-shadow: 0 0 4px rgba(0, 0, 0, 0.2), 0 0 8px rgba(45, 106, 79, 0.15);
-          }
-        }
 
         .subtitle {
           display: flex;
@@ -6700,6 +6689,14 @@ export default function LittleFires() {
         }
 
         @media (max-width: 700px) {
+          /* Battery: the animated background sits behind 12 backdrop-filter
+             surfaces, so any movement forces the GPU to recompute every blur
+             on every frame. Freezing it lets those blurs be cached instead.
+             The gradient still renders - it just stops drifting. */
+          .little-fires-container::before {
+            animation: none;
+          }
+
           /* Reclaim horizontal space on phones */
           .container {
             padding: 0 12px;
@@ -11193,7 +11190,11 @@ export default function LittleFires() {
                         width: '100%',
                         height: '100%',
                         filter: isLogging ? 'drop-shadow(0 0 25px rgba(255, 69, 0, 0.8))' : 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))',
-                        animation: isLogging ? 'flameGlow 10s ease-in-out infinite' : 'none'
+                        // Desktop only: this animates drop-shadow (a paint
+                        // property) with 45-60px blurs, so it repaints every
+                        // frame for the whole session. Phones keep the static
+                        // glow, which is computed once and cached.
+                        animation: (isLogging && !isMobile) ? 'flameGlow 10s ease-in-out infinite' : 'none'
                       }}>
                         <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
                           viewBox="0 0 1280.000000 1280.000000"
@@ -12445,7 +12446,11 @@ export default function LittleFires() {
                         width: '100%',
                         height: '100%',
                         filter: isLogging ? 'drop-shadow(0 0 25px rgba(255, 69, 0, 0.8))' : 'drop-shadow(0 0 10px rgba(100, 100, 100, 0.3))',
-                        animation: isLogging ? 'flameGlow 10s ease-in-out infinite' : 'none'
+                        // Desktop only: this animates drop-shadow (a paint
+                        // property) with 45-60px blurs, so it repaints every
+                        // frame for the whole session. Phones keep the static
+                        // glow, which is computed once and cached.
+                        animation: (isLogging && !isMobile) ? 'flameGlow 10s ease-in-out infinite' : 'none'
                       }}>
                         <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
                           viewBox="0 0 1280.000000 1280.000000"

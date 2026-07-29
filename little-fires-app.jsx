@@ -145,7 +145,8 @@ export default function LittleFires() {
     customAccent: '#53745f',
     reduceMotion: false,
     listLabels: { ...DEFAULT_LIST_LABELS },
-    hiddenLists: {}           // { travel: true } => hidden from the app
+    hiddenLists: {},          // { travel: true } => hidden from the app
+    hiddenFeatures: {}        // { goals: true } => section switched off
   };
   const [settings, setSettings] = useState(() => {
     try {
@@ -329,7 +330,7 @@ export default function LittleFires() {
   // nested detail HTML or the list structure, so JSON stays the restore path.
 
   // Task details are stored as HTML. Flatten to readable plain text, keeping
-  // checkbox state visible since a lot of the meaning lives in those.
+  // checkbox state as [1]/[0] so sub-items stay readable and countable.
   const htmlToPlainText = (html) => {
     if (!html) return '';
     let s = String(html);
@@ -347,6 +348,15 @@ export default function LittleFires() {
          .replace(/&quot;/gi, '"')
          .replace(/&#39;/gi, "'");
     return s.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+/g, ' ').trim();
+  };
+
+  // Count checkboxes inside a task's details, and how many are ticked, so
+  // sub-item progress is available as numbers you can sum or pivot on.
+  const countSubtasks = (html) => {
+    if (!html) return { total: 0, done: 0 };
+    const all = String(html).match(/<input[^>]*type=["']checkbox["'][^>]*>/gi) || [];
+    const done = all.filter(tag => /\schecked/i.test(tag)).length;
+    return { total: all.length, done };
   };
 
   // RFC 4180 escaping - matters here because details contain commas,
@@ -394,9 +404,11 @@ export default function LittleFires() {
       const push = (task, listKey, archived) => {
         if (!task) return;
         const detailText = htmlToPlainText(task.details);
-        // Roll the detail checkboxes up into counts so they're pivotable
-        const subTotal = (detailText.match(/\[[01]\]/g) || []).length;
-        const subDone = (detailText.match(/\[1\]/g) || []).length;
+        // Count from the source HTML, not the flattened text, so a literal
+        // "[1]" typed into a note can't inflate the numbers
+        const subs = countSubtasks(task.details);
+        const subTotal = subs.total;
+        const subDone = subs.done;
         rows.push([
           listLabel(listKey),
           task.text || '',
@@ -474,6 +486,24 @@ export default function LittleFires() {
   // operations (auto-archive, project cleanup) still walk TASK_LISTS.
   const visibleTaskLists = TASK_LISTS.filter(k => !isListHidden(k));
 
+  // Optional sections. Off means hidden, never deleted - the data stays put
+  // and reappears untouched when switched back on.
+  const FEATURES = [
+    { key: 'time',     label: 'Time',     note: 'Time logging and session history' },
+    { key: 'goals',    label: 'Goals',    note: 'Long-term goals with time tracking' },
+    { key: 'projects', label: 'Projects', note: 'Group tasks under a project' },
+    { key: 'notes',    label: 'Notes',    note: 'Freeform notes and journaling' },
+    { key: 'search',   label: 'Search',   note: 'Search across everything in the app' }
+  ];
+  const isFeatureOn = (key) => !(settings.hiddenFeatures && settings.hiddenFeatures[key]);
+  const toggleFeature = (key) => {
+    setSettings(prev => {
+      const hidden = { ...(prev.hiddenFeatures || {}) };
+      if (hidden[key]) delete hidden[key]; else hidden[key] = true;
+      return { ...prev, hiddenFeatures: hidden };
+    });
+  };
+
   const toggleListVisibility = (key) => {
     setSettings(prev => {
       const hidden = { ...(prev.hiddenLists || {}) };
@@ -495,6 +525,20 @@ export default function LittleFires() {
       setCurrentList('master');
     }
   }, [settings.hiddenLists, currentList]);
+
+  // Same for whole sections - don't strand the user on a disabled screen
+  useEffect(() => {
+    if (['goals', 'projects', 'notes', 'time', 'search'].includes(appMode) && !isFeatureOn(appMode)) {
+      setAppMode('tasks');
+    }
+  }, [settings.hiddenFeatures, appMode]);
+
+  // Archive defaults back to Tasks if its current tab is switched off
+  useEffect(() => {
+    if ((archiveType === 'goals' || archiveType === 'projects') && !isFeatureOn(archiveType)) {
+      setArchiveType('tasks');
+    }
+  }, [settings.hiddenFeatures, archiveType]);
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
@@ -1577,7 +1621,7 @@ export default function LittleFires() {
     });
     
     // Get notes written on this date
-    if (showNotes) {
+    if (showNotes && isFeatureOn('notes')) {
       notes.forEach(note => {
         const noteDate = new Date(note.date);
         if (isSameDate(noteDate, date)) {
@@ -1590,7 +1634,7 @@ export default function LittleFires() {
     }
     
     // Get projects based on start or end date
-    if (showProjects) {
+    if (showProjects && isFeatureOn('projects')) {
       const allProjectLists = ['personal', 'work', 'home', 'travel', 'kids'];
       allProjectLists.forEach(listName => {
         (projects[listName] || []).forEach(project => {
@@ -1645,7 +1689,7 @@ export default function LittleFires() {
   };
 
   const getActiveProjectsForMonth = (month, year) => {
-    if (!showProjects) return [];
+    if (!showProjects || !isFeatureOn('projects')) return [];
     
     const monthStart = new Date(year, month, 1);
     const monthEnd = new Date(year, month + 1, 0);
@@ -2254,10 +2298,19 @@ export default function LittleFires() {
     // Holds the task in place briefly after checking it, so the checkmark is
     // visible before the task leaves the list.
     const [isCompleting, setIsCompleting] = React.useState(false);
+    // Collapsing the row's height while it fades makes the tasks below slide up
+    // instead of snapping. Height must animate from a real px value, not 'auto',
+    // so we measure the row before starting.
+    const [collapsing, setCollapsing] = React.useState(false);
+    const [measuredHeight, setMeasuredHeight] = React.useState(null);
+    const collapseTimeoutRef = React.useRef(null);
     const completeTimeoutRef = React.useRef(null);
 
     React.useEffect(() => {
-      return () => { if (completeTimeoutRef.current) clearTimeout(completeTimeoutRef.current); };
+      return () => {
+        if (completeTimeoutRef.current) clearTimeout(completeTimeoutRef.current);
+        if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
+      };
     }, []);
 
     // Sync parent checkboxes based on their indented children.
@@ -2531,8 +2584,20 @@ export default function LittleFires() {
           pointerEvents: task.isArchived ? 'none' : 'auto',
           opacity: task.isArchived ? 0.7 : (isCompleting ? 0 : 1),
           transform: isCompleting ? 'translateX(14px) scale(0.97)' : 'none',
-          // Hold briefly at full opacity so the checkmark registers, then fade
-          transition: isCompleting ? 'opacity 0.35s ease 0.3s, transform 0.35s ease 0.3s' : 'none'
+          // Height collapse: pinned to the measured value first, then driven to 0
+          // once `collapsing` flips, which pulls the rows below up smoothly.
+          ...(isCompleting && measuredHeight != null ? {
+            maxHeight: collapsing ? '0px' : `${measuredHeight}px`,
+            marginBottom: collapsing ? '0px' : undefined,
+            paddingTop: collapsing ? '0px' : undefined,
+            paddingBottom: collapsing ? '0px' : undefined,
+            overflow: 'hidden'
+          } : {}),
+          // Opacity/transform wait for the hold; the collapse is already
+          // delayed by its own timer, so it gets no extra delay here.
+          transition: isCompleting
+            ? 'opacity 0.4s ease 0.5s, transform 0.4s ease 0.5s, max-height 0.4s ease, margin 0.4s ease, padding 0.4s ease'
+            : 'none'
         }}
       >
         {task.priority && task.priority !== 'low' && (
@@ -2558,10 +2623,14 @@ export default function LittleFires() {
                   toggleTask(listName, index);
                   return;
                 }
+                // Measure now, before anything changes
+                if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
                 setIsCompleting(true);
+                // Start collapsing as the fade begins, so they run together
+                collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), 500);
                 completeTimeoutRef.current = setTimeout(() => {
                   toggleTask(listName, index);
-                }, 700);
+                }, 950);
               }}
               onClick={(e) => e.stopPropagation()}
               disabled={task.isArchived}
@@ -3142,26 +3211,30 @@ export default function LittleFires() {
                 />
               </div>
 
-              <div className="due-date-display">
-                <label className="details-label" style={{ margin: 0 }}>Project:</label>
-                <select
-                  value={task.projectId || ''}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    const value = e.target.value;
-                    assignTaskToProject(listName, index, value || null);
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  className="project-selector"
-                >
-                  <option value=""></option>
-                  {getAllProjects().map(project => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {/* Hidden when Projects is switched off. Any existing projectId
+                  is preserved untouched, so re-enabling restores the link. */}
+              {isFeatureOn('projects') && (
+                <div className="due-date-display">
+                  <label className="details-label" style={{ margin: 0 }}>Project:</label>
+                  <select
+                    value={task.projectId || ''}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      const value = e.target.value;
+                      assignTaskToProject(listName, index, value || null);
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="project-selector"
+                  >
+                    <option value=""></option>
+                    {getAllProjects().map(project => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {listName === 'kids' && (
@@ -6813,31 +6886,43 @@ export default function LittleFires() {
                 >
                   Tasks
                 </div>
-                <div 
-                  className={`menu-item ${appMode === 'time' ? 'active' : ''}`}
-                  onClick={() => { setAppMode('time'); setMenuOpen(false); }}
-                >
-                  Time
-                </div>
-                <div className="menu-divider"></div>
-                <div 
-                  className={`menu-item ${appMode === 'goals' ? 'active' : ''}`}
-                  onClick={() => { setAppMode('goals'); setMenuOpen(false); }}
-                >
-                  Goals
-                </div>
-                <div 
-                  className={`menu-item ${appMode === 'projects' ? 'active' : ''}`}
-                  onClick={() => { setAppMode('projects'); setMenuOpen(false); }}
-                >
-                  Projects
-                </div>
-                <div 
-                  className={`menu-item ${appMode === 'notes' ? 'active' : ''}`}
-                  onClick={() => { setAppMode('notes'); setMenuOpen(false); }}
-                >
-                  Notes
-                </div>
+                {isFeatureOn('time') && (
+                  <div 
+                    className={`menu-item ${appMode === 'time' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('time'); setMenuOpen(false); }}
+                  >
+                    Time
+                  </div>
+                )}
+                {/* Divider only renders if at least one of these sections is on,
+                    otherwise we'd stack two dividers together */}
+                {(isFeatureOn('goals') || isFeatureOn('projects') || isFeatureOn('notes')) && (
+                  <div className="menu-divider"></div>
+                )}
+                {isFeatureOn('goals') && (
+                  <div 
+                    className={`menu-item ${appMode === 'goals' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('goals'); setMenuOpen(false); }}
+                  >
+                    Goals
+                  </div>
+                )}
+                {isFeatureOn('projects') && (
+                  <div 
+                    className={`menu-item ${appMode === 'projects' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('projects'); setMenuOpen(false); }}
+                  >
+                    Projects
+                  </div>
+                )}
+                {isFeatureOn('notes') && (
+                  <div 
+                    className={`menu-item ${appMode === 'notes' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('notes'); setMenuOpen(false); }}
+                  >
+                    Notes
+                  </div>
+                )}
                 <div className="menu-divider"></div>
                 <div 
                   className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
@@ -6852,12 +6937,14 @@ export default function LittleFires() {
                   Reports
                 </div>
                 <div className="menu-divider"></div>
-                <div 
-                  className={`menu-item ${appMode === 'search' ? 'active' : ''}`}
-                  onClick={() => { setAppMode('search'); setMenuOpen(false); }}
-                >
-                  Search
-                </div>
+                {isFeatureOn('search') && (
+                  <div 
+                    className={`menu-item ${appMode === 'search' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('search'); setMenuOpen(false); }}
+                  >
+                    Search
+                  </div>
+                )}
                 <div 
                   className={`menu-item ${appMode === 'archive' ? 'active' : ''}`}
                   onClick={() => { setAppMode('archive'); setMenuOpen(false); }}
@@ -9413,22 +9500,26 @@ export default function LittleFires() {
             </div>
 
             <div className="calendar-controls">
-              <label className="calendar-checkbox">
-                <input
-                  type="checkbox"
-                  checked={showProjects}
-                  onChange={(e) => setShowProjects(e.target.checked)}
-                />
-                <span>Projects</span>
-              </label>
-              <label className="calendar-checkbox">
-                <input
-                  type="checkbox"
-                  checked={showNotes}
-                  onChange={(e) => setShowNotes(e.target.checked)}
-                />
-                <span>Notes</span>
-              </label>
+              {isFeatureOn('projects') && (
+                <label className="calendar-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={showProjects}
+                    onChange={(e) => setShowProjects(e.target.checked)}
+                  />
+                  <span>Projects</span>
+                </label>
+              )}
+              {isFeatureOn('notes') && (
+                <label className="calendar-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={showNotes}
+                    onChange={(e) => setShowNotes(e.target.checked)}
+                  />
+                  <span>Notes</span>
+                </label>
+              )}
               <label className="calendar-checkbox">
                 <input
                   type="checkbox"
@@ -12805,7 +12896,7 @@ export default function LittleFires() {
                     });
                     
                     // Search Projects
-                    Object.keys(projects).forEach(listName => {
+                    if (isFeatureOn('projects')) Object.keys(projects).forEach(listName => {
                       if (!projects[listName] || !Array.isArray(projects[listName])) return;
                       
                       projects[listName].forEach(project => {
@@ -12821,7 +12912,7 @@ export default function LittleFires() {
                     });
                     
                     // Search Goals
-                    Object.keys(goals).forEach(listName => {
+                    if (isFeatureOn('goals')) Object.keys(goals).forEach(listName => {
                       if (!goals[listName] || !Array.isArray(goals[listName])) return;
                       
                       goals[listName].forEach(goal => {
@@ -12837,7 +12928,7 @@ export default function LittleFires() {
                     });
                     
                     // Search Notes
-                    if (notes && notes.length > 0) {
+                    if (isFeatureOn('notes') && notes && notes.length > 0) {
                       notes.filter(note => note != null).forEach(note => {
                         if ((note.title && note.title.toLowerCase().includes(query)) ||
                             (note.content && note.content.toLowerCase().includes(query)) ||
@@ -13142,7 +13233,7 @@ export default function LittleFires() {
                   zIndex: 1000,
                   boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
                 }}>
-                  {['tasks', 'goals', 'projects'].map((option, idx) => (
+                  {['tasks', 'goals', 'projects'].filter(o => o === 'tasks' || isFeatureOn(o)).map((option, idx) => (
                     <div
                       key={option}
                       onClick={() => {
@@ -13985,6 +14076,59 @@ export default function LittleFires() {
 
                     <div style={{ ...hint, marginTop: '12px' }}>
                       Leave a name blank to restore its default. At least one list must stay on.
+                    </div>
+                  </div>
+
+                  {/* ---- Sections ---- */}
+                  <div style={card}>
+                    <div style={heading}>Sections</div>
+                    <div style={sub}>
+                      Switch off parts of the app you don't use. Hidden sections disappear
+                      from the menu, calendar, and search — nothing is deleted, and turning
+                      one back on restores it exactly as it was.
+                    </div>
+
+                    {FEATURES.map((f, i) => {
+                      const on = isFeatureOn(f.key);
+                      const counts = {
+                        time: (standaloneTimeLogs || []).length +
+                              Object.values(goals || {}).reduce((n, arr) =>
+                                n + (arr || []).reduce((m, g) => m + ((g.timeLogs || []).length), 0), 0),
+                        goals: countKeyed(goals),
+                        projects: countKeyed(projects),
+                        notes: (notes || []).length,
+                        search: null   // a lens, not a store - no count to show
+                      };
+                      return (
+                        <div
+                          key={f.key}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '12px',
+                            padding: '12px 0', flexWrap: 'wrap',
+                            borderBottom: i < FEATURES.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                            opacity: on ? 1 : 0.55, transition: 'opacity 0.2s ease'
+                          }}
+                        >
+                          <div style={{ flex: 1, minWidth: '170px' }}>
+                            <div style={label}>{f.label}</div>
+                            <div style={hint}>{f.note}</div>
+                          </div>
+                          <span style={{
+                            color: '#b8a99a', fontSize: '0.75rem',
+                            fontFamily: 'Quicksand, sans-serif', minWidth: '58px'
+                          }}>
+                            {counts[f.key] === null ? '' : `${counts[f.key]} saved`}
+                          </span>
+                          <Toggle on={on} onChange={() => toggleFeature(f.key)} />
+                        </div>
+                      );
+                    })}
+
+                    <div style={{ ...hint, marginTop: '12px' }}>
+                      Turning Projects off also hides the Project field on tasks. Any task
+                      already assigned keeps its project, ready for if you switch it back on.
+                      With Goals off but Time on, time logged against goals stays visible
+                      under Time.
                     </div>
                   </div>
 

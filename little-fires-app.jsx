@@ -115,6 +115,23 @@ export default function LittleFires() {
     return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
   };
 
+  // Blend a colour toward neutral slate so it reads as a tinted grey rather
+  // than a washed-out version of itself. Used for subtle chrome like the
+  // header ring, which shouldn't compete with the flame.
+  const muteHex = (hex, amount = 0.62) => {
+    const h = String(hex || '').replace('#', '');
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const n = parseInt(full, 16);
+    if (isNaN(n) || full.length !== 6) return '107, 107, 122';
+    const NEUTRAL = [107, 107, 122];
+    const mix = (c, i) => Math.round(c * (1 - amount) + NEUTRAL[i] * amount);
+    return [
+      mix((n >> 16) & 255, 0),
+      mix((n >> 8) & 255, 1),
+      mix(n & 255, 2)
+    ].join(', ');
+  };
+
   // Derive a lighter companion shade for gradients by mixing toward white
   const lightenHex = (hex, amount = 0.22) => {
     const h = String(hex || '').replace('#', '');
@@ -182,6 +199,7 @@ export default function LittleFires() {
     root.style.setProperty('--accent', accent);
     root.style.setProperty('--accent-light', light);
     root.style.setProperty('--accent-rgb', hexToRgbTriplet(accent));
+    root.style.setProperty('--accent-muted-rgb', muteHex(accent));
   }, [settings.accentId, settings.customAccent]);
 
   // In-app reduced motion toggle (the OS-level preference is handled in CSS)
@@ -4114,6 +4132,7 @@ export default function LittleFires() {
           --accent: #53745f;
           --accent-light: #6a8f76;
           --accent-rgb: 83, 116, 95;
+          --accent-muted-rgb: 98, 111, 112;
         }
 
         /* Respect the OS "reduce motion" setting, and the in-app toggle.
@@ -4153,16 +4172,10 @@ export default function LittleFires() {
             radial-gradient(circle at 20% 30%, rgba(var(--accent-rgb), 0.15) 0%, transparent 50%),
             radial-gradient(circle at 80% 70%, rgba(127, 176, 105, 0.1) 0%, transparent 50%),
             radial-gradient(circle at 50% 50%, rgba(168, 230, 207, 0.08) 0%, transparent 50%);
-          animation: float 20s ease-in-out infinite;
           pointer-events: none;
           z-index: 0;
         }
 
-        @keyframes float {
-          0%, 100% { transform: translate(0, 0) rotate(0deg); }
-          33% { transform: translate(30px, -30px) rotate(5deg); }
-          66% { transform: translate(-20px, 20px) rotate(-5deg); }
-        }
 
         @keyframes flameGlow {
           0% { 
@@ -4286,22 +4299,13 @@ export default function LittleFires() {
 
         header {
           text-align: center;
-          margin-bottom: 35px;
+          margin-bottom: 28px;
+          padding-top: 8px;
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 5px;
         }
 
-        h1 {
-          font-family: 'Quicksand', sans-serif;
-          font-weight: 700;
-          font-size: 3.5rem;
-          letter-spacing: 2px;
-          color: #000000;
-          filter: drop-shadow(2px 4px 4px rgba(0, 0, 0, 0.2));
-          margin: 0;
-        }
 
 
         .subtitle {
@@ -6673,9 +6677,6 @@ export default function LittleFires() {
         }
 
         @media (max-width: 600px) {
-          h1 {
-            font-size: 2.5rem;
-          }
 
           .project-dates-section {
             flex-direction: column;
@@ -6689,14 +6690,6 @@ export default function LittleFires() {
         }
 
         @media (max-width: 700px) {
-          /* Battery: the animated background sits behind 12 backdrop-filter
-             surfaces, so any movement forces the GPU to recompute every blur
-             on every frame. Freezing it lets those blurs be cached instead.
-             The gradient still renders - it just stops drifting. */
-          .little-fires-container::before {
-            animation: none;
-          }
-
           /* Reclaim horizontal space on phones */
           .container {
             padding: 0 12px;
@@ -6741,10 +6734,6 @@ export default function LittleFires() {
           }
 
           /* --- Typography --- */
-          h1 {
-            font-size: 2.2rem;
-            letter-spacing: 1px;
-          }
 
           /* --- iOS zoom prevention ---
              Safari auto-zooms when focusing any field under 16px. */
@@ -6956,14 +6945,21 @@ export default function LittleFires() {
         </div>
 
         <header>
-          <h1>Little Fires</h1>
+          {/* The flame is the wordmark now - the title was removed to reclaim
+              vertical space, and the icon already doubles as the home button. */}
           <div className="subtitle">
+            {(() => {
+              const logoSize = isMobile ? 104 : 132;
+              const ringSize = logoSize + 12;
+              const ringMid = ringSize / 2;
+              const ringR = ringMid - 6;
+              return (
             <div
               onClick={() => { setAppMode('tasks'); setCurrentList('master'); }}
               title="Go to All Tasks"
               style={{
-                width: '80px',
-                height: '80px',
+                width: `${logoSize}px`,
+                height: `${logoSize}px`,
                 position: 'relative',
                 display: 'inline-block',
                 cursor: 'pointer'
@@ -6975,19 +6971,19 @@ export default function LittleFires() {
                   position: 'absolute',
                   top: '-6px',
                   left: '-6px',
-                  width: '92px',
-                  height: '92px',
+                  width: `${ringSize}px`,
+                  height: `${ringSize}px`,
                   transform: 'rotate(-90deg)',
                   pointerEvents: 'none'
                 }}
               >
                 <circle
-                  cx="46"
-                  cy="46"
-                  r="40"
+                  cx={ringMid}
+                  cy={ringMid}
+                  r={ringR}
                   fill="none"
-                  stroke="rgba(58, 58, 74, 0.3)"
                   strokeWidth="4"
+                  style={{ stroke: 'rgba(var(--accent-muted-rgb), 0.55)' }}
                 />
               </svg>
               
@@ -7029,6 +7025,8 @@ export default function LittleFires() {
               </svg>
               </div>
             </div>
+              );
+            })()}
           </div>
         </header>
 
@@ -11175,12 +11173,16 @@ export default function LittleFires() {
                             cy="105"
                             r="95"
                             fill="none"
-                            stroke={isLogging ? 'var(--accent)' : '#a0aec0'}
                             strokeWidth="8"
                             strokeDasharray="597"
                             strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
                             strokeLinecap="round"
-                            style={{ transition: 'stroke 0.3s ease' }}
+                            style={{
+                              // var() only resolves as a CSS property, never as
+                              // an SVG attribute - so stroke lives here
+                              stroke: isLogging ? 'var(--accent)' : '#a0aec0',
+                              transition: 'stroke 0.3s ease'
+                            }}
                           />
                         )}
                       </svg>
@@ -12431,12 +12433,16 @@ export default function LittleFires() {
                             cy="105"
                             r="95"
                             fill="none"
-                            stroke={isLogging ? 'var(--accent)' : '#a0aec0'}
                             strokeWidth="8"
                             strokeDasharray="597"
                             strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
                             strokeLinecap="round"
-                            style={{ transition: 'stroke 0.3s ease' }}
+                            style={{
+                              // var() only resolves as a CSS property, never as
+                              // an SVG attribute - so stroke lives here
+                              stroke: isLogging ? 'var(--accent)' : '#a0aec0',
+                              transition: 'stroke 0.3s ease'
+                            }}
                           />
                         )}
                       </svg>

@@ -138,6 +138,8 @@ function LittleFiresApp() {
   // an unhandled exception inside a useEffect and persistence silently stops -
   // you'd only notice after losing work. This surfaces it instead.
   const [storageError, setStorageError] = useState(null);
+  const [newListName, setNewListName] = useState('');
+  const [listMessage, setListMessage] = useState(null);
   const [draggingList, setDraggingList] = useState(null);
   const [dragOverList, setDragOverList] = useState(null);
   const safeSetItem = React.useCallback((key, value) => {
@@ -299,7 +301,14 @@ function LittleFiresApp() {
 
   // The canonical task lists. These keys are also the storage keys, so they
   // never change - renaming only affects the display label.
-  const TASK_LISTS = ['personal', 'work', 'home', 'travel', 'kids', 'partner'];
+  const BUILT_IN_LISTS = ['personal', 'work', 'home', 'travel', 'kids', 'partner'];
+  const MAX_LISTS = 10;
+  // Colours offered to new lists, in order. Chosen to stay distinguishable
+  // against each other and the dark background in the Reports legend.
+  const LIST_COLOR_PALETTE = [
+    '#f59e0b', '#8b5cf6', '#14b8a6', '#ef4444',
+    '#84cc16', '#06b6d4', '#ec4899', '#a3a3a3'
+  ];
   const DEFAULT_LIST_LABELS = {
     personal: 'Personal', work: 'Work', home: 'Home',
     travel: 'Travel', kids: 'Kids', partner: 'Partner'
@@ -318,6 +327,7 @@ function LittleFiresApp() {
     listLabels: { ...DEFAULT_LIST_LABELS },
     hiddenLists: {},          // { travel: true } => hidden from the app
     listOrder: null,          // user's drag-ordered keys; null = built-in order
+    customLists: [],          // [{ key, label, color }] added by the user
     hiddenFeatures: {}        // { goals: true } => section switched off
   };
   // Bump when the settings shape changes in a way that needs migrating
@@ -661,8 +671,11 @@ function LittleFiresApp() {
 
   // Display label for a list. Falls back to the built-in name if unset/blank.
   const listLabel = (key) => {
-    const custom = settings.listLabels && settings.listLabels[key];
-    return (custom && String(custom).trim()) || DEFAULT_LIST_LABELS[key] || key;
+    const override = settings.listLabels && settings.listLabels[key];
+    if (override && String(override).trim()) return String(override).trim();
+    if (DEFAULT_LIST_LABELS[key]) return DEFAULT_LIST_LABELS[key];
+    const found = customLists.find(c => c && c.key === key);
+    return (found && found.label) || key;
   };
   // Section heading used in All Tasks / Search ("Work Tasks")
   const listSectionLabel = (key) => `${listLabel(key)} Tasks`;
@@ -672,6 +685,21 @@ function LittleFiresApp() {
   // The user's order, reconciled against the canonical list: unknown keys are
   // dropped and any list they've never seen is appended, so adding a new list
   // in future can't strand it or duplicate it.
+  // Full set of task lists: the built-ins plus anything the user has added.
+  const customLists = Array.isArray(settings.customLists) ? settings.customLists : [];
+  const TASK_LISTS = [...BUILT_IN_LISTS, ...customLists.map(c => c && c.key).filter(Boolean)];
+
+  // Colour for a list - built-ins are fixed, custom ones carry their own.
+  const BUILT_IN_LIST_COLORS = {
+    personal: '#6a9d5f', work: '#3b82f6', home: '#4a7a3a',
+    travel: '#7dd3fc', kids: '#f472b6', partner: '#f59e0b'
+  };
+  const listColor = (key) => {
+    if (BUILT_IN_LIST_COLORS[key]) return BUILT_IN_LIST_COLORS[key];
+    const found = customLists.find(c => c && c.key === key);
+    return (found && found.color) || '#a3a3a3';
+  };
+
   const orderedTaskLists = (() => {
     const saved = Array.isArray(settings.listOrder) ? settings.listOrder : [];
     const known = saved.filter(k => TASK_LISTS.includes(k));
@@ -681,6 +709,74 @@ function LittleFiresApp() {
   })();
 
   const visibleTaskLists = orderedTaskLists.filter(k => !isListHidden(k));
+
+  // Keys are slugs generated once at creation and never changed - labels stay
+  // editable, so the key can't be derived from the label at read time.
+  const makeListKey = (label) => {
+    const base = String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '').slice(0, 20) || 'list';
+    let key = base;
+    let n = 2;
+    while (TASK_LISTS.includes(key)) { key = `${base}_${n}`; n++; }
+    return key;
+  };
+
+  const addCustomList = (label) => {
+    const name = String(label || '').trim();
+    if (!name) return { ok: false, message: 'Give the list a name first.' };
+    if (TASK_LISTS.length >= MAX_LISTS) {
+      return { ok: false, message: `You can have up to ${MAX_LISTS} lists.` };
+    }
+    const taken = TASK_LISTS.some(k => listLabel(k).toLowerCase() === name.toLowerCase());
+    if (taken) return { ok: false, message: 'A list with that name already exists.' };
+
+    const key = makeListKey(name);
+    const used = customLists.map(c => c && c.color);
+    const color = LIST_COLOR_PALETTE.find(c => !used.includes(c)) || LIST_COLOR_PALETTE[0];
+
+    // Create the storage buckets up front so nothing has to guard for a
+    // missing key later
+    setAllLists(prev => ({ ...prev, [key]: [] }));
+    setArchivedTasks(prev => ({ ...prev, [key]: [] }));
+    setSettings(prev => ({
+      ...prev,
+      customLists: [...(prev.customLists || []), { key, label: name, color }],
+      listOrder: [...orderedTaskLists, key]
+    }));
+    return { ok: true, message: `Added "${name}".` };
+  };
+
+  const deleteCustomList = (key) => {
+    const entry = customLists.find(c => c && c.key === key);
+    if (!entry) return;
+    const open = (allLists[key] || []).length;
+    const archived = (archivedTasks[key] || []).length;
+    const total = open + archived;
+    const ok = window.confirm(
+      `Delete "${listLabel(key)}"?\n\n` +
+      (total > 0
+        ? `This permanently deletes ${total} task${total === 1 ? '' : 's'} (${open} active, ${archived} archived). This can't be undone.`
+        : 'This list is empty.')
+    );
+    if (!ok) return;
+
+    setAllLists(prev => { const next = { ...prev }; delete next[key]; return next; });
+    setArchivedTasks(prev => { const next = { ...prev }; delete next[key]; return next; });
+    setSettings(prev => {
+      const labels = { ...(prev.listLabels || {}) };
+      const hidden = { ...(prev.hiddenLists || {}) };
+      delete labels[key];
+      delete hidden[key];
+      return {
+        ...prev,
+        customLists: (prev.customLists || []).filter(c => c && c.key !== key),
+        listLabels: labels,
+        hiddenLists: hidden,
+        listOrder: (prev.listOrder || []).filter(k => k !== key)
+      };
+    });
+    if (currentList === key) setCurrentList('master');
+  };
 
   const moveList = (key, direction) => {
     const order = [...orderedTaskLists];
@@ -4390,6 +4486,7 @@ function LittleFiresApp() {
            changing them recolors the whole app. --accent-rgb is kept as a raw
            triplet so it can be composed into rgba() at any opacity. */
         :root {
+          color-scheme: dark;
           --accent: #53745f;
           --accent-light: #6a8f76;
           --accent-rgb: 83, 116, 95;
@@ -4690,6 +4787,25 @@ function LittleFiresApp() {
           box-sizing: border-box;
           flex: 1;
           min-width: 120px;
+        }
+
+        input[type="date"],
+        input[type="time"],
+        select {
+          color-scheme: dark;
+        }
+
+        /* The little calendar glyph renders near-black by default, which
+           disappears against the dark field. */
+        input[type="date"]::-webkit-calendar-picker-indicator {
+          filter: invert(0.85) sepia(0.2) saturate(0.4);
+          cursor: pointer;
+          opacity: 0.75;
+          transition: opacity 0.2s ease;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator:hover {
+          opacity: 1;
         }
 
         input[type="date"] {
@@ -9825,14 +9941,7 @@ function LittleFiresApp() {
                     const startRow = Math.floor((startDay - 1 + firstDayOffset) / 7) + 2; // +2 for header row
                     const endRow = Math.floor((endDay - 1 + firstDayOffset) / 7) + 2;
                     
-                    const colors = {
-                      personal: '#6a9d5f',
-                      work: 'var(--accent)',
-                      home: '#4a7a3a',
-                      travel: 'var(--accent-light)',
-                      kids: '#f472b6',
-                      partner: '#f59e0b'
-                    };
+                    const colors = Object.fromEntries(TASK_LISTS.map(k => [k, listColor(k)]));
                     
                     // If project spans multiple weeks, create multiple segments
                     const segments = [];
@@ -14416,9 +14525,84 @@ function LittleFiresApp() {
                           </span>
 
                           <Toggle on={!hidden} onChange={() => toggleListVisibility(key)} />
+
+                          {/* Built-ins can be hidden but not deleted - removing
+                              them would orphan the colour and label defaults. */}
+                          {customLists.some(c => c && c.key === key) && (
+                            <button
+                              onClick={() => deleteCustomList(key)}
+                              title="Delete this list and its tasks"
+                              style={{
+                                width: '30px', height: '30px', borderRadius: '7px',
+                                background: 'rgba(42, 42, 62, 1)',
+                                border: '2px solid rgba(255, 107, 107, 0.35)',
+                                color: '#ff8f8f', cursor: 'pointer',
+                                fontSize: '0.9rem', padding: 0, lineHeight: 1, flexShrink: 0
+                              }}
+                            >
+                              ×
+                            </button>
+                          )}
                         </div>
                       );
                     })}
+
+                    {/* Add a list */}
+                    {orderedTaskLists.length < MAX_LISTS ? (
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '14px', flexWrap: 'wrap' }}>
+                        <input
+                          type="text"
+                          value={newListName}
+                          onChange={(e) => setNewListName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              const res = addCustomList(newListName);
+                              setListMessage(res);
+                              if (res.ok) setNewListName('');
+                            }
+                          }}
+                          placeholder="New list name"
+                          maxLength={18}
+                          style={{
+                            flex: 1, minWidth: '140px', padding: '10px',
+                            background: 'rgba(42, 42, 62, 1)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            borderRadius: '8px', color: '#f4e8d8', fontSize: '0.92rem',
+                            fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                          }}
+                        />
+                        <button
+                          onClick={() => {
+                            const res = addCustomList(newListName);
+                            setListMessage(res);
+                            if (res.ok) setNewListName('');
+                          }}
+                          style={{
+                            padding: '10px 18px', borderRadius: '8px', cursor: 'pointer',
+                            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                            border: '1px solid rgba(var(--accent-rgb), 0.5)',
+                            color: '#fff', fontSize: '0.85rem', fontWeight: 600,
+                            fontFamily: 'Quicksand, sans-serif'
+                          }}
+                        >
+                          Add List
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ ...hint, marginTop: '14px' }}>
+                        You've reached the maximum of {MAX_LISTS} lists.
+                      </div>
+                    )}
+
+                    {listMessage && (
+                      <div style={{
+                        marginTop: '10px', fontSize: '0.8rem',
+                        fontFamily: 'Quicksand, sans-serif',
+                        color: listMessage.ok ? '#f4e8d8' : '#ff8f8f'
+                      }}>
+                        {listMessage.message}
+                      </div>
+                    )}
 
                     <div style={{ ...hint, marginTop: '12px' }}>
                       Drag the handle to reorder, or use the arrows. The order applies to
@@ -14736,7 +14920,7 @@ function LittleFiresApp() {
                 ...Object.fromEntries(TASK_LISTS.map(k => [k, listLabel(k)]))
               };
               const listColors = {
-                personal: '#6a9d5f', work: '#3b82f6', home: '#4a7a3a', travel: '#7dd3fc', kids: '#f472b6', partner: '#f59e0b'
+                ...Object.fromEntries(TASK_LISTS.map(k => [k, listColor(k)]))
               };
 
               // --- Determine date range and bucketing for the selected timeframe ---

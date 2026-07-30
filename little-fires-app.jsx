@@ -1,6 +1,160 @@
 import React, { useState, useEffect } from 'react';
 
-export default function LittleFires() {
+
+// ---- Inline date picker ----------------------------------------------------
+// Deliberately not <input type="date">. The native picker renders as a browser
+// overlay attached to a specific DOM node, and this app re-creates task rows on
+// parent renders - when that node is replaced mid-interaction, iOS commits the
+// highlighted value (today) as it tears the sheet down. A React-rendered
+// calendar has no overlay to lose: worst case it simply closes, and it can
+// never write a date the user didn't tap.
+function InlineDatePicker({ value, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const parse = (v) => {
+    if (!v) return null;
+    const [y, m, d] = String(v).split('-').map(Number);
+    return (y && m && d) ? new Date(y, m - 1, d) : null;
+  };
+  const selected = parse(value);
+  const [view, setView] = React.useState(() => {
+    const base = selected || new Date();
+    return { year: base.getFullYear(), month: base.getMonth() };
+  });
+
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December'];
+  const pad = (n) => String(n).padStart(2, '0');
+  const toValue = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+
+  const daysInMonth = new Date(view.year, view.month + 1, 0).getDate();
+  const firstWeekday = new Date(view.year, view.month, 1).getDay();
+  const today = new Date();
+  const isToday = (d) => today.getFullYear() === view.year &&
+    today.getMonth() === view.month && today.getDate() === d;
+  const isSelected = (d) => selected && selected.getFullYear() === view.year &&
+    selected.getMonth() === view.month && selected.getDate() === d;
+
+  const shiftMonth = (delta) => setView(v => {
+    const nm = v.month + delta;
+    return { year: v.year + Math.floor(nm / 12), month: ((nm % 12) + 12) % 12 };
+  });
+
+  const stop = (e) => { e.stopPropagation(); };
+  const field = {
+    padding: '8px 12px', background: 'rgba(42, 42, 62, 0.8)',
+    border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
+    color: value ? '#f4e8d8' : '#8a8a9a', fontFamily: 'Quicksand, sans-serif',
+    fontSize: '0.9rem', cursor: 'pointer', minWidth: '132px', textAlign: 'left'
+  };
+
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}
+      onMouseDown={stop} onTouchStart={stop} onClick={stop}>
+      <button type="button" style={field} onClick={(e) => { stop(e); setOpen(o => !o); }}>
+        {selected ? selected.toLocaleDateString('en-US',
+          { month: 'short', day: 'numeric', year: 'numeric' }) : 'Set date'}
+      </button>
+      {value && (
+        <button type="button" title="Clear date"
+          onClick={(e) => { stop(e); onChange(''); setOpen(false); }}
+          style={{ background: 'transparent', border: 'none', color: '#8a8a9a',
+            cursor: 'pointer', fontSize: '1rem', padding: '0 6px' }}>×</button>
+      )}
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 2000,
+          background: 'rgba(30, 30, 46, 0.99)',
+          border: '2px solid rgba(var(--accent-rgb), 0.4)',
+          borderRadius: '12px', padding: '12px', width: '252px',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.55)',
+          fontFamily: 'Quicksand, sans-serif'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', marginBottom: '8px' }}>
+            <button type="button" onClick={(e) => { stop(e); shiftMonth(-1); }}
+              style={{ background: 'transparent', border: 'none', color: '#f4e8d8',
+                cursor: 'pointer', fontSize: '1.1rem', padding: '2px 8px' }}>‹</button>
+            <span style={{ color: '#f4e8d8', fontSize: '0.85rem', fontWeight: 600 }}>
+              {MONTHS[view.month]} {view.year}
+            </span>
+            <button type="button" onClick={(e) => { stop(e); shiftMonth(1); }}
+              style={{ background: 'transparent', border: 'none', color: '#f4e8d8',
+                cursor: 'pointer', fontSize: '1.1rem', padding: '2px 8px' }}>›</button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px' }}>
+            {['S','M','T','W','T','F','S'].map((d, i) => (
+              <div key={i} style={{ textAlign: 'center', color: '#8a8a9a',
+                fontSize: '0.65rem', padding: '3px 0' }}>{d}</div>
+            ))}
+            {Array.from({ length: firstWeekday }).map((_, i) => <div key={'b' + i} />)}
+            {Array.from({ length: daysInMonth }).map((_, i) => {
+              const d = i + 1;
+              const sel = isSelected(d);
+              return (
+                <button key={d} type="button"
+                  onClick={(e) => { stop(e); onChange(toValue(view.year, view.month, d)); setOpen(false); }}
+                  style={{
+                    padding: '6px 0', borderRadius: '7px', cursor: 'pointer',
+                    fontSize: '0.8rem', fontFamily: 'Quicksand, sans-serif',
+                    border: isToday(d) && !sel ? '1px solid rgba(var(--accent-rgb), 0.6)' : '1px solid transparent',
+                    background: sel ? 'linear-gradient(135deg, var(--accent), var(--accent-light))' : 'transparent',
+                    color: sel ? '#fff' : '#f4e8d8', fontWeight: sel ? 700 : 500
+                  }}>
+                  {d}
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}>
+            <button type="button" onClick={(e) => {
+                stop(e);
+                const t = new Date();
+                onChange(toValue(t.getFullYear(), t.getMonth(), t.getDate()));
+                setOpen(false);
+              }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--accent-light)',
+                cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'Quicksand, sans-serif' }}>
+              Today
+            </button>
+            <button type="button" onClick={(e) => { stop(e); setOpen(false); }}
+              style={{ background: 'transparent', border: 'none', color: '#8a8a9a',
+                cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'Quicksand, sans-serif' }}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function LittleFiresApp() {
+  // ---- Guarded storage ----------------------------------------------------
+  // localStorage.setItem throws when the quota is exceeded, and in Safari
+  // private browsing it can throw on every write. Unguarded, that surfaces as
+  // an unhandled exception inside a useEffect and persistence silently stops -
+  // you'd only notice after losing work. This surfaces it instead.
+  const [storageError, setStorageError] = useState(null);
+  const [draggingList, setDraggingList] = useState(null);
+  const [dragOverList, setDragOverList] = useState(null);
+  const safeSetItem = React.useCallback((key, value) => {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (err) {
+      const quota = err && (err.name === 'QuotaExceededError' ||
+        err.name === 'NS_ERROR_DOM_QUOTA_REACHED' || err.code === 22);
+      setStorageError(quota
+        ? "Storage is full, so recent changes aren't being saved. Export a backup from Settings, then remove some archived tasks or old notes."
+        : "This browser is blocking local storage, so changes won't be saved. Private browsing mode is the usual cause.");
+      console.error('localStorage write failed for ' + key + ':', err);
+      return false;
+    }
+  }, []);
+
   // Set favicon and Apple Touch Icon on mount
   useEffect(() => {
     // Create SVG favicon as data URI
@@ -163,6 +317,7 @@ export default function LittleFires() {
     reduceMotion: false,
     listLabels: { ...DEFAULT_LIST_LABELS },
     hiddenLists: {},          // { travel: true } => hidden from the app
+    listOrder: null,          // user's drag-ordered keys; null = built-in order
     hiddenFeatures: {}        // { goals: true } => section switched off
   };
   // Bump when the settings shape changes in a way that needs migrating
@@ -186,7 +341,7 @@ export default function LittleFires() {
         overrides[k] = settings[k];
       }
     });
-    localStorage.setItem('little_fires_settings', JSON.stringify(overrides));
+    safeSetItem('little_fires_settings', JSON.stringify(overrides));
   }, [settings]);
 
   // Push the chosen accent into CSS variables on :root, so every rule and
@@ -341,7 +496,7 @@ export default function LittleFires() {
 
         // Snapshot current state first, so a bad import is recoverable
         try {
-          localStorage.setItem('little_fires_pre_import_backup', JSON.stringify(buildBackup()));
+          safeSetItem('little_fires_pre_import_backup', JSON.stringify(buildBackup()));
         } catch (_) { /* storage full - proceed anyway */ }
 
         const message = applyBackup(payload, mode);
@@ -421,7 +576,7 @@ export default function LittleFires() {
       const headers = [
         'List', 'Task', 'Completed', 'Section', 'High Priority',
         'Subtasks', 'Subtasks Done',
-        'Due Date', 'Created', 'Completed Date', 'Archived', 'Archived Date',
+        'Due Date', 'Due Time', 'Created', 'Completed Date', 'Archived', 'Archived Date',
         'Project', 'Details'
       ];
       const projectNameById = {};
@@ -447,6 +602,7 @@ export default function LittleFires() {
           subTotal,
           subDone,
           fmtDate(task.dueDate),
+          task.dueTime || '',
           fmtDate(task.createdAt),
           fmtDate(task.completedAt),
           archived ? 1 : 0,
@@ -513,7 +669,37 @@ export default function LittleFires() {
   const isListHidden = (key) => !!(settings.hiddenLists && settings.hiddenLists[key]);
   // Lists the user has switched on. Used for anything user-facing; data
   // operations (auto-archive, project cleanup) still walk TASK_LISTS.
-  const visibleTaskLists = TASK_LISTS.filter(k => !isListHidden(k));
+  // The user's order, reconciled against the canonical list: unknown keys are
+  // dropped and any list they've never seen is appended, so adding a new list
+  // in future can't strand it or duplicate it.
+  const orderedTaskLists = (() => {
+    const saved = Array.isArray(settings.listOrder) ? settings.listOrder : [];
+    const known = saved.filter(k => TASK_LISTS.includes(k));
+    const deduped = known.filter((k, i) => known.indexOf(k) === i);
+    const missing = TASK_LISTS.filter(k => !deduped.includes(k));
+    return [...deduped, ...missing];
+  })();
+
+  const visibleTaskLists = orderedTaskLists.filter(k => !isListHidden(k));
+
+  const moveList = (key, direction) => {
+    const order = [...orderedTaskLists];
+    const from = order.indexOf(key);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    updateSetting('listOrder', order);
+  };
+
+  const reorderList = (fromKey, toKey) => {
+    if (fromKey === toKey) return;
+    const order = [...orderedTaskLists];
+    const from = order.indexOf(fromKey);
+    const to = order.indexOf(toKey);
+    if (from < 0 || to < 0) return;
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    updateSetting('listOrder', order);
+  };
 
   // Optional sections. Off means hidden, never deleted - the data stays put
   // and reappears untouched when switched back on.
@@ -797,23 +983,23 @@ export default function LittleFires() {
   });
 
   useEffect(() => {
-    localStorage.setItem('little_fires_lists', JSON.stringify(allLists));
+    safeSetItem('little_fires_lists', JSON.stringify(allLists));
   }, [allLists]);
 
   useEffect(() => {
-    localStorage.setItem('little_fires_notes', JSON.stringify(notes));
+    safeSetItem('little_fires_notes', JSON.stringify(notes));
   }, [notes]);
 
   useEffect(() => {
-    localStorage.setItem('little_fires_projects', JSON.stringify(projects));
+    safeSetItem('little_fires_projects', JSON.stringify(projects));
   }, [projects]);
 
   useEffect(() => {
-    localStorage.setItem('little_fires_goals', JSON.stringify(goals));
+    safeSetItem('little_fires_goals', JSON.stringify(goals));
   }, [goals]);
 
   useEffect(() => {
-    localStorage.setItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
+    safeSetItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
   }, [standaloneTimeLogs]);
 
   // Keep the narrow-screen flag in sync (also fires on device rotation)
@@ -934,7 +1120,7 @@ export default function LittleFires() {
   }, [loggedSeconds, isLogging]);
 
   useEffect(() => {
-    localStorage.setItem('little_fires_archived', JSON.stringify(archivedTasks));
+    safeSetItem('little_fires_archived', JSON.stringify(archivedTasks));
   }, [archivedTasks]);
 
   // Auto-archive completed tasks from previous months on app load and daily
@@ -951,7 +1137,7 @@ export default function LittleFires() {
         autoArchiveCompletedTasks();
         const newCheckDate = now.toISOString();
         setLastArchiveCheck(newCheckDate);
-        localStorage.setItem('little_fires_last_archive_check', newCheckDate);
+        safeSetItem('little_fires_last_archive_check', newCheckDate);
       }
     };
     
@@ -1059,6 +1245,7 @@ export default function LittleFires() {
       priority: selectedPriority,
       section: selectedSection,
       dueDate: dueDate || null,
+      dueTime: null,
       details: '',
       id: Date.now(),
       createdAt: new Date().toISOString(),
@@ -1162,7 +1349,17 @@ export default function LittleFires() {
   const updateTaskDueDate = (listName, index, newDueDate) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      newLists[listName][index].dueDate = newDueDate;
+      // Update in place rather than replacing the task object. Replacing it
+      // gives React a new reference mid-interaction, which closes the native
+      // date picker before you can choose a day - and `actualIndex` is resolved
+      // with indexOf(task), which relies on that identity holding steady.
+      const target = newLists[listName][index];
+      if (!target) return prev;
+      target.dueDate = newDueDate || null;
+      // No time picker in the UI, so a date implies midnight local (Eastern for
+      // you). Stored explicitly so reminders and calendar sync have a real
+      // timestamp to work from later.
+      target.dueTime = newDueDate ? '00:00' : null;
       return newLists;
     });
   };
@@ -1640,6 +1837,17 @@ export default function LittleFires() {
   };
 
   // Helper function to parse date strings as local dates (not UTC)
+  // Combine a date string with an optional "HH:MM". Absent time means the task
+  // is due sometime that day - which mirrors how Google Calendar distinguishes
+  // an all-day event (start.date) from a timed one (start.dateTime).
+  const parseLocalDateTime = (dateString, timeString) => {
+    if (!dateString) return null;
+    const [year, month, day] = dateString.split('-').map(Number);
+    if (!timeString) return new Date(year, month - 1, day); // all-day
+    const [hh, mm] = String(timeString).split(':').map(Number);
+    return new Date(year, month - 1, day, hh || 0, mm || 0);
+  };
+
   const parseLocalDate = (dateString) => {
     if (!dateString) return null;
     // Split the date string and create date in local timezone
@@ -2345,13 +2553,21 @@ export default function LittleFires() {
   };
 
   const Task = ({ task, listName, index, showMoveButtons }) => {
-    const dueDate = task.dueDate ? parseLocalDate(task.dueDate) : null;
-    const isOverdue = dueDate && dueDate < new Date() && !task.completed;
+    // With a time set, overdue means past that moment. Without one, the task
+    // isn't late until the day itself has ended.
+    const dueDate = task.dueDate ? parseLocalDateTime(task.dueDate, task.dueTime) : null;
+    // '00:00' is the implicit stamp for a plain due date, so treat it the same
+    // as no time at all: the task isn't late until the day has ended.
+    const isAllDay = !task.dueTime || task.dueTime === '00:00';
+    const overdueThreshold = dueDate && isAllDay
+      ? new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate(), 23, 59, 59, 999)
+      : dueDate;
+    const isOverdue = overdueThreshold && overdueThreshold < new Date() && !task.completed;
     const dueDateText = dueDate ? dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
     const createdDate = task.createdAt ? new Date(task.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
     const completedDate = task.completedAt ? new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
     
-    const isExpanded = expandedTaskId === `${listName}-${index}`;
+    const isExpanded = expandedTaskId === `${listName}-${task.id}`;
     const taskRef = React.useRef(null);
     const detailsRef = React.useRef(null);
     const hasSetInitialContent = React.useRef(false);
@@ -2367,11 +2583,16 @@ export default function LittleFires() {
     const [measuredHeight, setMeasuredHeight] = React.useState(null);
     const collapseTimeoutRef = React.useRef(null);
     const completeTimeoutRef = React.useRef(null);
+    // True while a native picker (date/select) is open. iOS presents these as a
+    // sheet and moves focus off the input, so focus can't be used to detect it.
+    const pickerActiveRef = React.useRef(false);
+    const pickerResetRef = React.useRef(null);
 
     React.useEffect(() => {
       return () => {
         if (completeTimeoutRef.current) clearTimeout(completeTimeoutRef.current);
         if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
+        if (pickerResetRef.current) clearTimeout(pickerResetRef.current);
       };
     }, []);
 
@@ -2540,7 +2761,24 @@ export default function LittleFires() {
       if (!isExpanded) return;
 
       const handleClickOutside = (e) => {
-        if (taskRef.current && !taskRef.current.contains(e.target)) {
+        if (!taskRef.current) return;
+
+        // A native picker is open. Its sheet/overlay lives outside this DOM
+        // subtree, so any interaction with it reads as an outside click and
+        // would collapse the task - destroying the input the picker belongs to.
+        if (pickerActiveRef.current) return;
+
+        // Fallback for desktop, where focus does stay on the input.
+        const active = document.activeElement;
+        if (active && taskRef.current.contains(active)) {
+          const tag = active.tagName;
+          const type = (active.getAttribute && active.getAttribute('type')) || '';
+          if (tag === 'SELECT' || tag === 'INPUT' && ['date', 'time', 'month', 'week'].includes(type)) {
+            return;
+          }
+        }
+
+        if (!taskRef.current.contains(e.target)) {
           // Save details before collapsing when clicking outside
           const detailsArea = taskRef.current.querySelector('.details-richtext');
           if (detailsArea) {
@@ -2640,7 +2878,7 @@ export default function LittleFires() {
             updateTaskDetails(listName, index, content);
           }
           
-          setExpandedTaskId(isExpanded ? null : `${listName}-${index}`);
+          setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
         }}
         style={{
           pointerEvents: task.isArchived ? 'none' : 'auto',
@@ -2759,7 +2997,7 @@ export default function LittleFires() {
                       
                       // Single click toggles task expanded/collapsed
                       if (!task.isArchived) {
-                        setExpandedTaskId(isExpanded ? null : `${listName}-${index}`);
+                        setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
                       }
                     }, 250); // 250ms delay
                   }
@@ -2773,7 +3011,7 @@ export default function LittleFires() {
                   // Double-click enters edit mode (works whether expanded or not)
                   if (!task.isArchived) {
                     if (!isExpanded) {
-                      setExpandedTaskId(`${listName}-${index}`);
+                      setExpandedTaskId(`${listName}-${task.id}`);
                     }
                     setEditingTaskName(`${listName}-${index}`);
                   }
@@ -3264,12 +3502,35 @@ export default function LittleFires() {
                 <label className="details-label" style={{ margin: 0 }}>Due Date:</label>
                 <input
                   type="date"
-                  value={task.dueDate || ''}
+                  // Uncontrolled: React sets the value once at mount and never
+                  // rewrites it. A controlled value gets re-applied on every
+                  // parent render, which can disturb an open native picker -
+                  // especially inside a sandboxed iframe. keyed on the task so
+                  // it still refreshes if the task itself changes.
+                  key={`due-${task.id}`}
+                  defaultValue={task.dueDate || ''}
                   onChange={(e) => {
                     e.stopPropagation();
                     updateTaskDueDate(listName, index, e.target.value);
+                    // A value came back, so the picker is done with
+                    pickerActiveRef.current = false;
                   }}
                   onClick={(e) => e.stopPropagation()}
+                  // The collapse handler listens on mousedown, which onClick's
+                  // stopPropagation doesn't cover
+                  onMouseDown={(e) => { e.stopPropagation(); pickerActiveRef.current = true; }}
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    pickerActiveRef.current = true;
+                    if (pickerResetRef.current) clearTimeout(pickerResetRef.current);
+                    pickerResetRef.current = setTimeout(() => { pickerActiveRef.current = false; }, 45000);
+                  }}
+                  onFocus={() => { pickerActiveRef.current = true; }}
+                  // Deliberately NOT cleared on blur: iOS blurs the input the
+                  // moment it presents the picker sheet, so clearing here would
+                  // disarm the guard while the picker is still open. It's cleared
+                  // when a value is actually committed, with a long fallback so
+                  // collapse can't be blocked forever.
                 />
               </div>
 
@@ -6840,6 +7101,30 @@ export default function LittleFires() {
       `}</style>
 
       <div className="container">
+        {/* Storage failures used to be silent - this makes them impossible to miss */}
+        {storageError && (
+          <div style={{
+            background: 'rgba(255, 107, 107, 0.15)',
+            border: '2px solid rgba(255, 107, 107, 0.5)',
+            borderRadius: '10px', padding: '12px 14px', margin: '12px 0',
+            display: 'flex', alignItems: 'flex-start', gap: '12px',
+            fontFamily: 'Quicksand, sans-serif'
+          }}>
+            <div style={{ flex: 1, color: '#ff8f8f', fontSize: '0.85rem', lineHeight: 1.5 }}>
+              <strong>Changes aren't being saved.</strong> {storageError}
+            </div>
+            <button
+              onClick={() => setStorageError(null)}
+              style={{
+                background: 'transparent', border: 'none', color: '#ff8f8f',
+                cursor: 'pointer', fontSize: '1.1rem', padding: '0 4px', lineHeight: 1
+              }}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
         {/* Hamburger Menu */}
         <div className="hamburger-menu">
           <div className="hamburger-icon" onClick={() => setMenuOpen(!menuOpen)}>
@@ -9729,7 +10014,7 @@ export default function LittleFires() {
                                           setCurrentList(item.list);
                                           setSelectedDate(null);
                                           setTimeout(() => {
-                                            setExpandedTaskId(`${item.list}-${taskIndex}`);
+                                            setExpandedTaskId(`${item.list}-${item.data.id}`);
                                           }, 100);
                                         }
                                       }}
@@ -14018,24 +14303,54 @@ export default function LittleFires() {
                   <div style={card}>
                     <div style={heading}>Lists</div>
                     <div style={sub}>
-                      Rename your lists, or switch them off to hide them. Hidden lists are
-                      removed from the tabs and excluded from the All Tasks roll-up — their
-                      tasks are kept, not deleted.
+                      Reorder, rename, or switch off your lists. Hidden lists are removed
+                      from the tabs and excluded from the All Tasks roll-up — their tasks
+                      are kept, not deleted.
                     </div>
 
-                    {TASK_LISTS.map(key => {
+                    {orderedTaskLists.map((key, idx) => {
                       const hidden = isListHidden(key);
                       const count = (allLists[key] || []).filter(t => !t.completed).length;
+                      const isDragging = draggingList === key;
+                      const isDragTarget = dragOverList === key && draggingList && draggingList !== key;
                       return (
                         <div
                           key={key}
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggingList(key);
+                            e.dataTransfer.effectAllowed = 'move';
+                            // Firefox needs data set or the drag never starts
+                            e.dataTransfer.setData('text/plain', key);
+                          }}
+                          onDragOver={(e) => { e.preventDefault(); setDragOverList(key); }}
+                          onDragLeave={() => setDragOverList(prev => (prev === key ? null : prev))}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (draggingList) reorderList(draggingList, key);
+                            setDraggingList(null);
+                            setDragOverList(null);
+                          }}
+                          onDragEnd={() => { setDraggingList(null); setDragOverList(null); }}
                           style={{
-                            display: 'flex', alignItems: 'center', gap: '12px',
+                            display: 'flex', alignItems: 'center', gap: '10px',
                             padding: '10px 0', flexWrap: 'wrap',
                             borderBottom: '1px solid rgba(255,255,255,0.05)',
-                            opacity: hidden ? 0.55 : 1, transition: 'opacity 0.2s ease'
+                            borderTop: isDragTarget ? '2px solid rgba(var(--accent-rgb), 0.9)' : '2px solid transparent',
+                            opacity: isDragging ? 0.4 : (hidden ? 0.55 : 1),
+                            transition: 'opacity 0.2s ease'
                           }}
                         >
+                          <span
+                            title="Drag to reorder"
+                            style={{
+                              cursor: 'grab', color: '#b8a99a', fontSize: '1rem',
+                              lineHeight: 1, userSelect: 'none', flexShrink: 0
+                            }}
+                          >
+                            ⠿
+                          </span>
+
                           <input
                             type="text"
                             value={(settings.listLabels && settings.listLabels[key]) ?? DEFAULT_LIST_LABELS[key]}
@@ -14045,27 +14360,70 @@ export default function LittleFires() {
                             })}
                             placeholder={DEFAULT_LIST_LABELS[key]}
                             maxLength={18}
+                            // Dragging the row shouldn't start from the text field
+                            draggable={false}
+                            onMouseDown={(e) => e.stopPropagation()}
                             style={{
-                              flex: 1, minWidth: '120px', padding: '9px 10px',
+                              flex: 1, minWidth: '110px', padding: '9px 10px',
                               background: 'rgba(42, 42, 62, 1)',
                               border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '8px', color: '#f4e8d8', fontSize: '0.92rem',
                               fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
                             }}
                           />
+
                           <span style={{
                             color: '#b8a99a', fontSize: '0.75rem',
-                            fontFamily: 'Quicksand, sans-serif', minWidth: '54px'
+                            fontFamily: 'Quicksand, sans-serif', minWidth: '48px'
                           }}>
                             {count} open
                           </span>
+
+                          {/* Arrows aren't decoration: HTML5 drag doesn't work on
+                              touch devices at all, and dragging is unusable with a
+                              keyboard. These are the accessible path. */}
+                          <span style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                            <button
+                              onClick={() => moveList(key, -1)}
+                              disabled={idx === 0}
+                              title="Move up"
+                              style={{
+                                width: '30px', height: '30px', borderRadius: '7px',
+                                background: 'rgba(42, 42, 62, 1)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                color: idx === 0 ? '#55556a' : '#f4e8d8',
+                                cursor: idx === 0 ? 'default' : 'pointer',
+                                fontSize: '0.7rem', padding: 0, lineHeight: 1
+                              }}
+                            >
+                              ▲
+                            </button>
+                            <button
+                              onClick={() => moveList(key, 1)}
+                              disabled={idx === orderedTaskLists.length - 1}
+                              title="Move down"
+                              style={{
+                                width: '30px', height: '30px', borderRadius: '7px',
+                                background: 'rgba(42, 42, 62, 1)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                color: idx === orderedTaskLists.length - 1 ? '#55556a' : '#f4e8d8',
+                                cursor: idx === orderedTaskLists.length - 1 ? 'default' : 'pointer',
+                                fontSize: '0.7rem', padding: 0, lineHeight: 1
+                              }}
+                            >
+                              ▼
+                            </button>
+                          </span>
+
                           <Toggle on={!hidden} onChange={() => toggleListVisibility(key)} />
                         </div>
                       );
                     })}
 
                     <div style={{ ...hint, marginTop: '12px' }}>
-                      Leave a name blank to restore its default. At least one list must stay on.
+                      Drag the handle to reorder, or use the arrows. The order applies to
+                      the tabs, All Tasks, and Reports. Leave a name blank to restore its
+                      default. At least one list must stay on.
                     </div>
                   </div>
 
@@ -15119,5 +15477,139 @@ export default function LittleFires() {
         )}
       </div>
     </div>
+  );
+}
+
+// ---- Error boundary --------------------------------------------------------
+// Without this, one render exception white-screens the app with no way back.
+// Worse: because state is rehydrated from localStorage, a single bad value can
+// throw on every reload - an unrecoverable loop. This gives you your data back.
+class LittleFiresErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Little Fires crashed:', error, info);
+  }
+
+  // Read storage directly rather than app state - app state is what broke.
+  downloadRawData = () => {
+    try {
+      const keys = ['little_fires_lists', 'little_fires_archived', 'little_fires_notes',
+        'little_fires_projects', 'little_fires_goals', 'standaloneTimeLogs',
+        'little_fires_settings', 'little_fires_pre_import_backup'];
+      const dump = { app: 'little-fires', schemaVersion: 1, recoveredAt: new Date().toISOString(), data: {} };
+      keys.forEach(k => {
+        const raw = localStorage.getItem(k);
+        if (raw === null) return;
+        try { dump.data[k] = JSON.parse(raw); } catch { dump.data[k] = raw; }
+      });
+      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `little-fires-recovery-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      window.alert('Could not export: ' + err.message);
+    }
+  };
+
+  // Last resort for a reload loop caused by one corrupted value.
+  clearAndReload = () => {
+    const ok = window.confirm(
+      'This erases all Little Fires data in this browser.\n\n' +
+      'Download your data first if you haven\'t. Continue?'
+    );
+    if (!ok) return;
+    try {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith('little_fires') || k === 'standaloneTimeLogs')
+        .forEach(k => localStorage.removeItem(k));
+    } catch (_) {}
+    window.location.reload();
+  };
+
+  render() {
+    if (!this.state.error) return this.props.children;
+
+    const btn = {
+      padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+      fontFamily: 'Quicksand, sans-serif', fontSize: '0.9rem', fontWeight: 600
+    };
+
+    return (
+      <div style={{
+        minHeight: '100vh', background: 'linear-gradient(135deg, #1a1a2e 0%, #2d2d44 100%)',
+        color: '#f4e8d8', fontFamily: 'Quicksand, sans-serif',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px'
+      }}>
+        <div style={{
+          maxWidth: '520px', background: 'rgba(52, 52, 72, 0.5)',
+          border: '2px solid rgba(255, 107, 107, 0.4)', borderRadius: '14px', padding: '26px'
+        }}>
+          <h2 style={{ margin: '0 0 10px', fontSize: '1.35rem' }}>Something broke</h2>
+          <p style={{ color: '#b8a99a', fontSize: '0.9rem', lineHeight: 1.6, margin: '0 0 18px' }}>
+            The app hit an error it couldn't recover from. Your data is still in this
+            browser and untouched. Download a copy before anything else — then try
+            reloading.
+          </p>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '18px' }}>
+            <button onClick={this.downloadRawData} style={{
+              ...btn, background: 'linear-gradient(135deg, #53745f, #6a8f76)',
+              border: '1px solid rgba(83, 116, 95, 0.5)', color: '#fff'
+            }}>
+              Download My Data
+            </button>
+            <button onClick={() => window.location.reload()} style={{
+              ...btn, background: 'rgba(42, 42, 62, 1)',
+              border: '2px solid rgba(83, 116, 95, 0.4)', color: '#f4e8d8'
+            }}>
+              Reload
+            </button>
+            <button onClick={this.clearAndReload} style={{
+              ...btn, background: 'rgba(42, 42, 62, 1)',
+              border: '2px solid rgba(255, 107, 107, 0.4)', color: '#ff8f8f'
+            }}>
+              Reset App
+            </button>
+          </div>
+
+          <details style={{ color: '#b8a99a', fontSize: '0.78rem' }}>
+            <summary style={{ cursor: 'pointer', marginBottom: '8px' }}>Error details</summary>
+            <pre style={{
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0,
+              padding: '10px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px',
+              fontSize: '0.72rem', maxHeight: '180px', overflow: 'auto'
+            }}>
+              {String(this.state.error && (this.state.error.stack || this.state.error.message || this.state.error))}
+            </pre>
+          </details>
+
+          <p style={{ color: '#8a8a9a', fontSize: '0.75rem', margin: '16px 0 0', lineHeight: 1.5 }}>
+            "Reset App" erases everything stored here. Only use it if reloading keeps
+            failing, and download your data first.
+          </p>
+        </div>
+      </div>
+    );
+  }
+}
+
+export default function LittleFires() {
+  return (
+    <LittleFiresErrorBoundary>
+      <LittleFiresApp />
+    </LittleFiresErrorBoundary>
   );
 }

@@ -1,6 +1,6 @@
 # Little Fires — Project Handoff
 
-Paste this at the start of a new chat along with `little-fires-app.jsx`.
+Read this first. Repo: github.com/Bigtobydog8/little-fires
 
 ---
 

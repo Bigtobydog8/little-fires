@@ -8,7 +8,7 @@ import React, { useState, useEffect } from 'react';
 // highlighted value (today) as it tears the sheet down. A React-rendered
 // calendar has no overlay to lose: worst case it simply closes, and it can
 // never write a date the user didn't tap.
-function InlineDatePicker({ value, onChange }) {
+function InlineDatePicker({ value, onChange, style }) {
   const [open, setOpen] = React.useState(false);
   const parse = (v) => {
     if (!v) return null;
@@ -40,25 +40,57 @@ function InlineDatePicker({ value, onChange }) {
   });
 
   const stop = (e) => { e.stopPropagation(); };
+  // The app has a global `button` rule: accent gradient, uppercase text,
+  // letter-spacing, an accent-coloured glow and a lift on hover. Every control
+  // in this picker is a plain field or a bare text button, so each one starts
+  // from this reset. `transform` is pinned here because the global :hover rule
+  // lifts buttons - a pseudo-class can't beat an inline style, so this is what
+  // holds the field still.
+  const btnReset = {
+    boxShadow: 'none',
+    textTransform: 'none',
+    letterSpacing: 'normal',
+    fontWeight: 500,
+    transform: 'none'
+  };
+  // 44px is the iOS minimum comfortable touch target. These controls were
+  // roughly 20px tall, which is a real miss on a phone-first app. Centring the
+  // glyph keeps them looking the same size as before.
+  const tapTarget = {
+    minWidth: '44px', minHeight: '44px', padding: 0,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
+  };
+  // Matched to .project-selector and the app's text inputs so this sits in a
+  // row with them without looking like a different kind of control.
   const field = {
-    padding: '8px 12px', background: 'rgba(42, 42, 62, 0.8)',
-    border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
-    color: value ? '#f4e8d8' : '#8a8a9a', fontFamily: 'Quicksand, sans-serif',
-    fontSize: '0.9rem', cursor: 'pointer', minWidth: '132px', textAlign: 'left'
+    ...btnReset,
+    padding: '10px 12px', background: 'rgba(42, 42, 62, 0.8)',
+    backdropFilter: 'blur(10px)',
+    border: '2px solid rgba(var(--accent-rgb), 0.2)', borderRadius: '20px',
+    boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+    color: value ? '#f4e8d8' : '#8a8a9a', fontFamily: "'Nunito', sans-serif",
+    fontSize: '0.95rem', cursor: 'pointer', minWidth: '132px', textAlign: 'left',
+    // When a caller sizes the wrapper (width, flex, etc), the button should
+    // fill it rather than sitting at its natural content width inside it.
+    ...(style ? { width: '100%' } : {})
   };
 
   return (
-    <span style={{ position: 'relative', display: 'inline-block' }}
+    <span style={{ position: 'relative', display: 'inline-block', ...style }}
       onMouseDown={stop} onTouchStart={stop} onClick={stop}>
       <button type="button" style={field} onClick={(e) => { stop(e); setOpen(o => !o); }}>
         {selected ? selected.toLocaleDateString('en-US',
-          { month: 'short', day: 'numeric', year: 'numeric' }) : 'Set date'}
+          { month: 'short', day: 'numeric', year: 'numeric' })
+          /* No placeholder text - an unset field reads as empty, like the
+             other inputs. The non-breaking space keeps the button from
+             collapsing to zero height when there's nothing to show. */
+          : '\u00A0'}
       </button>
       {value && (
-        <button type="button" title="Clear date"
+        <button type="button" title="Clear date" aria-label="Clear date"
           onClick={(e) => { stop(e); onChange(''); setOpen(false); }}
-          style={{ background: 'transparent', border: 'none', color: '#8a8a9a',
-            cursor: 'pointer', fontSize: '1rem', padding: '0 6px' }}>×</button>
+          style={{ ...btnReset, background: 'transparent', border: 'none', color: '#8a8a9a',
+            cursor: 'pointer', fontSize: '1rem', ...tapTarget }}>×</button>
       )}
 
       {open && (
@@ -72,15 +104,17 @@ function InlineDatePicker({ value, onChange }) {
         }}>
           <div style={{ display: 'flex', alignItems: 'center',
             justifyContent: 'space-between', marginBottom: '8px' }}>
-            <button type="button" onClick={(e) => { stop(e); shiftMonth(-1); }}
-              style={{ background: 'transparent', border: 'none', color: '#f4e8d8',
-                cursor: 'pointer', fontSize: '1.1rem', padding: '2px 8px' }}>‹</button>
+            <button type="button" aria-label="Previous month"
+              onClick={(e) => { stop(e); shiftMonth(-1); }}
+              style={{ ...btnReset, background: 'transparent', border: 'none', color: '#f4e8d8',
+                cursor: 'pointer', fontSize: '1.1rem', ...tapTarget }}>‹</button>
             <span style={{ color: '#f4e8d8', fontSize: '0.85rem', fontWeight: 600 }}>
               {MONTHS[view.month]} {view.year}
             </span>
-            <button type="button" onClick={(e) => { stop(e); shiftMonth(1); }}
-              style={{ background: 'transparent', border: 'none', color: '#f4e8d8',
-                cursor: 'pointer', fontSize: '1.1rem', padding: '2px 8px' }}>›</button>
+            <button type="button" aria-label="Next month"
+              onClick={(e) => { stop(e); shiftMonth(1); }}
+              style={{ ...btnReset, background: 'transparent', border: 'none', color: '#f4e8d8',
+                cursor: 'pointer', fontSize: '1.1rem', ...tapTarget }}>›</button>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px' }}>
@@ -96,6 +130,7 @@ function InlineDatePicker({ value, onChange }) {
                 <button key={d} type="button"
                   onClick={(e) => { stop(e); onChange(toValue(view.year, view.month, d)); setOpen(false); }}
                   style={{
+                    ...btnReset,
                     padding: '6px 0', borderRadius: '7px', cursor: 'pointer',
                     fontSize: '0.8rem', fontFamily: 'Quicksand, sans-serif',
                     border: isToday(d) && !sel ? '1px solid rgba(var(--accent-rgb), 0.6)' : '1px solid transparent',
@@ -115,12 +150,12 @@ function InlineDatePicker({ value, onChange }) {
                 onChange(toValue(t.getFullYear(), t.getMonth(), t.getDate()));
                 setOpen(false);
               }}
-              style={{ background: 'transparent', border: 'none', color: 'var(--accent-light)',
+              style={{ ...btnReset, background: 'transparent', border: 'none', color: 'var(--accent-light)',
                 cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'Quicksand, sans-serif' }}>
               Today
             </button>
             <button type="button" onClick={(e) => { stop(e); setOpen(false); }}
-              style={{ background: 'transparent', border: 'none', color: '#8a8a9a',
+              style={{ ...btnReset, background: 'transparent', border: 'none', color: '#8a8a9a',
                 cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'Quicksand, sans-serif' }}>
               Close
             </button>
@@ -128,6 +163,112 @@ function InlineDatePicker({ value, onChange }) {
         </div>
       )}
     </span>
+  );
+}
+
+// Monochrome calendar glyph, drawn deliberately without a date number. It
+// replaces the 📅 emoji, which most platforms render with a fixed date baked
+// into the artwork (July 17 on iOS) - sitting immediately before a real due
+// date, that reads as a second, contradictory date. Stroked with currentColor
+// so it inherits whatever the surrounding text is doing, including turning red
+// alongside overdue dates.
+function CalendarIcon({ size = 13 }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16"
+      fill="none" stroke="currentColor" strokeWidth="1.5"
+      strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ verticalAlign: '-1px', flexShrink: 0 }}
+    >
+      <rect x="2" y="3.5" width="12" height="10.5" rx="2" />
+      <path d="M2 7.25h12" />
+      <path d="M5.5 2v3" />
+      <path d="M10.5 2v3" />
+    </svg>
+  );
+}
+
+// Companions to CalendarIcon, for the same reason: emoji are full-colour, vary
+// by platform, and sit oddly beside the app's flat cream-on-navy palette. All
+// stroke with currentColor so they inherit their surrounding text.
+function IconBase({ size = 13, children }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16"
+      fill="none" stroke="currentColor" strokeWidth="1.5"
+      strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ verticalAlign: '-1px', flexShrink: 0 }}
+    >
+      {children}
+    </svg>
+  );
+}
+
+// Replaces 📦 on archived items.
+function ArchiveIcon(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="1.75" y="2.25" width="12.5" height="3.5" rx="1" />
+      <path d="M3 5.75v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
+      <path d="M6.5 8.5h3" />
+    </IconBase>
+  );
+}
+
+// Replaces 🏗️ on project rows.
+function ProjectIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M8 1.75 14.25 5 8 8.25 1.75 5 8 1.75Z" />
+      <path d="M1.75 8 8 11.25 14.25 8" />
+      <path d="M1.75 11 8 14.25 14.25 11" />
+    </IconBase>
+  );
+}
+
+// Replaces 📷 on notes carrying images.
+function ImageIcon(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="1.75" y="3" width="12.5" height="10" rx="2" />
+      <circle cx="5.75" cy="6.5" r="1.15" />
+      <path d="M2.25 11.5 5.75 8.5l3 2.5 2.25-1.75 2.75 2.25" />
+    </IconBase>
+  );
+}
+
+// Replaces ☑ on the details toolbar. U+2611 gets emoji presentation on iOS,
+// so it rendered as a coloured glyph next to two plain text buttons.
+function CheckboxIcon(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="2" y="2" width="12" height="12" rx="2.5" />
+      <path d="M5 8.25 7.25 10.5 11 6.25" />
+    </IconBase>
+  );
+}
+
+// Replaces 🔥 as a priority marker. Filled rather than stroked, and kept in the
+// app's existing priority orange - the colour is the signal here, so unlike the
+// others this one doesn't inherit currentColor.
+function FlameIcon({ size = 13 }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16"
+      aria-hidden="true"
+      style={{ verticalAlign: '-2px', flexShrink: 0 }}
+    >
+      <path
+        d="M8 1.5c.4 2-1 3-2.2 4.3C4.5 7.1 3.75 8.4 3.75 10a4.25 4.25 0 0 0 8.5 0c0-2.1-1.1-3.4-2.3-4.8-.6-.7-1.1-1.4-1.2-2.2-.3.5-.7.9-1.1 1.3.2-1 .3-1.9.35-2.8Z"
+        fill="#FF8C42"
+      />
+      <path
+        d="M8 8c.3 1-.5 1.6-1 2.2-.35.4-.5.8-.5 1.3a1.75 1.75 0 0 0 3.5 0c0-.9-.5-1.5-1-2.1-.4-.5-.8-.9-1-1.4Z"
+        fill="#FFD93D"
+      />
+    </svg>
   );
 }
 
@@ -302,6 +443,10 @@ function LittleFiresApp() {
   // The canonical task lists. These keys are also the storage keys, so they
   // never change - renaming only affects the display label.
   const BUILT_IN_LISTS = ['personal', 'work', 'home', 'travel', 'kids', 'partner'];
+  // The one list whose tasks are shared with a partner. Keyed off the storage
+  // key, not the display label, so renaming the list in Settings can't detach
+  // the shared behaviour from it.
+  const SHARED_LIST_KEY = 'partner';
   const MAX_LISTS = 10;
   // Colours offered to new lists, in order. Chosen to stay distinguishable
   // against each other and the dark background in the Reports legend.
@@ -372,6 +517,15 @@ function LittleFiresApp() {
     document.body.classList.toggle('reduce-motion', !!settings.reduceMotion);
     return () => document.body.classList.remove('reduce-motion');
   }, [settings.reduceMotion]);
+
+  // The CSS guards cover anything driven by a transition or keyframe, but not
+  // motion started from JS - scrollIntoView({behavior:'smooth'}) ignores them
+  // entirely. Checked here so both the OS setting and the in-app toggle apply.
+  const prefersReducedMotion = () =>
+    !!settings.reduceMotion ||
+    (typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
   // ---- Backup: export / import -------------------------------------------
   // The export is a plain, versioned JSON file. Versioning matters: without it
@@ -1051,12 +1205,21 @@ function LittleFiresApp() {
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [showToDoSection, setShowToDoSection] = useState(true);
   const [showBacklogSection, setShowBacklogSection] = useState(true);
-  const [showPersonalTasks, setShowPersonalTasks] = useState(true);
-  const [showWorkTasks, setShowWorkTasks] = useState(true);
-  const [showHomeTasks, setShowHomeTasks] = useState(true);
-  const [showTravelTasks, setShowTravelTasks] = useState(true);
-  const [showKidsTasks, setShowKidsTasks] = useState(true);
-  const [showPartnerTasks, setShowPartnerTasks] = useState(true);
+  // Which task lists are collapsed in the All Tasks view. Keyed by list key,
+  // so custom lists behave like built-ins - this previously used six hardcoded
+  // booleans, which meant any custom list could never expand and clicking its
+  // header called undefined. Absent or false means expanded.
+  const [collapsedLists, setCollapsedLists] = useState({});
+  const toggleList = (key) =>
+    setCollapsedLists(prev => ({ ...prev, [key]: !prev[key] }));
+  // Collapse everything if anything is still open, otherwise reopen everything.
+  // Clearing the object rather than writing false keeps expanded as the default.
+  const toggleAllLists = () => {
+    const anyOpen = visibleTaskLists.some(k => !collapsedLists[k]);
+    setCollapsedLists(anyOpen
+      ? Object.fromEntries(visibleTaskLists.map(k => [k, true]))
+      : {});
+  };
   const [showPersonalGoals, setShowPersonalGoals] = useState(true);
   const [showWorkGoals, setShowWorkGoals] = useState(true);
   const [showHomeGoals, setShowHomeGoals] = useState(true);
@@ -1464,6 +1627,23 @@ function LittleFiresApp() {
     setAllLists(prev => {
       const newLists = { ...prev };
       newLists[listName][index].priority = priority;
+      return newLists;
+    });
+  };
+
+  // --- Shared-task assignment (Partner sync groundwork) ---------------------
+  // 'me' / 'partner' are placeholders for the real Firebase uids that will
+  // exist once sync ships - swapping this over later is a string comparison
+  // change, not a redesign. Cycle: unassigned -> me -> partner -> unassigned.
+  const cycleAssignment = (listName, index) => {
+    setAllLists(prev => {
+      const newLists = { ...prev };
+      const target = newLists[listName][index];
+      if (!target) return prev;
+      const next = target.assignedTo === 'me' ? 'partner'
+        : target.assignedTo === 'partner' ? null
+        : 'me';
+      target.assignedTo = next;
       return newLists;
     });
   };
@@ -2662,7 +2842,34 @@ function LittleFiresApp() {
     const dueDateText = dueDate ? dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
     const createdDate = task.createdAt ? new Date(task.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
     const completedDate = task.completedAt ? new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    
+
+    // --- Shared-task attribution (Partner sync groundwork) -----------------
+    // Every task in the shared list gets this treatment automatically - there
+    // is no per-task opt-in, because being in that list IS what makes a task
+    // shared. Holds in All Tasks too, since the real listName is passed there.
+    const isSharedTask = listName === SHARED_LIST_KEY;
+    // Tasks that predate sync carry no createdBy. They were all created on this
+    // device, so they are yours - without this fallback they'd read as nobody's
+    // and the delete button would vanish from tasks you created yourself.
+    const sharedCreatedBy = task.createdBy || 'me';
+    // `key` drives styling, `label` is what's shown - kept separate so the
+    // displayed text can change without the CSS class following it.
+    const badgeFor = (who) => {
+      if (who === 'me') return { key: 'you', label: 'You' };
+      if (who === 'partner') return { key: 'partner', label: 'Partner' };
+      return null;
+    };
+    // Incomplete: badge shows who it's assigned to (creator, if unassigned).
+    // Complete: badge shows who actually did it - the point of a shared list.
+    const sharedBadge = isSharedTask
+      ? (task.completed
+          ? badgeFor(task.completedBy || sharedCreatedBy)
+          : badgeFor(task.assignedTo || sharedCreatedBy))
+      : null;
+    // Delete is restricted to creator or assignee for shared tasks; unassigned
+    // shared tasks fall back to creator-only. Personal tasks are unaffected.
+    const canDeleteShared = !isSharedTask || sharedCreatedBy === 'me' || task.assignedTo === 'me';
+
     const isExpanded = expandedTaskId === `${listName}-${task.id}`;
     const taskRef = React.useRef(null);
     const detailsRef = React.useRef(null);
@@ -2935,7 +3142,12 @@ function LittleFiresApp() {
             // Focus the details area to enable editing if needed.
             // Do NOT stopPropagation - it would block delegated listeners.
             if (document.activeElement !== detailsArea) {
-              detailsArea.focus();
+              // preventScroll matters on a long checklist: focus() defaults to
+              // scrolling the focused element into view, and the element here
+              // is the whole details container. Checking a box near the bottom
+              // would yank the page back to the container's top - the "lost my
+              // place" jump. The caret still lands correctly without it.
+              detailsArea.focus({ preventScroll: true });
             }
           };
           checkbox.onchange = null;
@@ -3118,12 +3330,27 @@ function LittleFiresApp() {
               </div>
             )}
 
-            <div className="task-meta">
-              {dueDate && !task.completed && (
-                <span className={`task-due-date ${isOverdue ? 'overdue' : ''}`}>📅 {dueDateText}</span>
-              )}
-            </div>
+            {/* Only rendered when there's something to show. As an
+                unconditional div it still contributed its margin and line
+                box, padding out every task that had no due date. */}
+            {dueDate && !task.completed && (
+              <div className="task-meta">
+                <span className={`task-due-date ${isOverdue ? 'overdue' : ''}`}><CalendarIcon /> {dueDateText}</span>
+              </div>
+            )}
           </div>
+          {/* A direct child of .task-main rather than of .task-content, so it
+              isn't stacked under the title. align-self:flex-start (in the CSS)
+              pins it to the task's first line; margin-left:auto pushes it to
+              the right edge. */}
+          {sharedBadge && (
+            <span
+              className={`shared-badge ${sharedBadge.key}`}
+              title={task.completed ? `Completed by ${sharedBadge.label}` : `Assigned to ${sharedBadge.label}`}
+            >
+              {sharedBadge.label}
+            </span>
+          )}
           {task.priority === 'high' && (
             <span className="pinned-flame-right">
               <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" style={{width: '20px', height: '20px', display: 'inline-block'}}>
@@ -3138,6 +3365,27 @@ function LittleFiresApp() {
 
         {isExpanded && (
           <div className="task-details-section">
+            {/* First field in the expanded view: on a shared list, who owns
+                this task is the thing you want to see before the notes. */}
+            {isSharedTask && (
+              <div className="assign-field">
+                <label className="details-label" style={{ margin: 0 }}>Assigned:</label>
+                <button
+                  type="button"
+                  className={`assign-pill ${task.assignedTo || 'unassigned'}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    cycleAssignment(listName, index);
+                  }}
+                  title="Tap to reassign"
+                >
+                  {task.assignedTo === 'me' ? 'You'
+                    : task.assignedTo === 'partner' ? 'Partner'
+                    : 'Unassigned'}
+                </button>
+              </div>
+            )}
+
             <label className="details-label">Details</label>
             <div className="richtext-toolbar" onClick={(e) => e.stopPropagation()}>
               <button 
@@ -3249,7 +3497,7 @@ function LittleFiresApp() {
                 }}
                 title="Insert Checkbox"
               >
-                ☑ Box
+                <CheckboxIcon />Box
               </button>
               <button 
                 className="toolbar-btn"
@@ -3284,8 +3532,15 @@ function LittleFiresApp() {
                   e.stopPropagation();
                   
                   const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                  // One Follow Up section per task. The heading is tagged with
+                  // its own class and that survives into the saved HTML, so its
+                  // presence is the check - and it holds for a task reopened
+                  // later, not just within this editing session. Bailing before
+                  // focus() keeps a repeat press a true no-op: no cursor jump,
+                  // no scroll, nothing.
+                  if (!detailsArea || detailsArea.querySelector('.follow-up-heading')) return;
                   detailsArea.focus();
-                  
+
                   // Build a "Follow Up" heading line with the matcha underline
                   const heading = document.createElement('div');
                   heading.className = 'follow-up-heading';
@@ -3596,37 +3851,19 @@ function LittleFiresApp() {
             <div className="date-project-row">
               <div className="due-date-display">
                 <label className="details-label" style={{ margin: 0 }}>Due Date:</label>
-                <input
-                  type="date"
-                  // Uncontrolled: React sets the value once at mount and never
-                  // rewrites it. A controlled value gets re-applied on every
-                  // parent render, which can disturb an open native picker -
-                  // especially inside a sandboxed iframe. keyed on the task so
-                  // it still refreshes if the task itself changes.
-                  key={`due-${task.id}`}
-                  defaultValue={task.dueDate || ''}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    updateTaskDueDate(listName, index, e.target.value);
-                    // A value came back, so the picker is done with
-                    pickerActiveRef.current = false;
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  // The collapse handler listens on mousedown, which onClick's
-                  // stopPropagation doesn't cover
-                  onMouseDown={(e) => { e.stopPropagation(); pickerActiveRef.current = true; }}
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    pickerActiveRef.current = true;
-                    if (pickerResetRef.current) clearTimeout(pickerResetRef.current);
-                    pickerResetRef.current = setTimeout(() => { pickerActiveRef.current = false; }, 45000);
-                  }}
-                  onFocus={() => { pickerActiveRef.current = true; }}
-                  // Deliberately NOT cleared on blur: iOS blurs the input the
-                  // moment it presents the picker sheet, so clearing here would
-                  // disarm the guard while the picker is still open. It's cleared
-                  // when a value is actually committed, with a long fallback so
-                  // collapse can't be blocked forever.
+                {/* Was a native <input type="date">. On iOS the picker is a
+                    browser overlay bound to a DOM node, and this app re-creates
+                    task rows on parent renders - when the node is swapped
+                    mid-interaction iOS commits the highlighted value (today)
+                    and tears the sheet down, which is the "sets today and
+                    closes on first tap" bug. InlineDatePicker is React-rendered,
+                    so there is no overlay to lose and it can only ever write a
+                    date that was actually tapped. It also carries its own clear
+                    button, which the native field had no reliable equivalent
+                    for. */}
+                <InlineDatePicker
+                  value={task.dueDate || ''}
+                  onChange={(v) => updateTaskDueDate(listName, index, v)}
                 />
               </div>
 
@@ -3719,15 +3956,17 @@ function LittleFiresApp() {
                   Archive
                 </button>
               )}
-              <button
-                className="delete-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteTask(listName, index);
-                }}
-              >
-                Delete
-              </button>
+              {canDeleteShared && (
+                <button
+                  className="delete-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteTask(listName, index);
+                  }}
+                >
+                  Delete
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -4061,24 +4300,6 @@ function LittleFiresApp() {
     if (currentList === 'master') {
       const listNames = visibleTaskLists;
       const listLabels = Object.fromEntries(TASK_LISTS.map(k => [k, listSectionLabel(k)]));
-      
-      const showStates = {
-        personal: showPersonalTasks,
-        work: showWorkTasks,
-        home: showHomeTasks,
-        travel: showTravelTasks,
-        kids: showKidsTasks,
-        partner: showPartnerTasks
-      };
-      
-      const toggleStates = {
-        personal: setShowPersonalTasks,
-        work: setShowWorkTasks,
-        home: setShowHomeTasks,
-        travel: setShowTravelTasks,
-        kids: setShowKidsTasks,
-        partner: setShowPartnerTasks
-      };
 
       let hasAnyTasks = false;
       const sections = listNames.map(listName => {
@@ -4097,13 +4318,13 @@ function LittleFiresApp() {
           <div key={listName} className="list-section">
             <div 
               className="list-section-header"
-              onClick={() => toggleStates[listName](!showStates[listName])}
+              onClick={() => toggleList(listName)}
               style={{cursor: 'pointer'}}
             >
               <span>{listLabels[listName]}</span>
               <span className={`badge ${listName}`}>{tasks.length}</span>
             </div>
-            {showStates[listName] && (
+            {!collapsedLists[listName] && (
               <>
                 {tasks.map((task) => {
                   const actualIndex = task.isArchived 
@@ -4112,7 +4333,7 @@ function LittleFiresApp() {
                   return (
                     <div key={task.id} style={{position: 'relative'}}>
                       {task.isArchived && (
-                        <div className="archived-indicator">📦 Archived</div>
+                        <div className="archived-indicator"><ArchiveIcon /> Archived</div>
                       )}
                       <Task
                         key={task.id}
@@ -4480,7 +4701,7 @@ function LittleFiresApp() {
   return (
     <div className="little-fires-container">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700;800&display=swap');
 
         /* Theme tokens. Everything accent-colored resolves through these, so
            changing them recolors the whole app. --accent-rgb is kept as a raw
@@ -4789,70 +5010,16 @@ function LittleFiresApp() {
           min-width: 120px;
         }
 
-        input[type="date"],
         input[type="time"],
         select {
           color-scheme: dark;
         }
 
-        /* The little calendar glyph renders near-black by default, which
-           disappears against the dark field. */
-        input[type="date"]::-webkit-calendar-picker-indicator {
-          filter: invert(0.85) sepia(0.2) saturate(0.4);
-          cursor: pointer;
-          opacity: 0.75;
-          transition: opacity 0.2s ease;
-        }
-
-        input[type="date"]::-webkit-calendar-picker-indicator:hover {
-          opacity: 1;
-        }
-
-        input[type="date"] {
-          background: rgba(42, 42, 62, 0.8);
-          backdrop-filter: blur(10px);
-          border: 2px solid rgba(var(--accent-rgb), 0.2);
-          border-radius: 20px;
-          padding: 10px 12px;
-          color: #f4e8d8;
-          font-family: 'Nunito', sans-serif;
-          font-size: 0.95rem;
-          outline: none;
-          transition: all 0.3s ease;
-          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-          box-sizing: border-box;
-          cursor: pointer;
-        }
-
-        input[type="date"]::-webkit-datetime-edit-text,
-        input[type="date"]::-webkit-datetime-edit-month-field,
-        input[type="date"]::-webkit-datetime-edit-day-field,
-        input[type="date"]::-webkit-datetime-edit-year-field {
-          color: #f4e8d8;
-        }
-
-        input[type="date"]:invalid {
-          color: #b8a99a;
-        }
-
-        input[type="date"]::before {
-          content: 'Due Date';
-          color: #b8a99a;
-          opacity: 0.6;
-        }
-
-        input[type="date"]:focus::before,
-        input[type="date"]:valid::before {
-          content: '';
-        }
+        /* No native date inputs remain - every date field in the app now uses
+           the React InlineDatePicker. The block of -webkit-calendar-picker /
+           datetime-edit styling that used to live here went with them. */
 
         input[type="text"]:focus {
-          border-color: var(--accent);
-          box-shadow: 0 0 30px rgba(var(--accent-rgb), 0.4);
-          transform: translateY(-2px);
-        }
-
-        input[type="date"]:focus {
           border-color: var(--accent);
           box-shadow: 0 0 30px rgba(var(--accent-rgb), 0.4);
           transform: translateY(-2px);
@@ -5265,7 +5432,11 @@ function LittleFiresApp() {
         .task-text {
           color: #f4e8d8;
           font-size: 1rem;
-          font-weight: 500;
+          /* 600 (semibold), not 700 - present enough to read as the primary
+             thing on the card without going fully bold. Note the font import
+             loads Nunito at 400/600/700/800 only: the previous 500 wasn't
+             among them, so it was rendering as plain 400. */
+          font-weight: 600;
           word-break: break-word;
         }
 
@@ -5327,9 +5498,89 @@ function LittleFiresApp() {
           gap: 4px;
         }
 
+        /* Overdue dates use the same cream tone as any other date - the red
+           read as an error state. Weight is the only remaining signal; drop
+           the font-weight line to remove that too. The CalendarIcon strokes
+           with currentColor, so it follows this automatically. */
         .task-due-date.overdue {
-          color: #ff6b6b;
+          color: #b8a99a;
           font-weight: 600;
+        }
+
+        .shared-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          /* Sits on the task's first line, pushed to the right edge. Was a
+             fixed 20px circle holding one letter; now it holds a name, so it
+             sizes to its text. align-self overrides .task-main's centring -
+             without it the badge floats to the vertical middle of the card,
+             which on a task with a due date reads as sitting below the title.
+             The small margin-top optically centres it against the title's
+             first line rather than aligning their box tops. */
+          align-self: flex-start;
+          margin-top: 2px;
+          padding: 2px 10px;
+          border-radius: 10px;
+          margin-left: auto;
+          font-size: 0.7rem;
+          font-weight: 700;
+          flex-shrink: 0;
+        }
+
+        .shared-badge.you {
+          background: rgba(var(--accent-rgb), 0.25);
+          color: var(--accent-light);
+          border: 1px solid rgba(var(--accent-rgb), 0.5);
+        }
+
+        .shared-badge.partner {
+          background: rgba(244, 114, 182, 0.2);
+          color: #f472b6;
+          border: 1px solid rgba(244, 114, 182, 0.45);
+        }
+
+        .assign-field {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+
+        .assign-pill {
+          padding: 6px 12px;
+          border-radius: 14px;
+          font-size: 0.8rem;
+          font-family: 'Quicksand', sans-serif;
+          font-weight: 600;
+          cursor: pointer;
+          border: 1px solid rgba(var(--accent-rgb), 0.3);
+          background: rgba(42, 42, 62, 0.8);
+          color: #b8a99a;
+          /* The global button rule attaches an accent-coloured glow. This is a
+             field control, not a call to action, so it opts out - including on
+             hover, where that rule swaps in an even stronger one. The same rule
+             uppercases and letter-spaces button text; this reads as a value
+             beside its label, so it renders as written. */
+          box-shadow: none;
+          text-transform: none;
+          letter-spacing: normal;
+        }
+
+        .assign-pill:hover {
+          box-shadow: none;
+        }
+
+        .assign-pill.me {
+          background: rgba(var(--accent-rgb), 0.25);
+          color: var(--accent-light);
+          border-color: rgba(var(--accent-rgb), 0.5);
+        }
+
+        .assign-pill.partner {
+          background: rgba(244, 114, 182, 0.2);
+          color: #f472b6;
+          border-color: rgba(244, 114, 182, 0.45);
         }
 
         .task-details-section {
@@ -5451,14 +5702,22 @@ function LittleFiresApp() {
           background: rgba(42, 42, 62, 0.8);
           border: 2px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 8px;
-          transition: all 0.3s ease;
+          /* Was "all 0.3s", which included background-image. Gradients aren't
+             interpolable, so the checked fill snapped mid-transition while
+             everything else eased - part of what read as a flash. */
+          transition: border-color 0.2s ease, transform 0.2s ease;
           position: relative;
           flex-shrink: 0;
         }
 
-        .details-richtext .task-checkbox:hover {
-          border-color: rgba(var(--accent-rgb), 0.5);
-          transform: scale(1.1);
+        /* Hover-only devices. On touch, tapping latches :hover, so the box
+           would scale up and settle back on every tap - that's the flash.
+           A mouse still gets the effect. */
+        @media (hover: hover) {
+          .details-richtext .task-checkbox:hover {
+            border-color: rgba(var(--accent-rgb), 0.5);
+            transform: scale(1.1);
+          }
         }
 
         .details-richtext .task-checkbox:checked {
@@ -5567,6 +5826,15 @@ function LittleFiresApp() {
         }
 
         .toolbar-btn {
+          /* Laid out as a row rather than as inline content. Now that one of
+             these holds an SVG plus a label, inline layout gave the browser a
+             break opportunity between them and the icon ended up stacked above
+             the text. Flex items don't wrap against each other, so this is
+             single-line by construction; the gap replaces the literal space
+             that used to separate glyph from label. */
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
           padding: 6px 12px;
           background: rgba(var(--accent-rgb), 0.2);
           border: 1px solid rgba(var(--accent-rgb), 0.3);
@@ -6128,12 +6396,6 @@ function LittleFiresApp() {
           max-width: 100%;
         }
 
-        .project-date-field input[type="date"] {
-          flex: 1;
-          min-width: 0;
-          max-width: 100%;
-        }
-
         .project-date-label {
           font-family: 'Quicksand', sans-serif;
           font-size: 0.95rem;
@@ -6280,7 +6542,6 @@ function LittleFiresApp() {
         }
 
         .form-field input[type="text"],
-        .form-field input[type="date"],
         .form-field textarea {
           width: 100%;
           max-width: 100%;
@@ -6295,10 +6556,6 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
           box-sizing: border-box;
           min-width: 0;
-        }
-
-        .form-field input[type="date"] {
-          padding: 12px 8px;
         }
 
         .form-field textarea {
@@ -6908,6 +7165,10 @@ function LittleFiresApp() {
 
         .priority-badge {
           font-size: 1rem;
+          /* Holds an SVG now rather than a text glyph, so it needs to align
+             like a box instead of sitting on a text baseline. */
+          display: inline-flex;
+          align-items: center;
         }
 
         .project-badge {
@@ -7115,7 +7376,6 @@ function LittleFiresApp() {
           /* --- iOS zoom prevention ---
              Safari auto-zooms when focusing any field under 16px. */
           input[type="text"],
-          input[type="date"],
           input[type="number"],
           input[type="search"],
           textarea,
@@ -7214,6 +7474,42 @@ function LittleFiresApp() {
             margin: 14px 0;
           }
         }
+
+        /* --- Touch devices -------------------------------------------------
+           A tap on a touchscreen latches :hover on the element until you tap
+           somewhere else, so any hover rule that moves something makes it jump
+           and stay moved. Neutralising the movement here rather than editing
+           each rule keeps the hover effects intact for mouse users. This block
+           must stay last: it wins on source order, not specificity, so no
+           !important is needed.
+           Not listed: .details-richtext .task-checkbox:hover, which is already
+           wrapped in its own @media (hover: hover) guard. */
+        @media (hover: none) {
+          .hamburger-icon:hover,
+          .tab:hover,
+          .fire-flag-icon.clickable:hover,
+          .section-btn:hover,
+          .priority-btn:hover,
+          button:hover,
+          .fire-flag-btn:hover,
+          .task:not(.expanded):hover,
+          .delete-btn:hover,
+          .edit-btn:hover,
+          .remove-image-btn:hover,
+          .archived-task:hover,
+          .goal-card:hover,
+          .project-card:hover,
+          .cancel-project-btn:hover,
+          .delete-project-btn:hover,
+          .tag-pill:hover,
+          .tag-remove:hover,
+          .month-nav-btn:hover,
+          .calendar-day:not(.empty):hover,
+          .go-to-btn:hover,
+          .note-content .task-checkbox:hover {
+            transform: none;
+          }
+        }
       `}</style>
 
       <div className="container">
@@ -7230,6 +7526,7 @@ function LittleFiresApp() {
               <strong>Changes aren't being saved.</strong> {storageError}
             </div>
             <button
+              aria-label="Dismiss"
               onClick={() => setStorageError(null)}
               style={{
                 background: 'transparent', border: 'none', color: '#ff8f8f',
@@ -7243,7 +7540,19 @@ function LittleFiresApp() {
         )}
         {/* Hamburger Menu */}
         <div className="hamburger-menu">
-          <div className="hamburger-icon" onClick={() => setMenuOpen(!menuOpen)}>
+          <div
+            className="hamburger-icon"
+            // Same reasoning as the logo: clickable div, made focusable and
+            // announced. aria-expanded lets a screen reader convey menu state.
+            role="button"
+            tabIndex={0}
+            aria-label="Menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(!menuOpen)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setMenuOpen(!menuOpen); }
+            }}
+          >
             <div className="hamburger-line"></div>
             <div className="hamburger-line"></div>
             <div className="hamburger-line"></div>
@@ -7354,10 +7663,34 @@ function LittleFiresApp() {
               const ringSize = logoSize + 12;
               const ringMid = ringSize / 2;
               const ringR = ringMid - 6;
+              // Doubles as the home button and, once you're already on All
+              // Tasks, as a collapse/expand-all control for the list sections.
+              // Defined once here so the click handler, the keyboard handler
+              // and the label can't drift apart.
+              const onLogo = () => {
+                if (appMode === 'tasks' && currentList === 'master') {
+                  toggleAllLists();
+                } else {
+                  setAppMode('tasks');
+                  setCurrentList('master');
+                }
+              };
+              const logoLabel = appMode === 'tasks' && currentList === 'master'
+                ? (visibleTaskLists.some(k => !collapsedLists[k])
+                    ? 'Collapse all lists' : 'Expand all lists')
+                : 'Go to All Tasks';
               return (
             <div
-              onClick={() => { setAppMode('tasks'); setCurrentList('master'); }}
-              title="Go to All Tasks"
+              // A div with onClick is invisible to keyboard and screen reader
+              // users. These make it behave like the button it already is.
+              role="button"
+              tabIndex={0}
+              aria-label={logoLabel}
+              onClick={onLogo}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLogo(); }
+              }}
+              title={logoLabel}
               style={{
                 width: `${logoSize}px`,
                 height: `${logoSize}px`,
@@ -7465,12 +7798,8 @@ function LittleFiresApp() {
                 <button className="add-task-btn" onClick={addTask}>Add Task</button>
               </div>
               <div className="task-options">
-                <input
-                  type="date"
-                  value={dueDate}
-                  onChange={(e) => setDueDate(e.target.value)}
-                  title="Due Date"
-                />
+                {/* Same swap as the expanded-task field - see the note there. */}
+                <InlineDatePicker value={dueDate} onChange={setDueDate} />
                 <div className="fire-flag-selector">
                   <span 
                     className={`fire-flag-icon clickable ${selectedPriority === 'high' ? 'active' : ''}`}
@@ -7835,7 +8164,7 @@ function LittleFiresApp() {
                             }}
                             title="Insert Checkbox"
                           >
-                            ☑ Box
+                            <CheckboxIcon />Box
                           </button>
                           <button 
                             className="toolbar-btn"
@@ -7910,6 +8239,7 @@ function LittleFiresApp() {
                               <div key={img.id} className="note-image-container">
                                 <img src={img.data} alt="Note attachment" className="note-image" />
                                 <button 
+                                  aria-label="Remove image"
                                   className="remove-image-btn"
                                   onClick={() => removeImageFromNote(note.id, img.id)}
                                 >
@@ -8264,6 +8594,7 @@ function LittleFiresApp() {
                                     }}
                                   />
                                   <button 
+                                    aria-label="Remove photo"
                                     onClick={() => removeGalleryPhotoFromNote(note.id, photo.id)}
                                     style={{
                                       position: 'absolute',
@@ -8335,6 +8666,7 @@ function LittleFiresApp() {
                             />
                             {note.location && (
                               <button
+                                aria-label="Clear location"
                                 onClick={() => updateNoteLocation(note.id, '')}
                                 style={{
                                   background: 'transparent',
@@ -8359,6 +8691,7 @@ function LittleFiresApp() {
                               <span key={tag} className="note-tag">
                                 {tag}
                                 <button 
+                                  aria-label="Remove tag"
                                   className="tag-remove"
                                   onClick={() => removeTagFromNote(note.id, tag)}
                                 >
@@ -8609,18 +8942,18 @@ function LittleFiresApp() {
                       </div>
                       <div className="form-field" style={{width: '50%'}}>
                         <label>Start Date</label>
-                        <input
-                          type="date"
+                        <InlineDatePicker
                           value={projectFormData.startDate}
-                          onChange={(e) => setProjectFormData(prev => ({ ...prev, startDate: e.target.value }))}
+                          onChange={(v) => setProjectFormData(prev => ({ ...prev, startDate: v }))}
+                          style={{width: '100%'}}
                         />
                       </div>
                       <div className="form-field" style={{width: '50%'}}>
                         <label>End Date</label>
-                        <input
-                          type="date"
+                        <InlineDatePicker
                           value={projectFormData.endDate}
-                          onChange={(e) => setProjectFormData(prev => ({ ...prev, endDate: e.target.value }))}
+                          onChange={(v) => setProjectFormData(prev => ({ ...prev, endDate: v }))}
+                          style={{width: '100%'}}
                         />
                       </div>
                       <div className="modal-actions">
@@ -8761,7 +9094,7 @@ function LittleFiresApp() {
                                         <div className="project-meta">
                                           {(project.startDate || project.endDate) && (
                                             <span className="project-due-date">
-                                              📅 {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                              <CalendarIcon /> {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                               {project.startDate && project.endDate && ' - '}
                                               {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                             </span>
@@ -8853,7 +9186,7 @@ function LittleFiresApp() {
                             <div className="project-meta">
                               {(project.startDate || project.endDate) && (
                                 <span className="project-due-date">
-                                  📅 {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  <CalendarIcon /> {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                   {project.startDate && project.endDate && ' - '}
                                   {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                 </span>
@@ -9032,20 +9365,18 @@ function LittleFiresApp() {
                       <div className="project-dates-section" style={{marginBottom: '20px'}}>
                         <div className="project-date-field">
                           <label className="project-date-label">Start Date:</label>
-                          <input
-                            type="date"
+                          <InlineDatePicker
                             value={project.startDate || ''}
-                            onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { startDate: e.target.value })}
-                            className="date-picker"
+                            onChange={(v) => updateProject(selectedProject.listName, selectedProject.id, { startDate: v })}
+                            style={{flex: 1, minWidth: 0}}
                           />
                         </div>
                         <div className="project-date-field">
                           <label className="project-date-label">End Date:</label>
-                          <input
-                            type="date"
+                          <InlineDatePicker
                             value={project.endDate || ''}
-                            onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { endDate: e.target.value })}
-                            className="date-picker"
+                            onChange={(v) => updateProject(selectedProject.listName, selectedProject.id, { endDate: v })}
+                            style={{flex: 1, minWidth: 0}}
                           />
                         </div>
                       </div>
@@ -9140,6 +9471,7 @@ function LittleFiresApp() {
                                   }}
                                 />
                                 <button 
+                                  aria-label="Remove photo"
                                   onClick={() => removePhotoFromProject(selectedProject.listName, selectedProject.id, photo.id, 'beforePhotos')}
                                   style={{
                                     position: 'absolute',
@@ -9258,6 +9590,7 @@ function LittleFiresApp() {
                                   }}
                                 />
                                 <button 
+                                  aria-label="Remove photo"
                                   onClick={() => removePhotoFromProject(selectedProject.listName, selectedProject.id, photo.id, 'afterPhotos')}
                                   style={{
                                     position: 'absolute',
@@ -9503,12 +9836,10 @@ function LittleFiresApp() {
                             </div>
                           </div>
                           <div style={{display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '15px'}}>
-                            <input
-                              type="date"
+                            <InlineDatePicker
                               value={projectTaskDueDate}
-                              onChange={(e) => setProjectTaskDueDate(e.target.value)}
-                              className="date-picker"
-                              style={{width: isMobile ? '100%' : '50%', textAlign: 'left'}}
+                              onChange={(v) => setProjectTaskDueDate(v)}
+                              style={{width: isMobile ? '100%' : '50%'}}
                             />
                             <span 
                               className={`fire-flag-icon clickable ${projectTaskPriority === 'high' ? 'active' : ''}`}
@@ -9867,11 +10198,11 @@ function LittleFiresApp() {
         {appMode === 'calendar' && (
           <div className="calendar-section">
             <div className="calendar-header">
-              <button className="month-nav-btn" onClick={() => navigateMonth(-1)}>←</button>
+              <button className="month-nav-btn" aria-label="Previous month" onClick={() => navigateMonth(-1)}>←</button>
               <h2>
                 {new Date(currentYear, currentMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
               </h2>
-              <button className="month-nav-btn" onClick={() => navigateMonth(1)}>→</button>
+              <button className="month-nav-btn" aria-label="Next month" onClick={() => navigateMonth(1)}>→</button>
             </div>
 
             <div className="calendar-controls">
@@ -10074,7 +10405,7 @@ function LittleFiresApp() {
                                       {project.name}
                                     </span>
                                   )}
-                                  {item.data.priority === 'high' && <span className="priority-badge">🔥</span>}
+                                  {item.data.priority === 'high' && <span className="priority-badge"><FlameIcon /></span>}
                                 </div>
                                 <div className="item-text">
                                   <span className="task-dot">●</span> {item.data.text}
@@ -10175,7 +10506,7 @@ function LittleFiresApp() {
                                     </div>
                                     {item.data.images && item.data.images.length > 0 && (
                                       <div className="note-meta-info">
-                                        <span className="details-label">📷 {item.data.images.length} image{item.data.images.length > 1 ? 's' : ''}</span>
+                                        <span className="details-label"><ImageIcon /> {item.data.images.length} image{item.data.images.length > 1 ? 's' : ''}</span>
                                       </div>
                                     )}
                                     <button
@@ -10187,7 +10518,10 @@ function LittleFiresApp() {
                                         setTimeout(() => {
                                           const noteElement = document.querySelector(`[data-note-id="${item.data.id}"]`);
                                           if (noteElement) {
-                                            noteElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                            noteElement.scrollIntoView({
+                                              behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+                                              block: 'center'
+                                            });
                                             // Expand the note
                                             const currentNote = allNotes.find(n => n.id === item.data.id);
                                             if (currentNote && !currentNote.expanded) {
@@ -10224,9 +10558,9 @@ function LittleFiresApp() {
                                 <div className="item-header">
                                   <span className={`list-badge ${item.list}`}>{item.list}</span>
                                   <span className="project-date-badge">
-                                    {item.dateType === 'start' && '🚀 Start'}
-                                    {item.dateType === 'end' && '🏁 End'}
-                                    {item.dateType === 'both' && '🚀 Start & 🏁 End'}
+                                    {item.dateType === 'start' && 'Start'}
+                                    {item.dateType === 'end' && 'End'}
+                                    {item.dateType === 'both' && 'Start & End'}
                                   </span>
                                 </div>
                                 <div className="item-text">
@@ -10534,7 +10868,7 @@ function LittleFiresApp() {
                                         <div className="project-meta">
                                           {(goal.startDate || goal.endDate) && (
                                             <span className="project-due-date">
-                                              📅 {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                              <CalendarIcon /> {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                               {goal.startDate && goal.endDate && ' - '}
                                               {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                             </span>
@@ -10629,7 +10963,7 @@ function LittleFiresApp() {
                             <div className="project-meta">
                               {(goal.startDate || goal.endDate) && (
                                 <span className="project-due-date">
-                                  📅 {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  <CalendarIcon /> {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                   {goal.startDate && goal.endDate && ' - '}
                                   {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                 </span>
@@ -10787,20 +11121,18 @@ function LittleFiresApp() {
                         <div className="project-dates-section">
                           <div className="project-date-field">
                             <label className="project-date-label">Start Date:</label>
-                            <input
-                              type="date"
+                            <InlineDatePicker
                               value={goal.startDate || ''}
-                              onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { startDate: e.target.value })}
-                              className="date-picker"
+                              onChange={(v) => updateGoal(selectedGoal.listName, selectedGoal.id, { startDate: v })}
+                              style={{flex: 1, minWidth: 0}}
                             />
                           </div>
                           <div className="project-date-field">
                             <label className="project-date-label">End Date:</label>
-                            <input
-                              type="date"
+                            <InlineDatePicker
                               value={goal.endDate || ''}
-                              onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { endDate: e.target.value })}
-                              className="date-picker"
+                              onChange={(v) => updateGoal(selectedGoal.listName, selectedGoal.id, { endDate: v })}
+                              style={{flex: 1, minWidth: 0}}
                             />
                           </div>
                         </div>
@@ -10888,6 +11220,7 @@ function LittleFiresApp() {
                                     }}
                                   />
                                   <button 
+                                    aria-label="Remove photo"
                                     onClick={() => removePhotoFromGoal(selectedGoal.listName, selectedGoal.id, photo.id, 'beforePhotos')}
                                     style={{
                                       position: 'absolute',
@@ -10999,6 +11332,7 @@ function LittleFiresApp() {
                                     }}
                                   />
                                   <button 
+                                    aria-label="Remove photo"
                                     onClick={() => removePhotoFromGoal(selectedGoal.listName, selectedGoal.id, photo.id, 'afterPhotos')}
                                     style={{
                                       position: 'absolute',
@@ -11372,44 +11706,20 @@ function LittleFiresApp() {
                     <label style={{display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px'}}>
                       Start Date
                     </label>
-                    <input
-                      type="date"
+                    <InlineDatePicker
                       value={goalFormData.startDate}
-                      onChange={(e) => setGoalFormData(prev => ({ ...prev, startDate: e.target.value }))}
-                      style={{
-                        width: '50%',
-                        maxWidth: '50%',
-                        boxSizing: 'border-box',
-                        padding: '10px 8px',
-                        background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(var(--accent-rgb), 0.2)',
-                        borderRadius: '10px',
-                        color: '#f4e8d8',
-                        fontSize: '0.95rem',
-                        fontFamily: 'Nunito, sans-serif'
-                      }}
+                      onChange={(v) => setGoalFormData(prev => ({ ...prev, startDate: v }))}
+                      style={{width: '50%', maxWidth: '50%'}}
                     />
                   </div>
                   <div style={{marginBottom: '20px'}}>
                     <label style={{display: 'block', color: '#b8a99a', fontSize: '0.9rem', marginBottom: '5px'}}>
                       End Date
                     </label>
-                    <input
-                      type="date"
+                    <InlineDatePicker
                       value={goalFormData.endDate}
-                      onChange={(e) => setGoalFormData(prev => ({ ...prev, endDate: e.target.value }))}
-                      style={{
-                        width: '50%',
-                        maxWidth: '50%',
-                        boxSizing: 'border-box',
-                        padding: '10px 8px',
-                        background: 'rgba(42, 42, 62, 0.8)',
-                        border: '2px solid rgba(var(--accent-rgb), 0.2)',
-                        borderRadius: '10px',
-                        color: '#f4e8d8',
-                        fontSize: '0.95rem',
-                        fontFamily: 'Nunito, sans-serif'
-                      }}
+                      onChange={(v) => setGoalFormData(prev => ({ ...prev, endDate: v }))}
+                      style={{width: '50%', maxWidth: '50%'}}
                     />
                   </div>
                   <div className="modal-actions">
@@ -14167,7 +14477,7 @@ function LittleFiresApp() {
                         </div>
                         {!isArchiveSectionCollapsed(`archive-projects-${listName}`) && projectsList.map((project, idx) => (
                           <div key={project.id} className="archived-task">
-                            <div className="task-text" style={{fontWeight: '600'}}>🏗️ {project.name}</div>
+                            <div className="task-text" style={{fontWeight: '600'}}><ProjectIcon size={14} /> {project.name}</div>
                             {project.description && (
                               <div style={{color: '#b8a99a', fontSize: '0.9rem', marginTop: '5px'}}>
                                 {project.description}
@@ -14217,7 +14527,7 @@ function LittleFiresApp() {
                   } else {
                     return projectsToShow.map((project, idx) => (
                       <div key={project.id} className="archived-task">
-                        <div className="task-text" style={{fontWeight: '600'}}>🏗️ {project.name}</div>
+                        <div className="task-text" style={{fontWeight: '600'}}><ProjectIcon size={14} /> {project.name}</div>
                         {project.description && (
                           <div style={{color: '#b8a99a', fontSize: '0.9rem', marginTop: '5px'}}>
                             {project.description}
@@ -14530,6 +14840,7 @@ function LittleFiresApp() {
                               them would orphan the colour and label defaults. */}
                           {customLists.some(c => c && c.key === key) && (
                             <button
+                              aria-label="Delete list"
                               onClick={() => deleteCustomList(key)}
                               title="Delete this list and its tasks"
                               style={{
@@ -15429,7 +15740,7 @@ function LittleFiresApp() {
                             </div>
                             <div style={{ color: '#b8a99a', fontSize: '0.8rem', marginTop: '4px' }}>
                               {count === 0 ? 'No tasks yet' : ({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
-                              {isFull && ' 🔥'}
+                              {isFull && <> <FlameIcon /></>}
                             </div>
                           </div>
                         </>

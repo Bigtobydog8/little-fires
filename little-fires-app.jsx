@@ -5317,23 +5317,12 @@ function LittleFiresApp() {
           margin-left: auto;
         }
 
-        .badge.personal {
-          background: linear-gradient(135deg, var(--accent), var(--accent-light));
-        }
-
-        .badge.work {
-          background: linear-gradient(135deg, var(--accent), var(--accent-light));
-        }
-
-        .badge.home {
-          background: linear-gradient(135deg, var(--accent), var(--accent-light));
-        }
-
-        .badge.travel {
-          background: linear-gradient(135deg, var(--accent), var(--accent-light));
-        }
-
-        .badge.kids {
+        /* One rule for every list. This was previously five identical
+           .badge.<list> rules covering only the original built-ins, so the
+           Partner list - added later - fell through with no background and
+           rendered as bare text. Any user-created list had the same problem.
+           Keyed off .badge alone, nothing can be missed. */
+        .badge {
           background: linear-gradient(135deg, var(--accent), var(--accent-light));
         }
 

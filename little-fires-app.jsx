@@ -945,6 +945,10 @@ function LittleFiresApp() {
     const found = customLists.find(c => c && c.key === key);
     return (found && found.label) || key;
   };
+  // The partner's display name. Derived once at component scope because both
+  // the task card and the add-task row need it, and a blank setting has to fall
+  // back rather than render an empty badge.
+  const partnerDisplayName = (settings.partnerName || '').trim() || 'Partner';
   // Section heading used in All Tasks / Search ("Work Tasks")
   const listSectionLabel = (key) => `${listLabel(key)} Tasks`;
   const isListHidden = (key) => !!(settings.hiddenLists && settings.hiddenLists[key]);
@@ -1123,6 +1127,10 @@ function LittleFiresApp() {
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
   const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({}); // Track which archive sections are collapsed
   const [selectedPriority, setSelectedPriority] = useState('low');
+  // Who a task will be assigned to when it's created. Only meaningful on the
+  // shared list; reset after each add so an assignment doesn't silently carry
+  // over to the next task.
+  const [selectedAssignee, setSelectedAssignee] = useState(null);
   const [selectedSection, setSelectedSection] = useState('todo');
   const [searchQuery, setSearchQuery] = useState('');
   const [taskInput, setTaskInput] = useState('');
@@ -1692,7 +1700,12 @@ function LittleFiresApp() {
       details: '',
       id: makeId(),
       createdAt: new Date().toISOString(),
-      projectId: null
+      projectId: null,
+      // Only stamped on the shared list. Elsewhere these fields would be noise,
+      // and their absence is what keeps a personal task rendering as one.
+      ...(currentList === SHARED_LIST_KEY
+        ? { createdBy: 'me', assignedTo: selectedAssignee }
+        : {})
     };
 
     setAllLists(prev => ({
@@ -1704,6 +1717,7 @@ function LittleFiresApp() {
     setDueDate('');
     setSelectedPriority('low');
     setSelectedSection('todo');
+    setSelectedAssignee(null);
   };
 
   // Tasks are addressed by id rather than by array position. A position is only
@@ -3084,7 +3098,7 @@ function LittleFiresApp() {
     // displayed text can change without the CSS class following it. That split
     // is what lets the partner's name be user-set while .partner keeps styling
     // it. Falls back to 'Partner' if the field is blanked out.
-    const partnerLabel = (settings.partnerName || '').trim() || 'Partner';
+    const partnerLabel = partnerDisplayName;
     const badgeFor = (who) => {
       if (who === 'me') return { key: 'you', label: 'You' };
       if (who === 'partner') return { key: 'partner', label: partnerLabel };
@@ -8148,6 +8162,26 @@ function LittleFiresApp() {
                     {selectedPriority === 'high' ? <LitFlame /> : <UnlitFlame />}
                   </span>
                 </div>
+                {/* Shared list only: set the assignee before the task exists,
+                    rather than adding it and then expanding it to assign.
+                    Same pill and same cycle as the one in the expanded task, so
+                    there's nothing new to learn. */}
+                {currentList === SHARED_LIST_KEY && (
+                  <button
+                    type="button"
+                    className={`assign-pill ${selectedAssignee || 'unassigned'}`}
+                    onClick={() => setSelectedAssignee(
+                      selectedAssignee === 'me' ? 'partner'
+                        : selectedAssignee === 'partner' ? null
+                        : 'me'
+                    )}
+                    title="Tap to set who this is for"
+                  >
+                    {selectedAssignee === 'me' ? 'You'
+                      : selectedAssignee === 'partner' ? partnerDisplayName
+                      : 'Unassigned'}
+                  </button>
+                )}
               </div>
             </div>
 

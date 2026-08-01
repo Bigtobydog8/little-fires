@@ -696,8 +696,13 @@ function LittleFiresApp() {
     const reveal = () => {
       const el = document.activeElement;
       if (!el) return;
-      const editable = el.isContentEditable ||
-        el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+      // Only text entry moves the caret behind the keyboard. A checkbox has no
+      // caret to keep visible, and it takes focus when tapped - so without this
+      // the tap fired a selectionchange and scrolled the list under your finger.
+      const textInput = el.tagName === 'INPUT' &&
+        !['checkbox', 'radio', 'button', 'submit', 'range', 'color', 'file']
+          .includes((el.type || '').toLowerCase());
+      const editable = el.isContentEditable || el.tagName === 'TEXTAREA' || textInput;
       if (!editable) return;
 
       const rect = caretRect() || el.getBoundingClientRect();
@@ -3298,6 +3303,30 @@ function LittleFiresApp() {
     // sheet and moves focus off the input, so focus can't be used to detect it.
     const pickerActiveRef = React.useRef(false);
     const pickerResetRef = React.useRef(null);
+    // What we last wrote to storage ourselves. The load effect below compares
+    // against this so it can tell its own echo from a genuine outside change -
+    // without that, saving while the task is open re-runs the effect and
+    // re-writes innerHTML, which throws away the container's scroll position.
+    const lastSavedHtmlRef = React.useRef(null);
+
+    // The single path from live editor DOM to saved value. A checkbox's ticked
+    // state lives on the DOM property, not in the markup, so it has to be
+    // written back to attributes before innerHTML will include it - that's why
+    // every save site did this dance. Now they all call this instead.
+    const saveDetails = (el, { force = false } = {}) => {
+      const area = el || detailsRef.current;
+      if (!area) return;
+      area.querySelectorAll('.task-checkbox').forEach(cb => {
+        if (cb.checked) cb.setAttribute('checked', 'checked');
+        else cb.removeAttribute('checked');
+      });
+      const content = area.innerHTML;
+      if (!force && content === task.details) return;
+      // updateTaskDetails sanitizes on write, so this is what task.details will
+      // come back as - store the sanitized form or the comparison never matches.
+      lastSavedHtmlRef.current = sanitizeRichText(content);
+      updateTaskDetails(listName, task.id, content);
+    };
 
     React.useEffect(() => {
       return () => {
@@ -3433,40 +3462,47 @@ function LittleFiresApp() {
       }
     };
 
-    // Set initial content only when task first expands
-    React.useEffect(() => {
+    // Set initial content only when task first expands.
+    //
+    // useLayoutEffect, not useEffect, and that difference is the flash. Task is
+    // declared inside the parent component, so React sees a new component type
+    // on every parent render and remounts this whole subtree - which means a
+    // tick, which writes state, tears the details div down and builds it again.
+    // With useEffect the browser paints the newly mounted, still-empty div
+    // before this fills it: one frame of blank, and the row collapsing and
+    // springing back. useLayoutEffect runs after the DOM is updated but before
+    // that paint, so the empty state never reaches the screen.
+    //
+    // This hides the symptom rather than curing it. The cure is hoisting Task
+    // to module scope so the remount stops happening at all.
+    React.useLayoutEffect(() => {
       if (isExpanded && detailsRef.current) {
         // Only set content once when first expanded
         if (!hasSetInitialContent.current) {
-          // Sanitized here too, not just on write. A task's details can arrive
-          // from a restored backup - and later from a partner's device - so the
-          // stored value can't be assumed to have gone through this app's own
-          // editor. This assignment is into a live element, so anything unsafe
-          // would execute immediately.
-          detailsRef.current.innerHTML = sanitizeRichText(task.details || '');
-          hasSetInitialContent.current = true;
-          // After loading, reflect any already-complete child sets on their parents
-          setTimeout(() => syncParentCheckboxes(detailsRef.current), 0);
-          setTimeout(() => refreshListMarkers(detailsRef.current), 0);
+          if (task.details === lastSavedHtmlRef.current) {
+            // This run is the echo of our own save. The DOM already shows
+            // exactly this, so re-writing it would only lose the scroll
+            // position and any selection - adopt it and leave the DOM alone.
+            hasSetInitialContent.current = true;
+          } else {
+            // Sanitized here too, not just on write. A task's details can arrive
+            // from a restored backup - and later from a partner's device - so the
+            // stored value can't be assumed to have gone through this app's own
+            // editor. This assignment is into a live element, so anything unsafe
+            // would execute immediately.
+            detailsRef.current.innerHTML = sanitizeRichText(task.details || '');
+            hasSetInitialContent.current = true;
+            // After loading, reflect any already-complete child sets on their parents
+            setTimeout(() => syncParentCheckboxes(detailsRef.current), 0);
+            setTimeout(() => refreshListMarkers(detailsRef.current), 0);
+          }
         }
       }
       
       // Cleanup: save details when task is about to collapse
       return () => {
         if (isExpanded && detailsRef.current && hasSetInitialContent.current) {
-          // Update all checkbox attributes before saving
-          const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-          allCheckboxes.forEach(cb => {
-            if (cb.checked) {
-              cb.setAttribute('checked', 'checked');
-            } else {
-              cb.removeAttribute('checked');
-            }
-          });
-          const content = detailsRef.current.innerHTML;
-          if (content !== task.details) {
-            updateTaskDetails(listName, task.id, content);
-          }
+          saveDetails(detailsRef.current);
         }
         // Reset flag when collapsed so it will load fresh next time
         hasSetInitialContent.current = false;
@@ -3536,8 +3572,20 @@ function LittleFiresApp() {
           return;
         }
         if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
-          // Let the browser finish toggling, then sync
-          setTimeout(runSync, 0);
+          // Ticking a box is a complete action on its own: sync parents, save,
+          // and hand focus back out. Handled here rather than per-checkbox so
+          // boxes created later in the session behave identically - a per-
+          // element handler only ever reached the ones present at load, which
+          // is why a freshly inserted box still stole focus.
+          // Deferred a tick so the browser has finished toggling `checked`.
+          setTimeout(() => {
+            runSync();
+            saveDetails(detailsArea);
+            const active = document.activeElement;
+            if (active && (active === detailsArea || detailsArea.contains(active))) {
+              active.blur();
+            }
+          }, 0);
         }
       };
       const handleDelegatedChange = (evt) => {
@@ -3551,18 +3599,15 @@ function LittleFiresApp() {
         
         const checkboxes = detailsArea.querySelectorAll('.task-checkbox');
         checkboxes.forEach(checkbox => {
-          checkbox.onclick = (evt) => {
-            // Focus the details area to enable editing if needed.
-            // Do NOT stopPropagation - it would block delegated listeners.
-            if (document.activeElement !== detailsArea) {
-              // preventScroll matters on a long checklist: focus() defaults to
-              // scrolling the focused element into view, and the element here
-              // is the whole details container. Checking a box near the bottom
-              // would yank the page back to the container's top - the "lost my
-              // place" jump. The caret still lands correctly without it.
-              detailsArea.focus({ preventScroll: true });
-            }
-          };
+          // Clicking is handled by the delegated listener above, not here.
+          // What this does need is to make the box a non-editable island: the
+          // caret could otherwise be placed to its left - inside the line but
+          // before the box - where typing put text ahead of the checkbox.
+          // Set on the live DOM rather than in the markup because the sanitizer
+          // strips contenteditable, and it doesn't need to persist since this
+          // runs on every load.
+          checkbox.contentEditable = 'false';
+          checkbox.onclick = null;
           checkbox.onchange = null;
         });
       }
@@ -3825,13 +3870,10 @@ function LittleFiresApp() {
                       const checkbox = document.createElement('input');
                       checkbox.type = 'checkbox';
                       checkbox.className = 'task-checkbox';
-                      checkbox.onclick = (evt) => {
-                        // Don't stopPropagation - it blocks the delegated change listener
-                        const detailsArea = evt.target.closest('.details-richtext');
-                        if (detailsArea && document.activeElement !== detailsArea) {
-                          detailsArea.focus();
-                        }
-                      };
+                      // No click handler: the delegated listener on the details
+                      // area covers this box too. contentEditable=false keeps
+                      // the caret from landing to its left.
+                      checkbox.contentEditable = 'false';
                       // No inline onchange - the delegated change listener on the
                       // details area handles parent auto-check for all checkboxes.
                       const line = document.createElement('div');
@@ -3998,19 +4040,7 @@ function LittleFiresApp() {
               onInput={(e) => { refreshListMarkers(e.currentTarget); }}
               onBlur={(e) => {
                 e.stopPropagation();
-                // Update ALL checkboxes' attributes before getting innerHTML
-                const allCheckboxes = e.currentTarget.querySelectorAll('.task-checkbox');
-                allCheckboxes.forEach(cb => {
-                  if (cb.checked) {
-                    cb.setAttribute('checked', 'checked');
-                  } else {
-                    cb.removeAttribute('checked');
-                  }
-                });
-                const content = e.currentTarget.innerHTML;
-                if (content !== task.details) {
-                  updateTaskDetails(listName, task.id, content);
-                }
+                saveDetails(e.currentTarget);
               }}
               onClick={(e) => e.stopPropagation()}
               onPaste={(e) => {
@@ -4218,13 +4248,8 @@ function LittleFiresApp() {
                     const newCheckbox = document.createElement('input');
                     newCheckbox.type = 'checkbox';
                     newCheckbox.className = 'task-checkbox';
-                    newCheckbox.onclick = (evt) => {
-                      // Don't stopPropagation - it blocks the delegated change listener
-                      const detailsArea = evt.target.closest('.details-richtext');
-                      if (detailsArea && document.activeElement !== detailsArea) {
-                        detailsArea.focus();
-                      }
-                    };
+                    // Delegated listener handles the click; see buildCheckboxLine.
+                    newCheckbox.contentEditable = 'false';
                     // No inline onchange - delegated change listener handles sync
                     
                     const newTextSpan = document.createElement('span');
@@ -6102,6 +6127,11 @@ function LittleFiresApp() {
 
         .details-richtext .task-checkbox {
           appearance: none;
+          /* Not selectable: inside a contenteditable the box would otherwise be
+             a caret position of its own, so a tap just left of it dropped the
+             cursor between the line start and the box. */
+          user-select: none;
+          -webkit-user-select: none;
           margin-right: 8px;
           width: 20px;
           height: 20px;

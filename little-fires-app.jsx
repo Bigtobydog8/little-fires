@@ -3464,18 +3464,12 @@ function LittleFiresApp() {
 
     // Set initial content only when task first expands.
     //
-    // useLayoutEffect, not useEffect, and that difference is the flash. Task is
-    // declared inside the parent component, so React sees a new component type
-    // on every parent render and remounts this whole subtree - which means a
-    // tick, which writes state, tears the details div down and builds it again.
-    // With useEffect the browser paints the newly mounted, still-empty div
-    // before this fills it: one frame of blank, and the row collapsing and
-    // springing back. useLayoutEffect runs after the DOM is updated but before
-    // that paint, so the empty state never reaches the screen.
-    //
-    // This hides the symptom rather than curing it. The cure is hoisting Task
-    // to module scope so the remount stops happening at all.
-    React.useLayoutEffect(() => {
+    // Deliberately useEffect, NOT useLayoutEffect. Switching it to a layout
+    // effect to hide the remount flash crashed the app: this effect's cleanup
+    // saves, and a layout effect runs synchronously, so save -> task.details
+    // changes -> effect re-runs -> cleanup saves again, with no paint in
+    // between to break the cycle. React kills it as a runaway update.
+    React.useEffect(() => {
       if (isExpanded && detailsRef.current) {
         // Only set content once when first expanded
         if (!hasSetInitialContent.current) {

@@ -272,6 +272,20 @@ function FlameIcon({ size = 13 }) {
   );
 }
 
+// Collision-resistant IDs for tasks. Date.now() has millisecond resolution, so
+// two tasks created in the same millisecond shared an ID. On one device that's
+// unlikely; on a list shared between two people - both adding items while
+// looking at the same fridge - it stops being unlikely, and a duplicate ID in a
+// synced list means one person's edits land on the other's task.
+// randomUUID needs a secure context, which localhost and any https host are;
+// the fallback covers plain-http origins where it isn't exposed.
+function makeId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
 function LittleFiresApp() {
   // ---- Guarded storage ----------------------------------------------------
   // localStorage.setItem throws when the quota is exceeded, and in Safari
@@ -298,71 +312,6 @@ function LittleFiresApp() {
     }
   }, []);
 
-  // Set favicon and Apple Touch Icon on mount
-  useEffect(() => {
-    // Create SVG favicon as data URI
-    const faviconSVG = `<svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280"><g transform="translate(0,1280) scale(0.1,-0.1)" fill="#000000"><path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/><path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/><path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/></g></svg>`;
-    
-    const faviconDataURI = 'data:image/svg+xml,' + encodeURIComponent(faviconSVG);
-    
-    // Remove existing favicons and apple-touch-icons
-    const existingLinks = document.querySelectorAll("link[rel*='icon']");
-    existingLinks.forEach(link => link.remove());
-    
-    // Add new favicon
-    const link = document.createElement('link');
-    link.rel = 'icon';
-    link.type = 'image/svg+xml';
-    link.href = faviconDataURI;
-    document.head.appendChild(link);
-    
-    // Add Apple Touch Icon for iOS home screen
-    // Create a canvas to draw the icon with background
-    const canvas = document.createElement('canvas');
-    canvas.width = 180;
-    canvas.height = 180;
-    const ctx = canvas.getContext('2d');
-    
-    // Matcha green background
-    ctx.fillStyle = 'var(--accent)';
-    ctx.fillRect(0, 0, 180, 180);
-    
-    // Load and draw the flame SVG
-    const img = new Image();
-    img.onload = () => {
-      // Center the flame icon with some padding
-      const size = 140;
-      const x = (180 - size) / 2;
-      const y = (180 - size) / 2;
-      ctx.drawImage(img, x, y, size, size);
-      
-      // Convert to data URL and set as apple-touch-icon
-      const appleIcon = canvas.toDataURL('image/png');
-      
-      const appleTouchLink = document.createElement('link');
-      appleTouchLink.rel = 'apple-touch-icon';
-      appleTouchLink.href = appleIcon;
-      document.head.appendChild(appleTouchLink);
-    };
-    img.src = faviconDataURI;
-    
-    // Add PWA meta tags for better iOS support
-    const metaTags = [
-      { name: 'apple-mobile-web-app-capable', content: 'yes' },
-      { name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent' },
-      { name: 'apple-mobile-web-app-title', content: 'Little Fires' }
-    ];
-    
-    metaTags.forEach(tag => {
-      const meta = document.createElement('meta');
-      meta.name = tag.name;
-      meta.content = tag.content;
-      document.head.appendChild(meta);
-    });
-    
-    // Also set page title
-    document.title = 'Little Fires';
-  }, []);
 
   const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar', 'reports'
   const [menuOpen, setMenuOpen] = useState(false);
@@ -469,6 +418,13 @@ function LittleFiresApp() {
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
     reduceMotion: false,
+    // --- Partner (shared list) ---
+    // partnerName is the display name shown on shared tasks. It is separate
+    // from listLabels.partner, which renames the list itself - one is a person,
+    // the other is a tab.
+    partnerName: 'Partner',
+    partnerColor: '#f472b6',
+    partnerAccountEmail: '',
     listLabels: { ...DEFAULT_LIST_LABELS },
     hiddenLists: {},          // { travel: true } => hidden from the app
     listOrder: null,          // user's drag-ordered keys; null = built-in order
@@ -499,18 +455,104 @@ function LittleFiresApp() {
     safeSetItem('little_fires_settings', JSON.stringify(overrides));
   }, [settings]);
 
+  // The accent resolved to real colour values. Shared by the CSS-variable
+  // effect below and by the icon effect, which needs an actual hex - a canvas
+  // can't read a CSS variable.
+  const accentColors = (() => {
+    const preset = ACCENT_PRESETS.find(p => p.id === settings.accentId);
+    const accent = preset ? preset.accent : (settings.customAccent || '#53745f');
+    return { accent, light: preset ? preset.light : lightenHex(accent) };
+  })();
+
   // Push the chosen accent into CSS variables on :root, so every rule and
   // inline style that references var(--accent) updates at once.
   useEffect(() => {
-    const preset = ACCENT_PRESETS.find(p => p.id === settings.accentId);
-    const accent = preset ? preset.accent : (settings.customAccent || '#53745f');
-    const light = preset ? preset.light : lightenHex(accent);
+    const accent = accentColors.accent;
+    const light = accentColors.light;
     const root = document.documentElement;
     root.style.setProperty('--accent', accent);
     root.style.setProperty('--accent-light', light);
     root.style.setProperty('--accent-rgb', hexToRgbTriplet(accent));
     root.style.setProperty('--accent-muted-rgb', muteHex(accent));
   }, [settings.accentId, settings.customAccent]);
+
+  // Partner colour, same mechanism as the accent. Pushed into CSS variables so
+  // the badge and the assign pill both follow it without either needing an
+  // inline style.
+  useEffect(() => {
+    const colour = settings.partnerColor || '#f472b6';
+    const root = document.documentElement;
+    root.style.setProperty('--partner', colour);
+    root.style.setProperty('--partner-rgb', hexToRgbTriplet(colour));
+  }, [settings.partnerColor]);
+
+  // Favicon, iOS home-screen icon, browser theme colour. Re-runs on accent
+  // change so all three follow it.
+  //
+  // Worth knowing: iOS reads apple-touch-icon at the moment someone taps "Add
+  // to Home Screen" and caches it. An icon already on a home screen will not
+  // repaint when the accent changes here - that only affects installs made
+  // afterwards. theme-color, by contrast, does update live.
+  useEffect(() => {
+    const accent = accentColors.accent;
+
+    // The fill is a parameter because the two icons need different treatment:
+    // the favicon sits on a browser tab of unknown colour, while the touch icon
+    // sits on an accent-filled square and has to contrast with it.
+    const flameSVG = (fill) => `<svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280"><g transform="translate(0,1280) scale(0.1,-0.1)" fill="${fill}"><path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/><path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/><path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/></g></svg>`;
+    const toURI = (markup) => 'data:image/svg+xml,' + encodeURIComponent(markup);
+
+    document.querySelectorAll("link[rel*='icon']").forEach(l => l.remove());
+    const link = document.createElement('link');
+    link.rel = 'icon';
+    link.type = 'image/svg+xml';
+    link.href = toURI(flameSVG(accent));
+    document.head.appendChild(link);
+
+    // iOS home-screen icon: cream flame on an accent square.
+    const canvas = document.createElement('canvas');
+    canvas.width = 180;
+    canvas.height = 180;
+    const ctx = canvas.getContext('2d');
+    // This was `ctx.fillStyle = 'var(--accent)'`. A canvas has no CSS variable
+    // resolution, and assigning an invalid colour to fillStyle is silently
+    // ignored - the previous value stands, which is black by default. Combined
+    // with the artwork's own black fill, the icon rendered as a black flame on
+    // a black square. Canvas needs a resolved value, hence accentColors.
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, 0, 180, 180);
+
+    const img = new Image();
+    img.onload = () => {
+      const size = 140;
+      const pos = (180 - size) / 2;
+      ctx.drawImage(img, pos, pos, size, size);
+      const appleTouchLink = document.createElement('link');
+      appleTouchLink.rel = 'apple-touch-icon';
+      appleTouchLink.href = canvas.toDataURL('image/png');
+      document.head.appendChild(appleTouchLink);
+    };
+    img.src = toURI(flameSVG('#f4e8d8'));
+
+    // Updated in place rather than appended - this effect re-runs on every
+    // accent change, and the previous version created duplicate tags each time.
+    const upsertMeta = (name, content) => {
+      let meta = document.head.querySelector('meta[name="' + name + '"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.name = name;
+        document.head.appendChild(meta);
+      }
+      meta.content = content;
+    };
+    upsertMeta('apple-mobile-web-app-capable', 'yes');
+    upsertMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
+    upsertMeta('apple-mobile-web-app-title', 'Little Fires');
+    // Tints the browser toolbar and the app's card in the task switcher.
+    upsertMeta('theme-color', accent);
+
+    document.title = 'Little Fires';
+  }, [accentColors.accent]);
 
   // In-app reduced motion toggle (the OS-level preference is handled in CSS)
   useEffect(() => {
@@ -526,6 +568,78 @@ function LittleFiresApp() {
     (typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // Keep whatever you're typing in above the on-screen keyboard.
+  //
+  // iOS shrinks the *visual* viewport when the keyboard opens but leaves the
+  // layout viewport alone, so the page has no idea the bottom half is covered.
+  // Anything relying on layout coordinates - scrollIntoView included - happily
+  // concludes the caret is visible while it sits behind the keys.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    // The caret, not the field: the details editor can be taller than the
+    // visible band, and scrolling its bottom edge into view would overshoot
+    // the line actually being typed on.
+    const caretRect = () => {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const r = sel.getRangeAt(0).getBoundingClientRect();
+        if (r && (r.top || r.bottom)) return r;
+      }
+      return null;
+    };
+
+    // Whichever ancestor actually scrolls - on mobile that's .tasks-container,
+    // not the window.
+    const scrollableAncestor = (el) => {
+      let node = el.parentElement;
+      while (node && node !== document.body) {
+        const style = window.getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) {
+          return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    };
+
+    let frame = null;
+    const reveal = () => {
+      const el = document.activeElement;
+      if (!el) return;
+      const editable = el.isContentEditable ||
+        el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+      if (!editable) return;
+
+      const rect = caretRect() || el.getBoundingClientRect();
+      // Bottom of the area still visible above the keyboard, plus a little
+      // breathing room so the caret isn't flush against it.
+      const visibleBottom = vv.height + vv.offsetTop;
+      const overlap = rect.bottom - visibleBottom + 16;
+      if (overlap <= 0) return;
+
+      const scroller = scrollableAncestor(el);
+      if (scroller) scroller.scrollTop += overlap;
+      else window.scrollBy(0, overlap);
+    };
+
+    // The viewport resizes as the keyboard animates in; wait for a frame so the
+    // measurement is taken against its settled size.
+    const onChange = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(reveal);
+    };
+
+    vv.addEventListener('resize', onChange);
+    document.addEventListener('selectionchange', onChange);
+    return () => {
+      vv.removeEventListener('resize', onChange);
+      document.removeEventListener('selectionchange', onChange);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
 
   // ---- Backup: export / import -------------------------------------------
   // The export is a plain, versioned JSON file. Versioning matters: without it
@@ -1209,7 +1323,15 @@ function LittleFiresApp() {
   // so custom lists behave like built-ins - this previously used six hardcoded
   // booleans, which meant any custom list could never expand and clicking its
   // header called undefined. Absent or false means expanded.
-  const [collapsedLists, setCollapsedLists] = useState({});
+  //
+  // Starts collapsed on every open, so the landing view is a short index of
+  // lists and their counts rather than every task at once. Lazy initialiser:
+  // it runs once on mount, by which point settings (and so visibleTaskLists)
+  // have already been read from storage. Expanding is one tap on a header, or
+  // the flame to open them all.
+  const [collapsedLists, setCollapsedLists] = useState(
+    () => Object.fromEntries(visibleTaskLists.map(k => [k, true]))
+  );
   const toggleList = (key) =>
     setCollapsedLists(prev => ({ ...prev, [key]: !prev[key] }));
   // Collapse everything if anything is still open, otherwise reopen everything.
@@ -1349,25 +1471,87 @@ function LittleFiresApp() {
   }, [appMode, chartAnimate, chartAnimToken, reportTimeframe, reportTaskStatus, reportHiddenLists]);
 
   // Timer for time logging - accumulator approach.
-  // While isLogging is true, accumulate elapsed time in fine increments so the
-  // progress ring moves smoothly and responds instantly on start/pause. When
-  // paused, the interval stops and the value holds. Resuming continues from
-  // where it left off. Uses real elapsed time between ticks (not a fixed step)
-  // so it stays accurate even if the interval is throttled.
+  // While isLogging is true, elapsed time is accumulated from real timestamps
+  // rather than a fixed step per tick, so the total stays correct however often
+  // (or rarely) the interval actually fires. When paused, the interval stops
+  // and the value holds; resuming continues from where it left off.
   useEffect(() => {
-    let interval;
+    if (!isLogging) return;
+
     let lastTick = Date.now();
-    if (isLogging) {
+    let interval = null;
+
+    // Fold the time since the last tick into the total. Because it measures
+    // real elapsed time, one call after a long gap counts exactly as much as
+    // many calls during it - which is what makes both the slow tick below and
+    // the backgrounding behaviour safe.
+    const accrue = () => {
+      const now = Date.now();
+      const delta = (now - lastTick) / 1000;
+      lastTick = now;
+      if (delta > 0) setLoggedSeconds(prev => prev + delta);
+    };
+
+    const start = () => {
+      if (interval) return;
       lastTick = Date.now();
-      interval = setInterval(() => {
-        const now = Date.now();
-        const delta = (now - lastTick) / 1000; // seconds elapsed since last tick
-        lastTick = now;
-        setLoggedSeconds(prev => prev + delta);
-      }, 50);
-    }
-    return () => clearInterval(interval);
+      // 1000ms, previously 50ms. Every tick sets state and re-renders, so the
+      // old rate cost 20 renders a second for a readout in whole minutes and a
+      // progress ring spanning 25 of them - at one second per tick the ring
+      // advances well under a pixel, and accuracy is unchanged because the
+      // maths is delta-based.
+      interval = setInterval(accrue, 1000);
+    };
+
+    const stop = () => {
+      if (!interval) return;
+      clearInterval(interval);
+      interval = null;
+    };
+
+    // Backgrounded, the app does no work at all. Time that passes while hidden
+    // still counts - it's banked in a single catch-up call on return, from the
+    // timestamp rather than from ticks that never happened.
+    const onVisibilityChange = () => {
+      accrue();
+      if (document.hidden) stop();
+      else start();
+    };
+
+    start();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [isLogging]);
+
+  // ---- Progress ring geometry ---------------------------------------------
+  // The ring is fed by a once-a-second state update and a 1s linear transition,
+  // so it has to be pointed at where the clock will be at the END of the
+  // current second, not where it is right now. Without that lead the animation
+  // only begins after the first tick, and then runs a full second behind for
+  // the rest of the session - it always arrives somewhere just as the clock
+  // leaves it. Projecting one tick ahead means the transition is travelling
+  // through the second it represents, so the ring reads as live and starts
+  // moving the instant you hit the button.
+  const RING_CIRCUMFERENCE = 597;
+  const ringCapped = Number(timerDuration) > 0;
+  const ringSpan = ringCapped ? Number(timerDuration) : 60;
+  const ringFraction = (secs) => ringCapped
+    ? Math.min(1, secs / ringSpan)
+    : (secs % ringSpan) / ringSpan;
+  const ringNow = ringFraction(loggedSeconds);
+  const ringNext = ringFraction(loggedSeconds + (isLogging ? 1 : 0));
+  // With no duration set the ring cycles once a minute. On the roll-over the
+  // projected fraction is smaller than the current one, and animating that
+  // would sweep the ring backwards for a second - so that step snaps, as it
+  // did before any of this.
+  const ringWrapping = ringNext < ringNow;
+  const ringOffset = RING_CIRCUMFERENCE - RING_CIRCUMFERENCE * ringNext;
+  const ringTransition = (isLogging && !ringWrapping)
+    ? 'stroke 0.3s ease, stroke-dashoffset 1s linear'
+    : 'stroke 0.3s ease';
 
   // Derive whole minutes from accumulated seconds for display/logging.
   // Only while the live timer is active or has accumulated time, so editing
@@ -1506,7 +1690,7 @@ function LittleFiresApp() {
       dueDate: dueDate || null,
       dueTime: null,
       details: '',
-      id: Date.now(),
+      id: makeId(),
       createdAt: new Date().toISOString(),
       projectId: null
     };
@@ -1522,18 +1706,33 @@ function LittleFiresApp() {
     setSelectedSection('todo');
   };
 
-  const toggleTask = (listName, index) => {
+  // Tasks are addressed by id rather than by array position. A position is only
+  // valid for the render that produced it: anything that reorders, filters or
+  // removes an item invalidates it, and once two devices can write to the same
+  // list a position means nothing at all. Every lookup goes through here so a
+  // stale or missing id fails as a no-op instead of hitting the wrong task.
+  const findTaskIndex = (list, taskId) => {
+    if (taskId === undefined || taskId === null || !Array.isArray(list)) return -1;
+    return list.findIndex(t => t && t.id === taskId);
+  };
+  const findTask = (list, taskId) => {
+    const i = findTaskIndex(list, taskId);
+    return i === -1 ? null : list[i];
+  };
+
+  const toggleTask = (listName, taskId) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      const task = newLists[listName][index];
+      const task = findTask(newLists[listName], taskId);
+      if (!task) return prev;
       task.completed = !task.completed;
-      
+
       if (task.completed) {
         task.completedAt = new Date().toISOString();
       } else {
         delete task.completedAt;
       }
-      
+
       return newLists;
     });
   };
@@ -1550,69 +1749,91 @@ function LittleFiresApp() {
     return collapsedArchiveSections[sectionKey] !== false;
   };
 
-  const deleteTask = (listName, index) => {
+  const deleteTask = (listName, taskId) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      newLists[listName].splice(index, 1);
+      const idx = findTaskIndex(newLists[listName], taskId);
+      if (idx === -1) return prev;
+      newLists[listName].splice(idx, 1);
       return newLists;
     });
   };
 
-  const archiveTask = (listName, index) => {
-    const task = allLists[listName][index];
-    if (!task.completed) return; // Only archive completed tasks
-    
+  const archiveTask = (listName, taskId) => {
+    const task = findTask(allLists[listName], taskId);
+    if (!task || !task.completed) return; // Only archive completed tasks
+
     // Add to archived tasks
     setArchivedTasks(prev => ({
       ...prev,
       [listName]: [...(prev[listName] || []), { ...task, archivedAt: new Date().toISOString() }]
     }));
-    
+
     // Remove from active lists
-    deleteTask(listName, index);
+    deleteTask(listName, taskId);
   };
 
-  const unarchiveTask = (listName, index) => {
-    const task = archivedTasks[listName][index];
-    
+  const unarchiveTask = (listName, taskId) => {
+    const task = findTask(archivedTasks[listName], taskId);
+    if (!task) return;
+
     // Add back to active lists
     setAllLists(prev => ({
       ...prev,
       [listName]: [...prev[listName], { ...task, archivedAt: undefined }]
     }));
-    
+
     // Remove from archived
     setArchivedTasks(prev => {
       const newArchived = { ...prev };
-      newArchived[listName].splice(index, 1);
+      const idx = findTaskIndex(newArchived[listName], taskId);
+      if (idx === -1) return prev;
+      newArchived[listName].splice(idx, 1);
       return newArchived;
     });
   };
 
-  const deleteArchivedTask = (listName, index) => {
+  const deleteArchivedTask = (listName, taskId) => {
     setArchivedTasks(prev => {
       const newArchived = { ...prev };
-      newArchived[listName].splice(index, 1);
+      const idx = findTaskIndex(newArchived[listName], taskId);
+      if (idx === -1) return prev;
+      newArchived[listName].splice(idx, 1);
       return newArchived;
     });
   };
 
-  const updateTaskDetails = (listName, index, details) => {
+  const updateTaskDetails = (listName, taskId, details) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      newLists[listName][index].details = details;
+      const target = findTask(newLists[listName], taskId);
+      if (!target) return prev;
+      target.details = details;
       return newLists;
     });
   };
 
-  const updateTaskDueDate = (listName, index, newDueDate) => {
+  // Used by the inline rename field, which is a controlled input - so unlike
+  // the mutate-in-place helpers around it, this replaces the task object.
+  const renameTask = (listName, taskId, text) => {
+    setAllLists(prev => {
+      const list = prev[listName] || [];
+      const idx = findTaskIndex(list, taskId);
+      if (idx === -1) return prev;
+      const nextList = [...list];
+      nextList[idx] = { ...nextList[idx], text };
+      return { ...prev, [listName]: nextList };
+    });
+  };
+
+  const updateTaskDueDate = (listName, taskId, newDueDate) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      // Update in place rather than replacing the task object. Replacing it
-      // gives React a new reference mid-interaction, which closes the native
-      // date picker before you can choose a day - and `actualIndex` is resolved
-      // with indexOf(task), which relies on that identity holding steady.
-      const target = newLists[listName][index];
+      // Still updated in place. The original reason - preserving object
+      // identity for indexOf() lookups and for the native date picker - is gone
+      // on both counts, but the mutate-in-place style is shared with the
+      // helpers around it and changing it belongs in its own pass.
+      const target = findTask(newLists[listName], taskId);
       if (!target) return prev;
       target.dueDate = newDueDate || null;
       // No time picker in the UI, so a date implies midnight local (Eastern for
@@ -1623,10 +1844,12 @@ function LittleFiresApp() {
     });
   };
 
-  const updateTaskPriority = (listName, index, priority) => {
+  const updateTaskPriority = (listName, taskId, priority) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      newLists[listName][index].priority = priority;
+      const target = findTask(newLists[listName], taskId);
+      if (!target) return prev;
+      target.priority = priority;
       return newLists;
     });
   };
@@ -1635,10 +1858,10 @@ function LittleFiresApp() {
   // 'me' / 'partner' are placeholders for the real Firebase uids that will
   // exist once sync ships - swapping this over later is a string comparison
   // change, not a redesign. Cycle: unassigned -> me -> partner -> unassigned.
-  const cycleAssignment = (listName, index) => {
+  const cycleAssignment = (listName, taskId) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      const target = newLists[listName][index];
+      const target = findTask(newLists[listName], taskId);
       if (!target) return prev;
       const next = target.assignedTo === 'me' ? 'partner'
         : target.assignedTo === 'partner' ? null
@@ -1648,10 +1871,12 @@ function LittleFiresApp() {
     });
   };
 
-  const moveTaskToSection = (listName, index, newSection) => {
+  const moveTaskToSection = (listName, taskId, newSection) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      newLists[listName][index].section = newSection;
+      const target = findTask(newLists[listName], taskId);
+      if (!target) return prev;
+      target.section = newSection;
       return newLists;
     });
   };
@@ -2698,7 +2923,7 @@ function LittleFiresApp() {
       section: projectTaskSection,
       dueDate: projectTaskDueDate || null,
       details: '',
-      id: Date.now(),
+      id: makeId(),
       createdAt: new Date().toISOString(),
       projectId: projectId
     };
@@ -2791,14 +3016,14 @@ function LittleFiresApp() {
     const allTaskLists = TASK_LISTS;
     
     allTaskLists.forEach(listName => {
-      (allLists[listName] || []).forEach((task, index) => {
+      (allLists[listName] || []).forEach((task) => {
         // Use == to handle string/number comparison
         if (task.projectId == projectId && task.projectId !== null && task.projectId !== '') {
-          tasks.push({
-            ...task,
-            listName,
-            index
-          });
+          // listName travels with the copy because the task's home list can't be
+          // recovered from the task itself. A position deliberately does not:
+          // these are copies, so any index attached here would be a promise
+          // about an array this object is no longer part of.
+          tasks.push({ ...task, listName });
         }
       });
     });
@@ -2819,16 +3044,19 @@ function LittleFiresApp() {
     return allProjects;
   };
 
-  const assignTaskToProject = (listName, taskIndex, projectId) => {
+  const assignTaskToProject = (listName, taskId, projectId) => {
     setAllLists(prev => {
       const newLists = { ...prev };
-      // Convert to number if it's a string, or null if empty
-      newLists[listName][taskIndex].projectId = projectId ? Number(projectId) : null;
+      const target = findTask(newLists[listName], taskId);
+      if (!target) return prev;
+      // Project ids are still numeric - only task ids changed - so the incoming
+      // value from the <select> is coerced back to a number.
+      target.projectId = projectId ? Number(projectId) : null;
       return newLists;
     });
   };
 
-  const Task = ({ task, listName, index, showMoveButtons }) => {
+  const Task = ({ task, listName, showMoveButtons }) => {
     // With a time set, overdue means past that moment. Without one, the task
     // isn't late until the day itself has ended.
     const dueDate = task.dueDate ? parseLocalDateTime(task.dueDate, task.dueTime) : null;
@@ -2853,10 +3081,13 @@ function LittleFiresApp() {
     // and the delete button would vanish from tasks you created yourself.
     const sharedCreatedBy = task.createdBy || 'me';
     // `key` drives styling, `label` is what's shown - kept separate so the
-    // displayed text can change without the CSS class following it.
+    // displayed text can change without the CSS class following it. That split
+    // is what lets the partner's name be user-set while .partner keeps styling
+    // it. Falls back to 'Partner' if the field is blanked out.
+    const partnerLabel = (settings.partnerName || '').trim() || 'Partner';
     const badgeFor = (who) => {
       if (who === 'me') return { key: 'you', label: 'You' };
-      if (who === 'partner') return { key: 'partner', label: 'Partner' };
+      if (who === 'partner') return { key: 'partner', label: partnerLabel };
       return null;
     };
     // Incomplete: badge shows who it's assigned to (creator, if unassigned).
@@ -3052,13 +3283,13 @@ function LittleFiresApp() {
           });
           const content = detailsRef.current.innerHTML;
           if (content !== task.details) {
-            updateTaskDetails(listName, index, content);
+            updateTaskDetails(listName, task.id, content);
           }
         }
         // Reset flag when collapsed so it will load fresh next time
         hasSetInitialContent.current = false;
       };
-    }, [isExpanded, listName, index, task.details]);
+    }, [isExpanded, listName, task.id, task.details]);
 
     React.useEffect(() => {
       if (!isExpanded) return;
@@ -3094,7 +3325,7 @@ function LittleFiresApp() {
               }
             });
             const content = detailsArea.innerHTML;
-            updateTaskDetails(listName, index, content);
+            updateTaskDetails(listName, task.id, content);
           }
           setExpandedTaskId(null);
         }
@@ -3161,7 +3392,7 @@ function LittleFiresApp() {
           detailsArea.removeEventListener('click', handleDelegatedClick);
         }
       };
-    }, [isExpanded, listName, index]);
+    }, [isExpanded, listName, task.id]);
 
     return (
       <div 
@@ -3183,7 +3414,7 @@ function LittleFiresApp() {
             const content = detailsRef.current.innerHTML;
             // Always save when collapsing, even if content looks the same
             // This ensures text is persisted
-            updateTaskDetails(listName, index, content);
+            updateTaskDetails(listName, task.id, content);
           }
           
           setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
@@ -3223,12 +3454,12 @@ function LittleFiresApp() {
                 // Un-completing is immediate; completing pauses so the checkmark
                 // and fade-out are visible before the task leaves the list.
                 if (task.completed) {
-                  toggleTask(listName, index);
+                  toggleTask(listName, task.id);
                   return;
                 }
                 if (isCompleting) return; // already on its way out
                 if (!settings.completionDelay) {
-                  toggleTask(listName, index);
+                  toggleTask(listName, task.id);
                   return;
                 }
                 // Measure now, before anything changes
@@ -3237,7 +3468,7 @@ function LittleFiresApp() {
                 // Start collapsing as the fade begins, so they run together
                 collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), 500);
                 completeTimeoutRef.current = setTimeout(() => {
-                  toggleTask(listName, index);
+                  toggleTask(listName, task.id);
                 }, 950);
               }}
               onClick={(e) => e.stopPropagation()}
@@ -3245,15 +3476,13 @@ function LittleFiresApp() {
             />
           </div>
           <div className="task-content">
-            {isExpanded && editingTaskName === `${listName}-${index}` ? (
+            {isExpanded && editingTaskName === `${listName}-${task.id}` ? (
               <input
                 type="text"
                 value={task.text}
                 onChange={(e) => {
                   e.stopPropagation();
-                  const updatedLists = { ...allLists };
-                  updatedLists[listName][index] = { ...task, text: e.target.value };
-                  setAllLists(updatedLists);
+                  renameTask(listName, task.id, e.target.value);
                 }}
                 onBlur={() => setEditingTaskName(null)}
                 onKeyPress={(e) => {
@@ -3282,7 +3511,7 @@ function LittleFiresApp() {
                   e.stopPropagation();
                   // If already expanded, single click enters edit mode
                   if (isExpanded && !task.isArchived) {
-                    setEditingTaskName(`${listName}-${index}`);
+                    setEditingTaskName(`${listName}-${task.id}`);
                   } else {
                     // If collapsed, single click expands
                     // Delay single-click action to allow double-click to cancel it
@@ -3300,7 +3529,7 @@ function LittleFiresApp() {
                         const content = detailsRef.current.innerHTML;
                         // Always save when collapsing, even if content looks the same
                         // This ensures text is persisted
-                        updateTaskDetails(listName, index, content);
+                        updateTaskDetails(listName, task.id, content);
                       }
                       
                       // Single click toggles task expanded/collapsed
@@ -3321,7 +3550,7 @@ function LittleFiresApp() {
                     if (!isExpanded) {
                       setExpandedTaskId(`${listName}-${task.id}`);
                     }
-                    setEditingTaskName(`${listName}-${index}`);
+                    setEditingTaskName(`${listName}-${task.id}`);
                   }
                 }}
                 style={{cursor: isExpanded ? 'text' : 'pointer'}}
@@ -3375,12 +3604,12 @@ function LittleFiresApp() {
                   className={`assign-pill ${task.assignedTo || 'unassigned'}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    cycleAssignment(listName, index);
+                    cycleAssignment(listName, task.id);
                   }}
                   title="Tap to reassign"
                 >
                   {task.assignedTo === 'me' ? 'You'
-                    : task.assignedTo === 'partner' ? 'Partner'
+                    : task.assignedTo === 'partner' ? partnerLabel
                     : 'Unassigned'}
                 </button>
               </div>
@@ -3603,7 +3832,7 @@ function LittleFiresApp() {
                 });
                 const content = e.currentTarget.innerHTML;
                 if (content !== task.details) {
-                  updateTaskDetails(listName, index, content);
+                  updateTaskDetails(listName, task.id, content);
                 }
               }}
               onClick={(e) => e.stopPropagation()}
@@ -3863,7 +4092,7 @@ function LittleFiresApp() {
                     for. */}
                 <InlineDatePicker
                   value={task.dueDate || ''}
-                  onChange={(v) => updateTaskDueDate(listName, index, v)}
+                  onChange={(v) => updateTaskDueDate(listName, task.id, v)}
                 />
               </div>
 
@@ -3877,7 +4106,7 @@ function LittleFiresApp() {
                     onChange={(e) => {
                       e.stopPropagation();
                       const value = e.target.value;
-                      assignTaskToProject(listName, index, value || null);
+                      assignTaskToProject(listName, task.id, value || null);
                     }}
                     onClick={(e) => e.stopPropagation()}
                     className="project-selector"
@@ -3898,7 +4127,7 @@ function LittleFiresApp() {
                 className={`fire-flag-icon clickable ${task.priority === 'high' ? 'active' : ''}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  updateTaskPriority(listName, index, task.priority === 'high' ? 'low' : 'high');
+                  updateTaskPriority(listName, task.id, task.priority === 'high' ? 'low' : 'high');
                 }}
                 title="Pin to top"
               >
@@ -3926,7 +4155,7 @@ function LittleFiresApp() {
                       className="edit-btn"
                       onClick={(e) => {
                         e.stopPropagation();
-                        moveTaskToSection(listName, index, 'backlog');
+                        moveTaskToSection(listName, task.id, 'backlog');
                       }}
                     >
                       → Backlog
@@ -3937,7 +4166,7 @@ function LittleFiresApp() {
                       className="edit-btn"
                       onClick={(e) => {
                         e.stopPropagation();
-                        moveTaskToSection(listName, index, 'todo');
+                        moveTaskToSection(listName, task.id, 'todo');
                       }}
                     >
                       → To Do
@@ -3950,7 +4179,7 @@ function LittleFiresApp() {
                   className="edit-btn"
                   onClick={(e) => {
                     e.stopPropagation();
-                    archiveTask(listName, index);
+                    archiveTask(listName, task.id);
                   }}
                 >
                   Archive
@@ -3961,7 +4190,7 @@ function LittleFiresApp() {
                   className="delete-btn"
                   onClick={(e) => {
                     e.stopPropagation();
-                    deleteTask(listName, index);
+                    deleteTask(listName, task.id);
                   }}
                 >
                   Delete
@@ -4327,9 +4556,6 @@ function LittleFiresApp() {
             {!collapsedLists[listName] && (
               <>
                 {tasks.map((task) => {
-                  const actualIndex = task.isArchived 
-                    ? archivedTasks[listName]?.indexOf(task) ?? -1
-                    : allLists[listName].indexOf(task);
                   return (
                     <div key={task.id} style={{position: 'relative'}}>
                       {task.isArchived && (
@@ -4339,7 +4565,6 @@ function LittleFiresApp() {
                         key={task.id}
                         task={task}
                         listName={listName}
-                        index={actualIndex}
                         showMoveButtons={true}
                       />
                     </div>
@@ -4509,18 +4734,14 @@ function LittleFiresApp() {
                     </div>
                   </div>
                 ) : (
-                  todoTasks.map((task) => {
-                    const actualIndex = allLists[currentList].indexOf(task);
-                    return (
+                  todoTasks.map((task) => (
                       <Task
                         key={task.id}
                         task={task}
                         listName={currentList}
-                        index={actualIndex}
                         showMoveButtons={true}
                       />
-                    );
-                  })
+                    ))
                 )}
               </>
             )}
@@ -4593,18 +4814,14 @@ function LittleFiresApp() {
                     </div>
                   </div>
                 ) : (
-                  backlogTasks.map((task) => {
-                    const actualIndex = allLists[currentList].indexOf(task);
-                    return (
+                  backlogTasks.map((task) => (
                       <Task
                         key={task.id}
                         task={task}
                         listName={currentList}
-                        index={actualIndex}
                         showMoveButtons={true}
                       />
-                    );
-                  })
+                    ))
                 )}
               </>
             )}
@@ -4677,18 +4894,14 @@ function LittleFiresApp() {
                     </div>
                   </div>
                 ) : (
-                  completedTasks.map((task) => {
-                    const actualIndex = allLists[currentList].indexOf(task);
-                    return (
+                  completedTasks.map((task) => (
                       <Task
                         key={task.id}
                         task={task}
                         listName={currentList}
-                        index={actualIndex}
                         showMoveButtons={true}
                       />
-                    );
-                  })
+                    ))
                 )}
               </>
             )}
@@ -4701,7 +4914,11 @@ function LittleFiresApp() {
   return (
     <div className="little-fires-container">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700;800&display=swap');
+        /* The Google Fonts @import that used to sit here has moved to the
+           <link> tags in index.html. An @import inside a style element that
+           React renders can't be seen by the browser's preload scanner, so the
+           fonts weren't even requested until the bundle had parsed and the app
+           had mounted. Nunito 800 went with it - nothing referenced it. */
 
         /* Theme tokens. Everything accent-colored resolves through these, so
            changing them recolors the whole app. --accent-rgb is kept as a raw
@@ -4735,7 +4952,19 @@ function LittleFiresApp() {
           background: linear-gradient(135deg, #1a1a2e 0%, #2d2d44 50%, #3a3a52 100%);
           color: #f4e8d8;
           min-height: 100vh;
+          /* Plain values first, then the inset-aware versions. A browser
+             without env() support treats the second set as invalid and keeps
+             the first, so nothing is lost.
+             These matter because the app declares black-translucent as its iOS
+             status bar style: a home-screen install renders edge to edge, and
+             without this the header sits under the clock and the footer under
+             the home indicator. max() keeps the existing spacing on devices
+             that have no insets at all. */
           padding: 40px 20px;
+          padding-top: max(40px, env(safe-area-inset-top));
+          padding-right: max(20px, env(safe-area-inset-right));
+          padding-bottom: max(40px, env(safe-area-inset-bottom));
+          padding-left: max(20px, env(safe-area-inset-left));
           position: relative;
           overflow-x: hidden;
         }
@@ -5524,9 +5753,9 @@ function LittleFiresApp() {
         }
 
         .shared-badge.partner {
-          background: rgba(244, 114, 182, 0.2);
-          color: #f472b6;
-          border: 1px solid rgba(244, 114, 182, 0.45);
+          background: rgba(var(--partner-rgb), 0.2);
+          color: var(--partner);
+          border: 1px solid rgba(var(--partner-rgb), 0.45);
         }
 
         .assign-field {
@@ -5567,9 +5796,9 @@ function LittleFiresApp() {
         }
 
         .assign-pill.partner {
-          background: rgba(244, 114, 182, 0.2);
-          color: #f472b6;
-          border-color: rgba(244, 114, 182, 0.45);
+          background: rgba(var(--partner-rgb), 0.2);
+          color: var(--partner);
+          border-color: rgba(var(--partner-rgb), 0.45);
         }
 
         .task-details-section {
@@ -5849,6 +6078,7 @@ function LittleFiresApp() {
         .task-priority-selector {
           margin-top: 12px;
           display: flex;
+          flex-wrap: wrap;
           align-items: center;
           gap: 10px;
         }
@@ -5861,6 +6091,7 @@ function LittleFiresApp() {
         .due-date-display {
           margin-top: 12px;
           display: flex;
+          flex-wrap: wrap;
           align-items: center;
           gap: 8px;
           font-size: 0.9rem;
@@ -5883,6 +6114,7 @@ function LittleFiresApp() {
         .date-field {
           margin-top: 12px;
           display: flex;
+          flex-wrap: wrap;
           align-items: center;
           gap: 8px;
           font-size: 0.85rem;
@@ -5896,6 +6128,7 @@ function LittleFiresApp() {
 
         .task-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 15px;
           margin-top: 15px;
           justify-content: flex-end;
@@ -6112,6 +6345,7 @@ function LittleFiresApp() {
 
         .archived-task-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 10px;
           justify-content: flex-end;
         }
@@ -6177,6 +6411,7 @@ function LittleFiresApp() {
 
         .goal-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 10px;
         }
 
@@ -6321,6 +6556,7 @@ function LittleFiresApp() {
 
         .project-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 10px;
           justify-content: flex-end;
         }
@@ -6378,6 +6614,7 @@ function LittleFiresApp() {
 
         .project-date-field {
           display: flex;
+          flex-wrap: wrap;
           align-items: center;
           gap: 10px;
           flex: 1 1 auto;
@@ -6437,6 +6674,7 @@ function LittleFiresApp() {
 
         .project-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 10px;
           margin-top: 40px;
           padding-top: 30px;
@@ -6560,6 +6798,7 @@ function LittleFiresApp() {
 
         .modal-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 15px;
           justify-content: flex-end;
           margin-top: 25px;
@@ -6756,6 +6995,11 @@ function LittleFiresApp() {
         .calendar-controls {
           margin-bottom: 20px;
           display: flex;
+          /* Wraps. Without this the four filter chips stayed on one line and,
+             being centred, overflowed off both edges of a portrait screen -
+             then got clipped by the container's overflow-x: hidden, so they
+             couldn't even be scrolled to. */
+          flex-wrap: wrap;
           gap: 20px;
           justify-content: center;
         }
@@ -6836,7 +7080,10 @@ function LittleFiresApp() {
           right: 0;
           bottom: 0;
           display: grid;
-          grid-template-columns: repeat(7, 1fr);
+          /* Must mirror .calendar-grid exactly - this overlay sits on top of
+             the day cells, so any difference in track sizing or gap shows up
+             as timeline bars that don't line up with their days. */
+          grid-template-columns: repeat(7, minmax(0, 1fr));
           gap: 8px;
           pointer-events: none;
           z-index: 1;
@@ -6873,7 +7120,12 @@ function LittleFiresApp() {
 
         .calendar-grid {
           display: grid;
-          grid-template-columns: repeat(7, 1fr);
+          /* minmax(0, 1fr), not 1fr. A plain 1fr is minmax(auto, 1fr), and that
+             auto floor stops a column shrinking below its content - with seven
+             of them plus gaps, the row got wider than the screen and the last
+             column was clipped by the container's overflow-x: hidden. */
+          grid-template-columns: repeat(7, minmax(0, 1fr));
+          width: 100%;
           gap: 8px;
           margin-bottom: 30px;
           position: relative;
@@ -6890,6 +7142,13 @@ function LittleFiresApp() {
 
         .calendar-day {
           aspect-ratio: 1;
+          /* border-box keeps the cell square: with the default content-box the
+             aspect ratio applies to the content area and padding + border are
+             added on top, so cells came out taller than wide. min-width:0
+             removes the automatic minimum an aspect-ratio grid item otherwise
+             gets, which is the other half of the overflow. */
+          box-sizing: border-box;
+          min-width: 0;
           background: rgba(52, 52, 72, 0.6);
           border: 2px solid rgba(100, 116, 139, 0.2);
           border-radius: 12px;
@@ -7336,6 +7595,16 @@ function LittleFiresApp() {
 
           .details-richtext {
             padding: 10px 12px;
+            /* No inner cap on mobile. The base rule caps this at 300px with its
+               own scrollbar, but on mobile it sits inside .tasks-container,
+               which is already a scroller at 68vh - so a swipe over the details
+               moved one of two nested scrollers, more or less at random.
+               Letting the card grow leaves a single scroller and reads as a
+               much larger writing area without changing the font or padding.
+               min-height is viewport-relative so it scales with the device
+               rather than sitting at a fixed 100px. */
+            max-height: none;
+            min-height: 25vh;
           }
 
           /* Details toolbar (Box / Bullets / Follow Up): the global button rule
@@ -7423,9 +7692,46 @@ function LittleFiresApp() {
           }
 
           /* --- Calendar: 7 columns need every pixel --- */
+          .calendar-controls {
+            gap: 8px;
+            margin-bottom: 14px;
+          }
+
+          .calendar-checkbox {
+            font-size: 0.8rem;
+            padding: 6px 10px;
+            gap: 6px;
+            border-width: 1px;
+          }
+
+          /* 2rem across three words plus two nav buttons doesn't fit portrait.
+             min-width:0 lets the title shrink instead of pushing the buttons
+             out of the row. */
+          .calendar-header h2 {
+            font-size: 1.3rem;
+            min-width: 0;
+          }
+
+          .month-nav-btn {
+            padding: 8px 14px;
+            font-size: 1.1rem;
+          }
+
           .calendar-grid {
             gap: 3px;
             margin-bottom: 18px;
+          }
+
+          /* Kept in step with .calendar-grid above - when only the grid gap was
+             reduced, the timeline overlay stayed on 8px tracks and drifted out
+             of alignment with the days underneath it. */
+          .project-timelines {
+            gap: 3px;
+          }
+
+          .day-number {
+            font-size: 0.85rem;
+            margin-bottom: 2px;
           }
 
           .calendar-day {
@@ -7498,6 +7804,50 @@ function LittleFiresApp() {
           .note-content .task-checkbox:hover {
             transform: none;
           }
+        }
+
+        /* --- Touch feedback ------------------------------------------------
+           iOS paints a translucent grey box over anything tappable and pops a
+           text-selection callout on long press; both read as "web page" rather
+           than "app". The property is inherited, so setting it on the container
+           covers everything inside it.
+           Removing those leaves nothing at all acknowledging a press, since the
+           hover effects deliberately don't apply on touch - so :active supplies
+           it instead. This block sits after the @media (hover: none) rules
+           above on purpose: iOS latches :hover on tap, so both match at once
+           and they carry equal specificity. Source order is what decides, and
+           the press state has to win. */
+        .little-fires-container {
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Deliberately not applied to .details-richtext, .note-content, inputs
+           or textareas - selecting and copying text there is wanted. */
+        button,
+        .tab,
+        .hamburger-icon,
+        .list-section-header,
+        .calendar-day,
+        .checkbox-wrapper,
+        .assign-pill,
+        .shared-badge,
+        .fire-flag-icon {
+          -webkit-touch-callout: none;
+        }
+
+        button:active,
+        .tab:active,
+        .assign-pill:active,
+        .month-nav-btn:active,
+        .list-section-header:active,
+        .hamburger-icon:active,
+        .calendar-day:not(.empty):active {
+          transform: scale(0.97);
+        }
+
+        /* Gentler on a full-width row, where 0.97 reads as a lurch. */
+        .task:not(.expanded):active {
+          transform: scale(0.99);
         }
       `}</style>
 
@@ -8192,7 +8542,9 @@ function LittleFiresApp() {
                             }}
                             title="Bold"
                           >
-                            <strong style={{fontWeight: 900}}>B</strong>
+                            {/* 700, not 900: 900 isn't among the loaded weights,
+                                so the browser was synthesising it. */}
+                            <strong style={{fontWeight: 700}}>B</strong>
                           </button>
                           <button 
                             className="toolbar-btn"
@@ -9945,7 +10297,6 @@ function LittleFiresApp() {
                                   key={task.id}
                                   task={task}
                                   listName={task.listName}
-                                  index={task.index}
                                   showMoveButtons={true}
                                 />
                               ))
@@ -10019,7 +10370,6 @@ function LittleFiresApp() {
                                   key={task.id}
                                   task={task}
                                   listName={task.listName}
-                                  index={task.index}
                                   showMoveButtons={true}
                                 />
                               ))
@@ -10099,8 +10449,7 @@ function LittleFiresApp() {
                                       key={task.id}
                                       task={task}
                                       listName={task.listName}
-                                      index={task.index}
-                                      showMoveButtons={true}
+                                          showMoveButtons={true}
                                     />
                                   ))
                                 )}
@@ -11860,24 +12209,32 @@ function LittleFiresApp() {
                             pauses and resumes in lockstep with the timer.
                             Offset goes from 597 (empty) to 0 (full ring) as
                             elapsed time approaches the selected duration. */}
-                        {(isLogging || loggedSeconds > 0) && (
-                          <circle
-                            cx="105"
-                            cy="105"
-                            r="95"
-                            fill="none"
-                            strokeWidth="8"
-                            strokeDasharray="597"
-                            strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
-                            strokeLinecap="round"
-                            style={{
-                              // var() only resolves as a CSS property, never as
-                              // an SVG attribute - so stroke lives here
-                              stroke: isLogging ? 'var(--accent)' : '#a0aec0',
-                              transition: 'stroke 0.3s ease'
-                            }}
-                          />
-                        )}
+                        {/* Always mounted, not conditional. A freshly mounted
+                            element has no previous value to transition from, so
+                            it would appear already at the one-second mark
+                            instead of sweeping there. At full offset nothing is
+                            drawn, so an idle ring is invisible anyway. */}
+                        <circle
+                          cx="105"
+                          cy="105"
+                          r="95"
+                          fill="none"
+                          strokeWidth="8"
+                          strokeDasharray={RING_CIRCUMFERENCE}
+                          strokeDashoffset={ringOffset}
+                          strokeLinecap="round"
+                          style={{
+                            // var() only resolves as a CSS property, never as
+                            // an SVG attribute - so stroke lives here
+                            stroke: isLogging ? 'var(--accent)' : '#a0aec0',
+                            // Interpolates between the once-a-second updates, on
+                            // the compositor - far cheaper than re-rendering 20
+                            // times a second, and smooth. linear rather than
+                            // ease: easing would accelerate and settle inside
+                            // every step, reading as a pulse once a second.
+                            transition: ringTransition
+                          }}
+                        />
                       </svg>
                       
                       {/* Fire Icon */}
@@ -13120,24 +13477,32 @@ function LittleFiresApp() {
                           stroke="rgba(58, 58, 74, 0.3)"
                           strokeWidth="8"
                         />
-                        {(isLogging || loggedSeconds > 0) && (
-                          <circle
-                            cx="105"
-                            cy="105"
-                            r="95"
-                            fill="none"
-                            strokeWidth="8"
-                            strokeDasharray="597"
-                            strokeDashoffset={597 - 597 * (Number(timerDuration) > 0 ? Math.min(1, loggedSeconds / Number(timerDuration)) : (loggedSeconds % 60) / 60)}
-                            strokeLinecap="round"
-                            style={{
-                              // var() only resolves as a CSS property, never as
-                              // an SVG attribute - so stroke lives here
-                              stroke: isLogging ? 'var(--accent)' : '#a0aec0',
-                              transition: 'stroke 0.3s ease'
-                            }}
-                          />
-                        )}
+                        {/* Always mounted, not conditional. A freshly mounted
+                            element has no previous value to transition from, so
+                            it would appear already at the one-second mark
+                            instead of sweeping there. At full offset nothing is
+                            drawn, so an idle ring is invisible anyway. */}
+                        <circle
+                          cx="105"
+                          cy="105"
+                          r="95"
+                          fill="none"
+                          strokeWidth="8"
+                          strokeDasharray={RING_CIRCUMFERENCE}
+                          strokeDashoffset={ringOffset}
+                          strokeLinecap="round"
+                          style={{
+                            // var() only resolves as a CSS property, never as
+                            // an SVG attribute - so stroke lives here
+                            stroke: isLogging ? 'var(--accent)' : '#a0aec0',
+                            // Interpolates between the once-a-second updates, on
+                            // the compositor - far cheaper than re-rendering 20
+                            // times a second, and smooth. linear rather than
+                            // ease: easing would accelerate and settle inside
+                            // every step, reading as a pulse once a second.
+                            transition: ringTransition
+                          }}
+                        />
                       </svg>
                       
                       {/* Fire Icon */}
@@ -13572,8 +13937,7 @@ function LittleFiresApp() {
                         searchResults.tasks.push({
                           item: task,
                           listName,
-                          label: listLabels[listName],
-                          index: allLists[listName].indexOf(task)
+                          label: listLabels[listName]
                         });
                       });
                     });
@@ -13673,7 +14037,6 @@ function LittleFiresApp() {
                                 <Task
                                   task={result.item}
                                   listName={result.listName}
-                                  index={result.index}
                                   showMoveButtons={true}
                                 />
                               </div>
@@ -14088,9 +14451,8 @@ function LittleFiresApp() {
                         <span className={`badge ${listName}`}>{tasks.length}</span>
                       </div>
                       {!isArchiveSectionCollapsed(`archive-tasks-${listName}`) && tasks.map((task, idx) => {
-                        const actualIndex = archivedTasks[listName].findIndex(t => t === task);
                         return (
-                          <div key={idx} className="archived-task">
+                          <div key={task.id ?? idx} className="archived-task">
                             <div className="task-text">{task.text}</div>
                             <div className="task-meta">
                               {task.completedAt && (
@@ -14107,13 +14469,13 @@ function LittleFiresApp() {
                             <div className="archived-task-actions">
                               <button
                                 className="edit-btn"
-                                onClick={() => unarchiveTask(listName, actualIndex)}
+                                onClick={() => unarchiveTask(listName, task.id)}
                               >
                                 Unarchive
                               </button>
                               <button
                                 className="delete-btn"
-                                onClick={() => deleteArchivedTask(listName, actualIndex)}
+                                onClick={() => deleteArchivedTask(listName, task.id)}
                               >
                                 Delete
                               </button>
@@ -14908,6 +15270,119 @@ function LittleFiresApp() {
                       Drag the handle to reorder, or use the arrows. The order applies to
                       the tabs, All Tasks, and Reports. Leave a name blank to restore its
                       default. At least one list must stay on.
+                    </div>
+                  </div>
+
+                  {/* ---- Partner ---- */}
+                  <div style={card}>
+                    <div style={heading}>Partner</div>
+                    <div style={sub}>
+                      Applies to the shared {listLabel(SHARED_LIST_KEY)} list, where tasks
+                      show who they're assigned to.
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Name</div>
+                        <div style={hint}>
+                          Shown on shared tasks instead of "Partner". Renaming the list
+                          itself is separate, under Lists.
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        value={settings.partnerName}
+                        onChange={(e) => updateSetting('partnerName', e.target.value)}
+                        placeholder="Partner"
+                        maxLength={18}
+                        style={{
+                          width: '150px', padding: '9px 10px',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                          borderRadius: '8px', color: '#f4e8d8', fontSize: '0.92rem',
+                          fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                        }}
+                      />
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Color</div>
+                        <div style={hint}>
+                          Used for their badge and the Assigned pill, so it reads apart
+                          from your own tasks at a glance.
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        {/* Live preview - the same classes the task card uses, so
+                            this can't drift from the real thing. */}
+                        <span className="shared-badge partner" style={{ margin: 0 }}>
+                          {(settings.partnerName || '').trim() || 'Partner'}
+                        </span>
+                        <input
+                          type="color"
+                          value={settings.partnerColor}
+                          onChange={(e) => updateSetting('partnerColor', e.target.value)}
+                          style={{
+                            width: '46px', height: '38px', padding: '2px', cursor: 'pointer',
+                            background: 'rgba(42, 42, 62, 1)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            borderRadius: '8px'
+                          }}
+                        />
+                        <button
+                          onClick={() => updateSetting('partnerColor', DEFAULT_SETTINGS.partnerColor)}
+                          style={{
+                            padding: '9px 14px', borderRadius: '8px', cursor: 'pointer',
+                            background: 'rgba(42, 42, 62, 1)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            color: '#b8a99a', fontSize: '0.8rem',
+                            fontFamily: 'Quicksand, sans-serif'
+                          }}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Linked account</div>
+                        <div style={hint}>
+                          Saved for when shared lists start syncing between devices.
+                          Nothing is sent anywhere yet, and this list stays on this
+                          device only.
+                        </div>
+                      </div>
+                      <input
+                        type="email"
+                        inputMode="email"
+                        autoComplete="off"
+                        value={settings.partnerAccountEmail}
+                        onChange={(e) => updateSetting('partnerAccountEmail', e.target.value)}
+                        placeholder="name@example.com"
+                        style={{
+                          width: '210px', maxWidth: '100%', padding: '9px 10px',
+                          background: 'rgba(42, 42, 62, 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                          borderRadius: '8px', color: '#f4e8d8', fontSize: '0.92rem',
+                          fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                        }}
+                      />
+                    </div>
+
+                    <div style={{
+                      marginTop: '14px', paddingTop: '12px',
+                      borderTop: '1px solid rgba(var(--accent-rgb), 0.15)',
+                      display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap'
+                    }}>
+                      <span style={{
+                        width: '8px', height: '8px', borderRadius: '50%',
+                        background: '#b8a99a', flexShrink: 0
+                      }} />
+                      <span style={{ ...hint, marginTop: 0 }}>
+                        Not linked — syncing isn't available yet.
+                      </span>
                     </div>
                   </div>
 

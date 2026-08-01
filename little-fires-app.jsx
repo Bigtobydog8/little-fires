@@ -286,6 +286,93 @@ function makeId() {
   return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
+// --- Rich text sanitising ---------------------------------------------------
+// Task details and note bodies are stored as HTML and rendered with
+// dangerouslySetInnerHTML. On a single device the only person who can put a
+// <script> in your own notes is you. The moment a list is shared that stops
+// being true: whatever your partner types is rendered inside your session, with
+// reach over everything in localStorage. So the HTML is filtered on the way in
+// and on the way out.
+//
+// The allowlist is small because the editors only ever produce a handful of
+// tags: contenteditable divs and spans, <br>, bold from execCommand, bullet
+// lists, and the checkbox inputs.
+const RICH_TEXT_TAGS = new Set([
+  'DIV', 'SPAN', 'P', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'INPUT'
+]);
+// Classes carry real behaviour and styling here, so a few are kept - but only
+// these, so nothing can borrow the app's own styling to fake UI.
+const RICH_TEXT_CLASSES = new Set([
+  'task-checkbox', 'checkbox-line', 'follow-up-heading'
+]);
+
+function sanitizeRichText(html) {
+  if (!html || typeof html !== 'string') return '';
+  if (typeof document === 'undefined') return '';
+
+  // createHTMLDocument gives an inert document: parsing happens, but images
+  // don't fetch and nothing executes. Assigning to a live element's innerHTML
+  // would fire <img onerror> before we ever got to strip it.
+  const doc = document.implementation.createHTMLDocument('');
+  doc.body.innerHTML = html;
+
+  const walk = (parent) => {
+    // Static copy: the loop removes and unwraps as it goes.
+    Array.from(parent.childNodes).forEach(node => {
+      if (node.nodeType === 3) return;              // text is always fine
+      if (node.nodeType !== 1) { node.remove(); return; }  // comments, etc
+
+      const tag = node.tagName;
+
+      if (!RICH_TEXT_TAGS.has(tag)) {
+        // Unknown tags are unwrapped rather than deleted, so a paste wrapped in
+        // some foreign element keeps its text. script and style are the
+        // exception - there, the text content is the payload.
+        if (tag === 'SCRIPT' || tag === 'STYLE') {
+          node.remove();
+        } else {
+          // Clean the subtree BEFORE promoting it. This loop iterates a
+          // snapshot of the children taken on entry, so anything moved up here
+          // would otherwise never be visited - and a payload one level inside a
+          // disallowed wrapper (<form><img onerror=...></form>) would ride
+          // straight through untouched.
+          walk(node);
+          while (node.firstChild) parent.insertBefore(node.firstChild, node);
+          node.remove();
+        }
+        return;
+      }
+
+      // The only input the editors make is a checkbox. Anything else claiming
+      // to be an input is not ours.
+      if (tag === 'INPUT' && node.getAttribute('type') !== 'checkbox') {
+        node.remove();
+        return;
+      }
+
+      Array.from(node.attributes).forEach(attr => {
+        const name = attr.name.toLowerCase();
+        if (name === 'class') {
+          const kept = attr.value.split(/\s+/).filter(c => RICH_TEXT_CLASSES.has(c));
+          if (kept.length) node.setAttribute('class', kept.join(' '));
+          else node.removeAttribute('class');
+          return;
+        }
+        if (tag === 'INPUT' && (name === 'type' || name === 'checked')) return;
+        // Everything else goes: on* handlers, src, href, srcset, style,
+        // contenteditable, data-*. Nothing in the allowlist needs them, and an
+        // attribute allowlist can't be outflanked the way a blocklist can.
+        node.removeAttribute(attr.name);
+      });
+
+      walk(node);
+    });
+  };
+
+  walk(doc.body);
+  return doc.body.innerHTML;
+}
+
 function LittleFiresApp() {
   // ---- Guarded storage ----------------------------------------------------
   // localStorage.setItem throws when the quota is exceeded, and in Safari
@@ -718,8 +805,32 @@ function LittleFiresApp() {
     return { merged: out, added };
   };
 
+  // Rich text from an imported file is untrusted: the file may not have come
+  // from this app at all. Cleaned once at the boundary so nothing downstream
+  // has to remember to, and so the stored value is already safe.
+  const cleanImportedRichText = (d) => {
+    const cleanTasks = (byList) => {
+      if (!byList || typeof byList !== 'object') return byList;
+      const out = {};
+      Object.keys(byList).forEach(k => {
+        out[k] = Array.isArray(byList[k])
+          ? byList[k].map(t => (t && t.details) ? { ...t, details: sanitizeRichText(t.details) } : t)
+          : byList[k];
+      });
+      return out;
+    };
+    return {
+      ...d,
+      lists: cleanTasks(d.lists),
+      archived: cleanTasks(d.archived),
+      notes: Array.isArray(d.notes)
+        ? d.notes.map(n => (n && n.content) ? { ...n, content: sanitizeRichText(n.content) } : n)
+        : d.notes
+    };
+  };
+
   const applyBackup = (payload, mode) => {
-    const d = payload.data || {};
+    const d = cleanImportedRichText(payload.data || {});
     if (mode === 'replace') {
       if (d.lists) setAllLists(d.lists);
       if (d.archived) setArchivedTasks(d.archived);
@@ -1188,6 +1299,39 @@ function LittleFiresApp() {
     return parsed;
   });
 
+  // Deletion tombstones: { [taskId]: deletedAtISO }.
+  //
+  // Sync can't tell "this task was deleted" apart from "this device hasn't seen
+  // this task yet" - both look like an id that's present on one side and absent
+  // on the other. Without a record of the deletion, the next sync helpfully
+  // restores everything you removed. Recording ids in a side table rather than
+  // leaving dead rows in the lists themselves means nothing that renders,
+  // filters, counts or exports has to learn to skip them.
+  const TOMBSTONE_TTL_DAYS = 90;
+  const [deletedTaskIds, setDeletedTaskIds] = useState(() => {
+    try {
+      const saved = localStorage.getItem('little_fires_deleted');
+      const parsed = saved ? JSON.parse(saved) : {};
+      // Prune on load. A tombstone only has to outlive the longest plausible
+      // gap between a device deleting something and its partner syncing; kept
+      // forever it would grow without limit.
+      const cutoff = Date.now() - TOMBSTONE_TTL_DAYS * 24 * 60 * 60 * 1000;
+      const pruned = {};
+      Object.entries(parsed).forEach(([id, at]) => {
+        const t = Date.parse(at);
+        if (!Number.isNaN(t) && t >= cutoff) pruned[id] = at;
+      });
+      return pruned;
+    } catch {
+      return {};
+    }
+  });
+
+  const recordDeletion = (taskId) => {
+    if (taskId === undefined || taskId === null) return;
+    setDeletedTaskIds(prev => ({ ...prev, [taskId]: new Date().toISOString() }));
+  };
+
   const [archivedTasks, setArchivedTasks] = useState(() => {
     const saved = localStorage.getItem('little_fires_archived');
     const parsed = saved ? JSON.parse(saved) : {
@@ -1574,6 +1718,10 @@ function LittleFiresApp() {
     safeSetItem('little_fires_archived', JSON.stringify(archivedTasks));
   }, [archivedTasks]);
 
+  useEffect(() => {
+    safeSetItem('little_fires_deleted', JSON.stringify(deletedTaskIds));
+  }, [deletedTaskIds]);
+
   // Auto-archive completed tasks from previous months on app load and daily
   useEffect(() => {
     const checkAndArchive = () => {
@@ -1700,6 +1848,7 @@ function LittleFiresApp() {
       details: '',
       id: makeId(),
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       projectId: null,
       // Only stamped on the shared list. Elsewhere these fields would be noise,
       // and their absence is what keeps a personal task rendering as one.
@@ -1734,20 +1883,43 @@ function LittleFiresApp() {
     return i === -1 ? null : list[i];
   };
 
-  const toggleTask = (listName, taskId) => {
+  // The single write path for editing a task in place.
+  //
+  // Every field mutator routes through here, which buys three things at once.
+  // It replaces the task object rather than mutating it: the old code shallow
+  // copied the outer map and then wrote through to the original task, so `prev`
+  // and `next` shared the same object and there was no previous version left to
+  // diff against - which is exactly what sync needs to decide what changed.
+  // It stamps updatedAt, so no caller can forget. And it addresses by id, so a
+  // stale reference fails as a no-op instead of hitting whatever now sits at
+  // that position.
+  //
+  // `patch` may be an object or a function of the current task. A key set to
+  // undefined clears that field - JSON.stringify drops undefined, so it doesn't
+  // survive into storage.
+  const updateTask = (listName, taskId, patch) => {
     setAllLists(prev => {
-      const newLists = { ...prev };
-      const task = findTask(newLists[listName], taskId);
-      if (!task) return prev;
-      task.completed = !task.completed;
+      const list = prev[listName] || [];
+      const idx = findTaskIndex(list, taskId);
+      if (idx === -1) return prev;
+      const current = list[idx];
+      const changes = typeof patch === 'function' ? patch(current) : patch;
+      if (!changes) return prev;
+      const nextList = [...list];
+      nextList[idx] = { ...current, ...changes, updatedAt: new Date().toISOString() };
+      return { ...prev, [listName]: nextList };
+    });
+  };
 
-      if (task.completed) {
-        task.completedAt = new Date().toISOString();
-      } else {
-        delete task.completedAt;
-      }
-
-      return newLists;
+  const toggleTask = (listName, taskId) => {
+    updateTask(listName, taskId, (task) => {
+      const completed = !task.completed;
+      return {
+        completed,
+        // undefined rather than delete: the task object is rebuilt by spread,
+        // and JSON.stringify drops undefined, so the key doesn't persist.
+        completedAt: completed ? new Date().toISOString() : undefined
+      };
     });
   };
 
@@ -1763,7 +1935,10 @@ function LittleFiresApp() {
     return collapsedArchiveSections[sectionKey] !== false;
   };
 
-  const deleteTask = (listName, taskId) => {
+  // Removal without a tombstone. Archiving moves a task out of the active list
+  // but it still exists, under the same id, in the archive - tombstoning it
+  // would tell the other device to destroy a task that was only filed away.
+  const removeTaskFromList = (listName, taskId) => {
     setAllLists(prev => {
       const newLists = { ...prev };
       const idx = findTaskIndex(newLists[listName], taskId);
@@ -1773,6 +1948,12 @@ function LittleFiresApp() {
     });
   };
 
+  // Actual deletion: gone, and recorded as gone.
+  const deleteTask = (listName, taskId) => {
+    removeTaskFromList(listName, taskId);
+    recordDeletion(taskId);
+  };
+
   const archiveTask = (listName, taskId) => {
     const task = findTask(allLists[listName], taskId);
     if (!task || !task.completed) return; // Only archive completed tasks
@@ -1780,11 +1961,18 @@ function LittleFiresApp() {
     // Add to archived tasks
     setArchivedTasks(prev => ({
       ...prev,
-      [listName]: [...(prev[listName] || []), { ...task, archivedAt: new Date().toISOString() }]
+      // Archiving is a state change like any other, so it stamps too - without
+      // it, two devices disagreeing about whether a task is archived have no
+      // way to tell which opinion is newer.
+      [listName]: [...(prev[listName] || []), {
+        ...task,
+        archivedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }]
     }));
 
-    // Remove from active lists
-    deleteTask(listName, taskId);
+    // Removed, not deleted - see removeTaskFromList.
+    removeTaskFromList(listName, taskId);
   };
 
   const unarchiveTask = (listName, taskId) => {
@@ -1794,7 +1982,11 @@ function LittleFiresApp() {
     // Add back to active lists
     setAllLists(prev => ({
       ...prev,
-      [listName]: [...prev[listName], { ...task, archivedAt: undefined }]
+      [listName]: [...prev[listName], {
+        ...task,
+        archivedAt: undefined,
+        updatedAt: new Date().toISOString()
+      }]
     }));
 
     // Remove from archived
@@ -1815,57 +2007,35 @@ function LittleFiresApp() {
       newArchived[listName].splice(idx, 1);
       return newArchived;
     });
+    recordDeletion(taskId);
   };
 
   const updateTaskDetails = (listName, taskId, details) => {
-    setAllLists(prev => {
-      const newLists = { ...prev };
-      const target = findTask(newLists[listName], taskId);
-      if (!target) return prev;
-      target.details = details;
-      return newLists;
-    });
+    // Filtered on write as well as on render. Render-time is the guarantee -
+    // it covers data that was already stored, or arrived from an import - but
+    // cleaning at the boundary keeps what's persisted (and later, synced) free
+    // of anything that would have to be stripped again.
+    updateTask(listName, taskId, { details: sanitizeRichText(details) });
   };
 
   // Used by the inline rename field, which is a controlled input - so unlike
   // the mutate-in-place helpers around it, this replaces the task object.
   const renameTask = (listName, taskId, text) => {
-    setAllLists(prev => {
-      const list = prev[listName] || [];
-      const idx = findTaskIndex(list, taskId);
-      if (idx === -1) return prev;
-      const nextList = [...list];
-      nextList[idx] = { ...nextList[idx], text };
-      return { ...prev, [listName]: nextList };
-    });
+    updateTask(listName, taskId, { text });
   };
 
   const updateTaskDueDate = (listName, taskId, newDueDate) => {
-    setAllLists(prev => {
-      const newLists = { ...prev };
-      // Still updated in place. The original reason - preserving object
-      // identity for indexOf() lookups and for the native date picker - is gone
-      // on both counts, but the mutate-in-place style is shared with the
-      // helpers around it and changing it belongs in its own pass.
-      const target = findTask(newLists[listName], taskId);
-      if (!target) return prev;
-      target.dueDate = newDueDate || null;
-      // No time picker in the UI, so a date implies midnight local (Eastern for
-      // you). Stored explicitly so reminders and calendar sync have a real
-      // timestamp to work from later.
-      target.dueTime = newDueDate ? '00:00' : null;
-      return newLists;
+    updateTask(listName, taskId, {
+      dueDate: newDueDate || null,
+      // No time picker in the UI, so a date implies midnight local. Stored
+      // explicitly so reminders and calendar sync have a real timestamp to work
+      // from later.
+      dueTime: newDueDate ? '00:00' : null
     });
   };
 
   const updateTaskPriority = (listName, taskId, priority) => {
-    setAllLists(prev => {
-      const newLists = { ...prev };
-      const target = findTask(newLists[listName], taskId);
-      if (!target) return prev;
-      target.priority = priority;
-      return newLists;
-    });
+    updateTask(listName, taskId, { priority });
   };
 
   // --- Shared-task assignment (Partner sync groundwork) ---------------------
@@ -1873,32 +2043,21 @@ function LittleFiresApp() {
   // exist once sync ships - swapping this over later is a string comparison
   // change, not a redesign. Cycle: unassigned -> me -> partner -> unassigned.
   const cycleAssignment = (listName, taskId) => {
-    setAllLists(prev => {
-      const newLists = { ...prev };
-      const target = findTask(newLists[listName], taskId);
-      if (!target) return prev;
-      const next = target.assignedTo === 'me' ? 'partner'
-        : target.assignedTo === 'partner' ? null
-        : 'me';
-      target.assignedTo = next;
-      return newLists;
-    });
+    updateTask(listName, taskId, (task) => ({
+      assignedTo: task.assignedTo === 'me' ? 'partner'
+        : task.assignedTo === 'partner' ? null
+        : 'me'
+    }));
   };
 
   const moveTaskToSection = (listName, taskId, newSection) => {
-    setAllLists(prev => {
-      const newLists = { ...prev };
-      const target = findTask(newLists[listName], taskId);
-      if (!target) return prev;
-      target.section = newSection;
-      return newLists;
-    });
+    updateTask(listName, taskId, { section: newSection });
   };
 
   // Note management functions
   const addNote = () => {
     const newNote = {
-      id: Date.now(),
+      id: makeId(),
       date: new Date().toISOString(),
       content: '',
       tags: [],
@@ -1910,7 +2069,7 @@ function LittleFiresApp() {
 
   const updateNote = (id, content) => {
     setNotes(prev => prev.map(note => 
-      note.id === id ? { ...note, content } : note
+      note.id === id ? { ...note, content: sanitizeRichText(content) } : note
     ));
   };
 
@@ -1977,7 +2136,7 @@ function LittleFiresApp() {
         return;
       }
       
-      const imageId = Date.now();
+      const imageId = makeId();
       
       // Add image to note
       setNotes(prev => prev.map(note => {
@@ -2128,7 +2287,7 @@ function LittleFiresApp() {
         return;
       }
       
-      const photoId = Date.now();
+      const photoId = makeId();
       
       // Add photo to gallery (without OCR processing)
       setNotes(prev => prev.map(note => {
@@ -2547,7 +2706,7 @@ function LittleFiresApp() {
   // Project management functions
   const addProject = (listName, name, description, startDate, endDate) => {
     const newProject = {
-      id: Date.now(),
+      id: makeId(),
       name,
       description,
       challenge: '',
@@ -2638,7 +2797,7 @@ function LittleFiresApp() {
     
     try {
       const compressedImage = await compressImage(file);
-      const photoId = Date.now();
+      const photoId = makeId();
       
       setProjects(prev => ({
         ...prev,
@@ -2715,7 +2874,7 @@ function LittleFiresApp() {
   // Goal Functions
   const addGoal = (listName, name, description, startDate, endDate) => {
     const newGoal = {
-      id: Date.now(),
+      id: makeId(),
       name,
       description: description || '',
       challenge: '',
@@ -2781,7 +2940,7 @@ function LittleFiresApp() {
     
     try {
       const compressedImage = await compressImage(file);
-      const photoId = Date.now();
+      const photoId = makeId();
       
       setGoals(prev => ({
         ...prev,
@@ -2939,6 +3098,7 @@ function LittleFiresApp() {
       details: '',
       id: makeId(),
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       projectId: projectId
     };
 
@@ -3059,15 +3219,18 @@ function LittleFiresApp() {
   };
 
   const assignTaskToProject = (listName, taskId, projectId) => {
-    setAllLists(prev => {
-      const newLists = { ...prev };
-      const target = findTask(newLists[listName], taskId);
-      if (!target) return prev;
-      // Project ids are still numeric - only task ids changed - so the incoming
-      // value from the <select> is coerced back to a number.
-      target.projectId = projectId ? Number(projectId) : null;
-      return newLists;
-    });
+    // Project ids are no longer guaranteed numeric: ones created before this
+    // change are numbers, new ones are strings. The <select> always hands back
+    // a string, so resolving it against the real project keeps the stored value
+    // the same type as that project's own id - coercing blindly in either
+    // direction breaks one of the two. Falls back to the raw value if nothing
+    // matches.
+    let canonical = null;
+    if (projectId) {
+      const match = getAllProjects().find(p => String(p.id) === String(projectId));
+      canonical = match ? match.id : projectId;
+    }
+    updateTask(listName, taskId, { projectId: canonical });
   };
 
   const Task = ({ task, listName, showMoveButtons }) => {
@@ -3275,7 +3438,12 @@ function LittleFiresApp() {
       if (isExpanded && detailsRef.current) {
         // Only set content once when first expanded
         if (!hasSetInitialContent.current) {
-          detailsRef.current.innerHTML = task.details || '';
+          // Sanitized here too, not just on write. A task's details can arrive
+          // from a restored backup - and later from a partner's device - so the
+          // stored value can't be assumed to have gone through this app's own
+          // editor. This assignment is into a live element, so anything unsafe
+          // would execute immediately.
+          detailsRef.current.innerHTML = sanitizeRichText(task.details || '');
           hasSetInitialContent.current = true;
           // After loading, reflect any already-complete child sets on their parents
           setTimeout(() => syncParentCheckboxes(detailsRef.current), 0);
@@ -3785,17 +3953,12 @@ function LittleFiresApp() {
                   detailsArea.focus();
 
                   // Build a "Follow Up" heading line with the matcha underline
+                  // Styled by .follow-up-heading rather than inline: the
+                  // sanitiser strips style attributes, so anything set here
+                  // would be discarded on the next save.
                   const heading = document.createElement('div');
                   heading.className = 'follow-up-heading';
-                  heading.style.display = 'block';
-                  heading.style.fontWeight = 'bold';
-                  heading.style.borderBottom = '2px solid rgba(var(--accent-rgb), 0.55)';
-                  heading.style.paddingBottom = '6px';
-                  heading.style.marginBottom = '8px';
-                  heading.style.marginTop = '18px';
                   const headingSpan = document.createElement('span');
-                  headingSpan.contentEditable = 'true';
-                  headingSpan.style.fontWeight = 'bold';
                   headingSpan.textContent = 'Follow Up';
                   heading.appendChild(headingSpan);
                   
@@ -5770,6 +5933,19 @@ function LittleFiresApp() {
           background: rgba(var(--partner-rgb), 0.2);
           color: var(--partner);
           border: 1px solid rgba(var(--partner-rgb), 0.45);
+        }
+
+        /* The Follow Up heading used to be styled entirely by inline styles set
+           when it was created. The sanitiser strips style attributes, so the
+           look lives here instead - which also covers headings already saved in
+           existing task details, since they carry this class. */
+        .follow-up-heading {
+          display: block;
+          font-weight: bold;
+          border-bottom: 2px solid rgba(var(--accent-rgb), 0.55);
+          padding-bottom: 6px;
+          margin-bottom: 8px;
+          margin-top: 18px;
         }
 
         .assign-field {
@@ -8884,7 +9060,7 @@ function LittleFiresApp() {
                               }, 0);
                             }
                           }}
-                          dangerouslySetInnerHTML={{ __html: note.content || '' }}
+                          dangerouslySetInnerHTML={{ __html: sanitizeRichText(note.content) }}
                         />
 
                         {/* Photo Gallery Section */}
@@ -10789,7 +10965,7 @@ function LittleFiresApp() {
                                     {item.data.details && (
                                       <div className="task-detail-section">
                                         <div className="details-label">Details:</div>
-                                        <div className="task-details-text" dangerouslySetInnerHTML={{ __html: item.data.details }} />
+                                        <div className="task-details-text" dangerouslySetInnerHTML={{ __html: sanitizeRichText(item.data.details) }} />
                                       </div>
                                     )}
                                     {item.data.dueDate && (
@@ -10857,8 +11033,12 @@ function LittleFiresApp() {
                               >
                                 <div 
                                   className="item-preview"
-                                  dangerouslySetInnerHTML={{ 
-                                    __html: (item.data.content || 'Empty note').substring(0, isExpanded ? undefined : 150) + (isExpanded ? '' : '...')
+                                  dangerouslySetInnerHTML={{
+                                    // Sanitise first, then truncate. Truncating
+                                    // raw HTML can also cut a tag in half and
+                                    // leave the markup unbalanced.
+                                    __html: sanitizeRichText(item.data.content || 'Empty note')
+                                      .substring(0, isExpanded ? undefined : 150) + (isExpanded ? '' : '...')
                                   }}
                                 />
                                 {item.data.tags && item.data.tags.length > 0 && (
@@ -12522,7 +12702,7 @@ function LittleFiresApp() {
                       onClick={() => {
                         if (loggedMinutes > 0 && timeLoggerContext) {
                           const newTimeLog = {
-                            id: Date.now(),
+                            id: makeId(),
                             minutes: loggedMinutes,
                             focus: timeLogFocus,
                             description: timeLogDescription,
@@ -13796,7 +13976,7 @@ function LittleFiresApp() {
                       onClick={() => {
                         if (loggedMinutes > 0) {
                           const newTimeLog = {
-                            id: Date.now(),
+                            id: makeId(),
                             minutes: loggedMinutes,
                             focus: timeLogFocus,
                             description: timeLogDescription,

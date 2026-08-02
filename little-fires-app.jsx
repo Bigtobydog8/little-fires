@@ -359,7 +359,19 @@ function sanitizeRichText(html) {
           return;
         }
         if (tag === 'INPUT' && (name === 'type' || name === 'checked')) return;
-        // Everything else goes: on* handlers, src, href, srcset, style,
+        // Nested checklists carry their indent as an inline margin-left, so a
+        // blanket style strip silently flattened them on every save. Rather
+        // than allow style through, the value is rebuilt from scratch: parse
+        // one number out, discard the original string, emit a known-good
+        // declaration. Nothing an attacker writes can survive that, because
+        // nothing of theirs is copied - only a matched integer.
+        if (name === 'style') {
+          const indent = /(?:^|;)\s*margin-left\s*:\s*(\d{1,3})px\s*(?:;|$)/i.exec(attr.value);
+          if (indent) node.setAttribute('style', 'margin-left: ' + indent[1] + 'px');
+          else node.removeAttribute('style');
+          return;
+        }
+        // Everything else goes: on* handlers, src, href, srcset,
         // contenteditable, data-*. Nothing in the allowlist needs them, and an
         // attribute allowlist can't be outflanked the way a blocklist can.
         node.removeAttribute(attr.name);
@@ -3321,10 +3333,17 @@ function LittleFiresApp() {
         else cb.removeAttribute('checked');
       });
       const content = area.innerHTML;
-      if (!force && content === task.details) return;
-      // updateTaskDetails sanitizes on write, so this is what task.details will
-      // come back as - store the sanitized form or the comparison never matches.
-      lastSavedHtmlRef.current = sanitizeRichText(content);
+      // Sanitize FIRST, then compare. task.details is always the sanitized
+      // form, while area.innerHTML is the live DOM - and the editor's own
+      // builders write things the sanitizer strips (inline style, the span's
+      // contenteditable). Comparing raw DOM against sanitized storage could
+      // therefore never match, so this fired a save on every blur and every
+      // tick whether anything had changed or not - and each of those saves
+      // re-rendered, remounted the subtree and reloaded the editor. Comparing
+      // like with like makes "unchanged" actually mean unchanged.
+      const cleaned = sanitizeRichText(content);
+      if (!force && cleaned === task.details) return;
+      lastSavedHtmlRef.current = cleaned;
       updateTaskDetails(listName, task.id, content);
     };
 
@@ -3872,7 +3891,6 @@ function LittleFiresApp() {
                       // details area handles parent auto-check for all checkboxes.
                       const line = document.createElement('div');
                       line.className = 'checkbox-line';
-                      line.style.display = 'flex';
                       const span = document.createElement('span');
                       span.contentEditable = 'true';
                       span.innerHTML = '&nbsp;';
@@ -4236,7 +4254,6 @@ function LittleFiresApp() {
                     // Create new checkbox line with same indent
                     const newCheckboxLine = document.createElement('div');
                     newCheckboxLine.className = 'checkbox-line';
-                    newCheckboxLine.style.display = 'flex';
                     newCheckboxLine.style.marginLeft = currentIndent + 'px';
                     
                     const newCheckbox = document.createElement('input');
@@ -6117,6 +6134,14 @@ function LittleFiresApp() {
         .details-richtext li::marker {
           color: var(--accent) !important;
           font-weight: bold;
+        }
+
+        .details-richtext .checkbox-line {
+          /* Was an inline style on each line, which the sanitizer stripped on
+             every save - so a saved checklist lost its layout. As a rule keyed
+             off the class (which IS allowlisted) it can't be stripped. */
+          display: flex;
+          align-items: flex-start;
         }
 
         .details-richtext .task-checkbox {

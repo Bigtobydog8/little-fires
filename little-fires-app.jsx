@@ -412,6 +412,58 @@ function LittleFiresApp() {
   }, []);
 
 
+  // Persistence is debounced and coalesced per key.
+  //
+  // Each of these keys holds an entire collection as one JSON blob, and each
+  // was rewritten in full, synchronously, on every change to its state - so
+  // ticking one checkbox re-serialised and wrote the whole task list, on the
+  // main thread. Batching turns a burst of edits into a single write, and
+  // deferring the stringify means the serialisation cost is paid once too.
+  //
+  // The value is passed as a thunk rather than a string precisely so that
+  // stringify is skipped for every superseded write. A later call for the same
+  // key replaces the earlier thunk, so only the final state is ever encoded.
+  const pendingWritesRef = React.useRef(new Map());
+  const flushTimerRef = React.useRef(null);
+
+  const flushWrites = React.useCallback(() => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const pending = pendingWritesRef.current;
+    if (!pending.size) return;
+    pending.forEach((getValue, key) => {
+      try {
+        safeSetItem(key, getValue());
+      } catch (err) {
+        console.error('Deferred write failed for ' + key + ':', err);
+      }
+    });
+    pending.clear();
+  }, [safeSetItem]);
+
+  const queueSetItem = React.useCallback((key, getValue) => {
+    pendingWritesRef.current.set(key, getValue);
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = setTimeout(flushWrites, 400);
+  }, [flushWrites]);
+
+  // A debounce must never be able to cost data. Anything still pending is
+  // written the moment the page is hidden or torn down - pagehide is the
+  // reliable one on iOS, where unload often doesn't fire at all.
+  useEffect(() => {
+    const onHide = () => flushWrites();
+    const onVisibility = () => { if (document.hidden) flushWrites(); };
+    window.addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+      flushWrites();
+    };
+  }, [flushWrites]);
+
   const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar', 'reports'
   const [menuOpen, setMenuOpen] = useState(false);
   const [currentList, setCurrentList] = useState('master');
@@ -517,6 +569,10 @@ function LittleFiresApp() {
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
     reduceMotion: false,
+    // Drops the frosted-glass backdrop blur. Separate from reduceMotion because
+    // it's not about motion: blur is a continuous GPU cost, re-computed on every
+    // composite, whereas an animation costs only while it runs.
+    batterySaver: false,
     // --- Partner (shared list) ---
     // partnerName is the display name shown on shared tasks. It is separate
     // from listLabels.partner, which renames the list itself - one is a person,
@@ -658,6 +714,11 @@ function LittleFiresApp() {
     document.body.classList.toggle('reduce-motion', !!settings.reduceMotion);
     return () => document.body.classList.remove('reduce-motion');
   }, [settings.reduceMotion]);
+
+  useEffect(() => {
+    document.body.classList.toggle('battery-saver', !!settings.batterySaver);
+    return () => document.body.classList.remove('battery-saver');
+  }, [settings.batterySaver]);
 
   // The CSS guards cover anything driven by a transition or keyframe, but not
   // motion started from JS - scrollIntoView({behavior:'smooth'}) ignores them
@@ -1533,20 +1594,20 @@ function LittleFiresApp() {
   });
 
   useEffect(() => {
-    safeSetItem('little_fires_lists', JSON.stringify(allLists));
-  }, [allLists]);
+    queueSetItem('little_fires_lists', () => JSON.stringify(allLists));
+  }, [allLists, queueSetItem]);
 
   useEffect(() => {
-    safeSetItem('little_fires_notes', JSON.stringify(notes));
-  }, [notes]);
+    queueSetItem('little_fires_notes', () => JSON.stringify(notes));
+  }, [notes, queueSetItem]);
 
   useEffect(() => {
-    safeSetItem('little_fires_projects', JSON.stringify(projects));
-  }, [projects]);
+    queueSetItem('little_fires_projects', () => JSON.stringify(projects));
+  }, [projects, queueSetItem]);
 
   useEffect(() => {
-    safeSetItem('little_fires_goals', JSON.stringify(goals));
-  }, [goals]);
+    queueSetItem('little_fires_goals', () => JSON.stringify(goals));
+  }, [goals, queueSetItem]);
 
   useEffect(() => {
     safeSetItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
@@ -1732,12 +1793,12 @@ function LittleFiresApp() {
   }, [loggedSeconds, isLogging]);
 
   useEffect(() => {
-    safeSetItem('little_fires_archived', JSON.stringify(archivedTasks));
-  }, [archivedTasks]);
+    queueSetItem('little_fires_archived', () => JSON.stringify(archivedTasks));
+  }, [archivedTasks, queueSetItem]);
 
   useEffect(() => {
-    safeSetItem('little_fires_deleted', JSON.stringify(deletedTaskIds));
-  }, [deletedTaskIds]);
+    queueSetItem('little_fires_deleted', () => JSON.stringify(deletedTaskIds));
+  }, [deletedTaskIds, queueSetItem]);
 
   // Auto-archive completed tasks from previous months on app load and daily
   useEffect(() => {
@@ -5152,6 +5213,16 @@ function LittleFiresApp() {
             animation-iteration-count: 1 !important;
             transition-duration: 0.001ms !important;
           }
+        }
+
+        /* Backdrop blur re-computes the blurred region on every composite, which
+           is one of the more expensive things a mobile GPU is asked to do. The
+           surfaces underneath are near-opaque already, so dropping it costs
+           very little visually. Universal selector because the blur is applied
+           across a dozen separate rules. */
+        .battery-saver *, .battery-saver *::before, .battery-saver *::after {
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
         }
 
         .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after {
@@ -15793,7 +15864,7 @@ function LittleFiresApp() {
                       />
                     </div>
 
-                    <div style={{ ...row, marginBottom: 0 }}>
+                    <div style={row}>
                       <div style={{ flex: 1, minWidth: '180px' }}>
                         <div style={label}>Reduce motion</div>
                         <div style={hint}>
@@ -15804,6 +15875,20 @@ function LittleFiresApp() {
                       <Toggle
                         on={settings.reduceMotion}
                         onChange={(v) => updateSetting('reduceMotion', v)}
+                      />
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Battery saver</div>
+                        <div style={hint}>
+                          Drops the frosted-glass blur behind cards and menus. The
+                          app looks slightly flatter and asks less of the GPU.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.batterySaver}
+                        onChange={(v) => updateSetting('batterySaver', v)}
                       />
                     </div>
                   </div>

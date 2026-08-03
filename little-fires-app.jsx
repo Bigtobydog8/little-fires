@@ -654,14 +654,40 @@ function LittleFiresApp() {
     // The fill is a parameter because the two icons need different treatment:
     // the favicon sits on a browser tab of unknown colour, while the touch icon
     // sits on an accent-filled square and has to contrast with it.
-    const flameSVG = (fill) => `<svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280"><g transform="translate(0,1280) scale(0.1,-0.1)" fill="${fill}"><path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/><path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/><path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/></g></svg>`;
+    // The artwork is not centred in its own viewBox: measured bounds are
+    // x 200-1091, y 7-933, so its centre is (645.5, 470.4) against a viewBox
+    // centre of (640, 640). It sat high with dead space underneath, which is
+    // what made the icon read small. Re-centred explicitly rather than assumed.
+    const FLAME_CX = 645.5;
+    const FLAME_CY = 470.4;
+    const FLAME_PATHS = `<path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/><path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/><path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>`;
+
+    // scale is relative to the viewBox, so 1 keeps the original size. `ring`
+    // draws an enclosing circle; its stroke reaches to about 8 units from the
+    // canvas edge, so the icon fills the space a bare flame left empty.
+    const flameSVG = (fill, { ring = null, scale = 1 } = {}) => {
+      const circle = ring
+        ? `<circle cx="640" cy="640" r="600" fill="none" stroke="${ring}" stroke-width="64"/>`
+        : '';
+      // Two nested transforms: the inner one is the artwork's own coordinate
+      // mapping and must not change; the outer works in viewBox space to
+      // centre and scale it.
+      return `<svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280">`
+        + circle
+        + `<g transform="translate(640,640) scale(${scale}) translate(${-FLAME_CX},${-FLAME_CY})">`
+        + `<g transform="translate(0,1280) scale(0.1,-0.1)" fill="${fill}">${FLAME_PATHS}</g>`
+        + `</g></svg>`;
+    };
     const toURI = (markup) => 'data:image/svg+xml,' + encodeURIComponent(markup);
 
     document.querySelectorAll("link[rel*='icon']").forEach(l => l.remove());
     const link = document.createElement('link');
     link.rel = 'icon';
     link.type = 'image/svg+xml';
-    link.href = toURI(flameSVG(accent));
+    // Black flame in a black ring, matching the logo in the app header.
+    // 0.85 keeps the flame clear of the ring: at full size its bounding
+    // half-diagonal is 642 against an inner ring radius of 568.
+    link.href = toURI(flameSVG('#000000', { ring: '#000000', scale: 0.85 }));
     document.head.appendChild(link);
 
     // iOS home-screen icon: cream flame on an accent square.
@@ -687,7 +713,7 @@ function LittleFiresApp() {
       appleTouchLink.href = canvas.toDataURL('image/png');
       document.head.appendChild(appleTouchLink);
     };
-    img.src = toURI(flameSVG('#f4e8d8'));
+    img.src = toURI(flameSVG('#f4e8d8', { scale: 0.92 }));
 
     // Updated in place rather than appended - this effect re-runs on every
     // accent change, and the previous version created duplicate tags each time.
@@ -15306,6 +15332,17 @@ function LittleFiresApp() {
                 color: '#b8a99a', fontSize: '0.82rem',
                 fontFamily: 'Quicksand, sans-serif', marginBottom: '16px', lineHeight: 1.45
               };
+              // For grouping within a card: lighter than `heading` so the card
+              // still reads as one thing, heavier than `label` so it doesn't
+              // look like a field name.
+              const subheading = {
+                color: '#f4e8d8', fontSize: '0.92rem', fontWeight: '700',
+                fontFamily: 'Quicksand, sans-serif', marginBottom: '4px'
+              };
+              const divider = {
+                borderTop: '1px solid rgba(var(--accent-rgb), 0.15)',
+                margin: '20px 0 16px'
+              };
               const row = {
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 gap: '14px', flexWrap: 'wrap', marginBottom: '14px'
@@ -15744,9 +15781,9 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
-                  {/* ---- Sections ---- */}
+                  {/* ---- Menu Sections ---- */}
                   <div style={card}>
-                    <div style={heading}>Sections</div>
+                    <div style={heading}>Menu Sections</div>
                     <div style={sub}>
                       Switch off parts of the app you don't use. Hidden sections disappear
                       from the menu, calendar, and search — nothing is deleted, and turning
@@ -15797,9 +15834,14 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
-                  {/* ---- Reports ---- */}
+                  {/* ---- Report Settings ---- */}
                   <div style={card}>
-                    <div style={heading}>Fire Goal</div>
+                    <div style={heading}>Report Settings</div>
+                    <div style={sub}>
+                      Goals and starting views for the Reports page.
+                    </div>
+
+                    <div style={subheading}>Fire Goal</div>
                     <div style={sub}>
                       How many completed tasks fully light the flame on the Reports page.
                     </div>
@@ -15829,11 +15871,10 @@ function LittleFiresApp() {
                         style={numInput}
                       />
                     </div>
-                  </div>
 
-                  {/* ---- Defaults ---- */}
-                  <div style={card}>
-                    <div style={heading}>Defaults</div>
+                    <div style={divider} />
+
+                    <div style={subheading}>Report Defaults</div>
                     <div style={sub}>What the app starts on each time you open it.</div>
 
                     <div style={row}>
@@ -15870,9 +15911,9 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
-                  {/* ---- Behavior ---- */}
+                  {/* ---- App Behavior ---- */}
                   <div style={card}>
-                    <div style={heading}>Behavior</div>
+                    <div style={heading}>App Behavior</div>
                     <div style={sub}>How the app responds as you work.</div>
 
                     <div style={row}>

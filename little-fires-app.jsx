@@ -767,6 +767,13 @@ function LittleFiresApp() {
 
     let frame = null;
     const reveal = () => {
+      // Nothing is covering the caret unless the keyboard is up, and this runs
+      // on every selectionchange - which is every keystroke. Both
+      // getBoundingClientRect and getComputedStyle below force a synchronous
+      // layout, so the cheap comparison goes first: with no keyboard the visual
+      // viewport is the full height and there is nothing to do.
+      if (vv.height >= window.innerHeight - 80) return;
+
       const el = document.activeElement;
       if (!el) return;
       // Only text entry moves the caret behind the keyboard. A checkbox has no
@@ -1610,17 +1617,25 @@ function LittleFiresApp() {
   }, [goals, queueSetItem]);
 
   useEffect(() => {
-    safeSetItem('standaloneTimeLogs', JSON.stringify(standaloneTimeLogs));
-  }, [standaloneTimeLogs]);
+    queueSetItem('standaloneTimeLogs', () => JSON.stringify(standaloneTimeLogs));
+  }, [standaloneTimeLogs, queueSetItem]);
 
   // Keep the narrow-screen flag in sync (also fires on device rotation)
   useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth <= 700);
-    window.addEventListener('resize', onResize);
-    window.addEventListener('orientationchange', onResize);
+    // matchMedia rather than a resize listener reading innerWidth. resize fires
+    // constantly on iOS - the address bar collapsing during scroll, the
+    // keyboard opening - and each read of innerWidth forces a layout. A media
+    // query listener fires only when the answer actually changes.
+    const mq = window.matchMedia('(max-width: 700px)');
+    const onChange = (e) => setIsMobile(e.matches);
+    setIsMobile(mq.matches);
+    // addEventListener on MediaQueryList is the modern form; addListener is the
+    // fallback for older WebKit.
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else mq.addListener(onChange);
     return () => {
-      window.removeEventListener('resize', onResize);
-      window.removeEventListener('orientationchange', onResize);
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else mq.removeListener(onChange);
     };
   }, []);
 
@@ -5223,6 +5238,15 @@ function LittleFiresApp() {
         .battery-saver *, .battery-saver *::before, .battery-saver *::after {
           backdrop-filter: none !important;
           -webkit-backdrop-filter: none !important;
+        }
+
+        /* The ambient glow layer: fixed, 200% x 200% - four screens of area -
+           and three stacked radial gradients. Being fixed, the compositor holds
+           that whole surface while you scroll. Hiding it is the single biggest
+           saving in this mode; the background gradient underneath carries the
+           look on its own. */
+        .battery-saver .little-fires-container::before {
+          display: none !important;
         }
 
         .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after {
@@ -15882,8 +15906,9 @@ function LittleFiresApp() {
                       <div style={{ flex: 1, minWidth: '180px' }}>
                         <div style={label}>Battery saver</div>
                         <div style={hint}>
-                          Drops the frosted-glass blur behind cards and menus. The
-                          app looks slightly flatter and asks less of the GPU.
+                          Drops the frosted-glass blur and the ambient glow layer.
+                          The app looks slightly flatter and asks much less of the
+                          GPU, especially while scrolling.
                         </div>
                       </div>
                       <Toggle

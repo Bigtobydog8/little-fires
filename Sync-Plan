@@ -1,0 +1,338 @@
+# Little Fires — Sync Implementation Plan
+
+A session-by-session route from "local-only app" to "shared Partner list that
+syncs between two people."
+
+**Read this first, in a fresh session, before touching sync code.**
+
+---
+
+## The one constraint that shapes everything
+
+Claude cannot run this app, and cannot reach Firebase from its sandbox. Every
+piece of sync code will be written blind and verified by **you**, on a device.
+
+That is why this plan is broken into small steps that each end in a shippable,
+testable state. It is not caution for its own sake — a parse check cannot catch
+a `ReferenceError` on one interaction path, and that failure mode has already
+bitten once this project (a `useLayoutEffect` change that parsed clean and
+crashed the app).
+
+**Rule: never end a session with sync half-wired.** Each session below leaves
+the app working, whether or not the next one ever happens.
+
+---
+
+## Already done (do not redo)
+
+These prerequisites are complete and committed. A future session should verify
+rather than rebuild.
+
+| Prerequisite | State |
+|---|---|
+| Collision-resistant IDs | `makeId()` (UUID + fallback) on all creation sites |
+| ID-based addressing | All task mutators take `(listName, taskId)`; no array positions |
+| `updatedAt` on every task | Stamped by `updateTask()`, the single write path |
+| Tombstones | `deletedTaskIds` side table, 90-day TTL, pruned on load |
+| Immutable updates | `updateTask()` replaces the task object; `prev` stays intact |
+| HTML sanitization | Allowlist at every read and write boundary, incl. backup import |
+| Shared-list plumbing | `SHARED_LIST_KEY`, `createdBy` / `assignedTo` / `completedBy` |
+| Partner settings | Name, colour, linked-account field in Settings |
+
+Two things are **not** done:
+
+- **Item 6 — `Task` is defined inside `LittleFiresApp`.** React sees a new
+  component type every parent render and remounts the whole task subtree. This
+  becomes a *correctness* problem once updates arrive from a partner, because a
+  remount mid-edit discards contenteditable state. Scheduled as Session 0.
+- **`PROJECT-HANDOFF.md` is stale.** It still lists index-based mutations,
+  `Date.now()` IDs and unsanitized HTML as open debt. All fixed. It will
+  actively mislead a fresh session until rewritten.
+
+---
+
+## Decisions already made
+
+Do not relitigate these in a later session unless something has changed.
+
+**Data model.** Shared tasks do not live in either person's data. They live in a
+household both people belong to.
+
+```
+households/{householdId}
+  members:     [uidA, uidB]
+  active:      true
+  createdAt
+  dissolvedAt: null
+
+households/{householdId}/tasks/{taskId}
+  text, details, dueDate, dueTime, completed, priority, section
+  createdBy:   uid
+  assignedTo:  uid | null
+  completedBy: uid | null
+  createdAt, updatedAt, completedAt
+  archived:    false
+  deletedAt:   null            // tombstone
+  members:     [uidA, uidB]    // denormalised copy of household.members
+```
+
+`members` is deliberately duplicated onto every task. Rules could look up the
+parent household instead, but that is an extra document read on every operation
+for a value that essentially never changes. Two uids cost nothing and keep the
+rules cheap.
+
+**Permissions.** Either partner may read, create, edit and complete any shared
+task. Delete is restricted to the creator or the assignee. An unassigned task
+falls back to creator-only.
+
+```
+match /households/{householdId}/tasks/{taskId} {
+  allow read:   if request.auth.uid in resource.data.members;
+  allow create: if request.auth.uid in request.resource.data.members
+                && request.resource.data.createdBy == request.auth.uid;
+  allow update: if request.auth.uid in resource.data.members;
+  allow delete: if request.auth.uid in resource.data.members
+                && (resource.data.createdBy == request.auth.uid
+                    || resource.data.assignedTo == request.auth.uid);
+}
+```
+
+**Unpairing archives, it does not delete.** Household gets `active: false` and a
+`dissolvedAt`; a batch write flips `archived: true` on every task. Both people
+keep read access to the dissolved household, so history survives. One batch
+covers it (Firestore allows 500 writes per batch), so **no Cloud Function is
+needed** — which matters, because Cloud Functions require the paid Blaze plan
+and this fits comfortably in free Spark.
+
+**Only the Partner list syncs.** The other five lists stay local. This is the
+single biggest scope reducer in the plan; resist widening it.
+
+---
+
+## Before Session 1 — setup you do outside chat
+
+Claude cannot do any of this. Have it finished before the session starts.
+
+1. **Create a Firebase project** at console.firebase.google.com. Name it
+   anything; disable Google Analytics (nothing here uses it, and it adds an SDK).
+2. **Enable Authentication → Sign-in method → Google.**
+3. **Create a Firestore database.** Start in **production mode** (locked). The
+   rules above go in during Session 2 — do not start in test mode and forget.
+4. **Register a Web app** (the `</>` icon) and copy the config object. It looks
+   like `{ apiKey, authDomain, projectId, ... }`.
+5. **Add your hosting domain** under Authentication → Settings → Authorized
+   domains. `localhost` is there by default. **If the app is served from GitHub
+   Pages or anywhere else, add that domain too — sign-in fails silently
+   otherwise, and it is an easy hour to lose.**
+6. Have the config object ready to paste into the session.
+
+**On the config being "secret": it isn't.** Firebase web config is public by
+design; the `apiKey` identifies the project, it does not authorise anything.
+Security comes entirely from the Firestore rules. Committing it is normal and
+fine.
+
+---
+
+## Session 0 — Hoist `Task` (no Firebase)
+
+**Why first.** Pure local refactor, no external dependency, and it removes the
+remount that would otherwise discard in-progress edits when a partner's change
+arrives. Good warm-up and de-risks Session 4.
+
+**The work.** Move `Task` out of `LittleFiresApp` to module scope. AST scope
+analysis has already been run — it has **exactly 22 free identifiers**:
+
+- Need nothing (already module scope): `React`, `sanitizeRichText`,
+  `parseLocalDateTime`, `isFeatureOn`
+- Move to module scope: `SHARED_LIST_KEY`, `partnerDisplayName`
+- Become props (16): `settings`, `getAllProjects`, `expandedTaskId`,
+  `setExpandedTaskId`, `editingTaskName`, `setEditingTaskName`, `toggleTask`,
+  `deleteTask`, `archiveTask`, `renameTask`, `cycleAssignment`,
+  `moveTaskToSection`, `assignTaskToProject`, `updateTaskDetails`,
+  `updateTaskDueDate`, `updateTaskPriority`
+
+Consider a context or a single `handlers` object rather than 16 separate props.
+
+**Verify.** Expand a task, edit details, tick a checkbox mid-edit, rename inline,
+change due date, assign a project, complete, archive, delete. Then confirm the
+flash on tick is gone — that is the visible proof the remount stopped.
+
+**Done when.** Everything above works and ticking a checkbox no longer flashes.
+
+**Rollback.** Single commit, revert cleanly.
+
+---
+
+## Session 1 — Auth only, no data
+
+**Goal.** A working Google sign-in. Nothing syncs yet.
+
+**The work.**
+- `npm install firebase`
+- A `firebase.js` module: init app, export `auth` and `db`
+- Sign in / sign out in Settings, under the Partner card
+- Show signed-in email and avatar; persist across reload
+
+**Use the redirect flow, not popup.** Popup sign-in is unreliable inside an iOS
+home-screen web app. Redirect navigates away and returns, so anything unsaved in
+page state must survive that — which the debounced-write flush on `pagehide`
+already handles, but verify it.
+
+**Verify.**
+- Sign in on desktop
+- Sign in on iOS **from the home-screen app**, not just Safari — this is the one
+  that breaks
+- Reload: still signed in
+- Sign out, sign back in
+- Airplane mode: app still works fully offline, since nothing depends on auth yet
+
+**Done when.** You can sign in on both devices and the app is otherwise
+unchanged.
+
+**Rollback.** Sign-in UI is additive; remove the Settings block.
+
+---
+
+## Session 2 — Households and pairing
+
+**Goal.** Two accounts can pair. Still no task sync.
+
+This is the session people underestimate. "How does my partner join" is a
+feature, not a setting.
+
+**The work.**
+- Firestore rules deployed (households + tasks, as above)
+- On first sign-in, create a household with `members: [myUid]`
+- Generate a short invite code; store `invites/{code} -> householdId`, with an
+  expiry
+- Join flow: enter code → add uid to `members` → delete the invite
+- Guard: someone already in an active household cannot join another
+- Unpair: `active: false`, `dissolvedAt`, and the archive batch
+- Settings shows: paired / not paired, partner's name, invite code, Unpair
+
+**Verify.**
+- Account A creates a household, generates a code
+- Account B joins with it
+- Both see each other as paired
+- A used code cannot be reused
+- B cannot join a second household while paired
+- Unpair from either side; both drop to unpaired
+- Try to read another household's doc in the Firebase console as the wrong user
+  — rules should refuse
+
+**Done when.** Two real accounts pair and unpair reliably, and the rules reject
+what they should.
+
+**Rollback.** Delete the household docs; app returns to local-only.
+
+---
+
+## Session 3 — One-way push (local → cloud)
+
+**Goal.** Partner-list tasks appear in Firestore. The app still reads only from
+localStorage.
+
+Deliberately one-way. Nothing can corrupt local data, because nothing is read
+back yet.
+
+**The work.**
+- On any write to `SHARED_LIST_KEY`, mirror the task to
+  `households/{id}/tasks/{taskId}`
+- Map local `'me'` / `'partner'` placeholders to real uids — this is the
+  find-and-replace the placeholders were designed for
+- Deletes write `deletedAt` rather than removing the doc
+- Enable Firestore offline persistence (`persistentLocalCache`) — this hands you
+  offline write queueing for free
+
+**Verify.** Add, edit, complete, delete a Partner task; watch each appear and
+change in the Firebase console. Then go offline, make changes, come back online,
+and confirm they land.
+
+**Done when.** The console mirrors your Partner list. The app behaves exactly as
+before.
+
+**Rollback.** Remove the mirror call. Local data untouched throughout.
+
+---
+
+## Session 4 — Two-way sync
+
+**Goal.** Changes from either device appear on both.
+
+The hard one. Do not start it in a session that is already half-spent.
+
+**The work.**
+- `onSnapshot` on the household tasks collection
+- Merge remote into local state: last-write-wins on `updatedAt`
+- Honour `deletedAt` tombstones — a delete must not resurrect
+- Ignore your own echo (writes come back through the listener)
+- Do not clobber a task the user is actively editing
+
+**Verify.**
+- Two devices side by side: add on A, appears on B
+- Complete on B, reflects on A, with the right `completedBy` badge
+- Delete on A, disappears on B and stays gone after reload
+- Edit the same task on both while one is offline; reconnect; newest wins
+- Edit details on A while B changes the same task — the editor must not be
+  yanked out from under you
+
+**Done when.** All of the above, including the offline reconnect case.
+
+**Rollback.** Detach the listener; you are back to Session 3's one-way push,
+which still works.
+
+---
+
+## Session 5 — Hardening
+
+**Goal.** Make it trustworthy rather than demoable.
+
+- Sync status indicator (synced / offline / error)
+- Auth errors: expired token, revoked access, wrong account
+- Firestore quota and permission-denied errors surfaced, not swallowed
+- Unpair archive verified with a realistic number of tasks
+- Partner's display name pulled from their profile rather than typed by hand
+- Decide what happens if a partner deletes their account
+
+---
+
+## Known traps
+
+**iOS home-screen auth.** Test sign-in from the installed app, not just Safari.
+Different storage context, different redirect behaviour.
+
+**Authorized domains.** Sign-in fails silently from an unlisted domain.
+
+**Your own echo.** Every write returns through the snapshot listener. Without a
+guard this either loops or overwrites what you just typed.
+
+**Placeholder uids.** `'me'` and `'partner'` are string literals throughout the
+task code. Session 3 replaces them; miss one and assignment silently breaks.
+
+**Naming collision.** The built-in "Partner" list means tasks *about* your
+partner. The shared list means tasks *with* them. Consider renaming one —
+"Household" or "Us" — before this ships, or it will confuse both of you.
+
+**Do not use `useLayoutEffect` where the cleanup writes state.** Already crashed
+the app once. The details editor's save-on-cleanup makes this specific trap live.
+
+**Both files must be committed.** `index.html` carries the font `<link>` tags and
+`viewport-fit=cover`. Committing only the `.jsx` silently loses the fonts.
+
+---
+
+## Suggested order
+
+```
+Session 0   Hoist Task                    local only, no dependency
+Session 1   Auth                          needs Firebase project
+Session 2   Households + pairing          needs two Google accounts
+Session 3   One-way push                  safe, reversible
+Session 4   Two-way sync                  the hard one
+Session 5   Hardening
+```
+
+Sessions 0, 1 and 3 are low-risk. Session 2 is larger than it sounds. Session 4
+deserves a full fresh session with nothing else in it.
+
+Stopping after any session leaves a working app.

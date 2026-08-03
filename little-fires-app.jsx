@@ -7689,8 +7689,23 @@ function LittleFiresApp() {
           margin-left: 20px;
         }
 
+        /* No stripe at rest - the card alone. The 4px is still reserved as a
+           transparent border so nothing shifts sideways when the stripe
+           appears; animating border-color rather than border-width also keeps
+           this off the layout path. */
         .task-item {
-          border-left: 4px solid #ff6b6b;
+          border-left: 4px solid transparent;
+          transition: border-left-color 0.2s ease, border-color 0.3s ease,
+                      background 0.3s ease;
+        }
+
+        /* Hover only. Wrapped because a tap latches :hover on touchscreens,
+           which would leave the stripe stuck on after tapping a card - the same
+           reason the app's other hover effects are guarded. */
+        @media (hover: hover) {
+          .task-item:hover {
+            border-left-color: var(--accent);
+          }
         }
 
         .note-item {

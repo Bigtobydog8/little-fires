@@ -298,13 +298,32 @@ function makeId() {
 // tags: contenteditable divs and spans, <br>, bold from execCommand, bullet
 // lists, and the checkbox inputs.
 const RICH_TEXT_TAGS = new Set([
-  'DIV', 'SPAN', 'P', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'INPUT'
+  'DIV', 'SPAN', 'P', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'INPUT', 'A'
 ]);
 // Classes carry real behaviour and styling here, so a few are kept - but only
 // these, so nothing can borrow the app's own styling to fake UI.
 const RICH_TEXT_CLASSES = new Set([
-  'task-checkbox', 'checkbox-line', 'follow-up-heading'
+  'task-checkbox', 'checkbox-line', 'follow-up-heading', 'task-link'
 ]);
+
+// Link targets are rebuilt, never passed through. Parsing with the URL
+// constructor rather than pattern-matching matters: "javascript:" can be
+// smuggled past a regex using embedded newlines, tabs, control characters or
+// HTML entities, but none of that survives being parsed and re-serialised.
+// Anything that isn't a plain web or mail address comes back null.
+const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+function safeHref(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    const base = (typeof window !== 'undefined' && window.location)
+      ? window.location.href
+      : 'https://localhost/';
+    const url = new URL(value, base);
+    return SAFE_LINK_PROTOCOLS.has(url.protocol) ? url.href : null;
+  } catch (err) {
+    return null;
+  }
+}
 
 function sanitizeRichText(html) {
   if (!html || typeof html !== 'string') return '';
@@ -359,6 +378,15 @@ function sanitizeRichText(html) {
           return;
         }
         if (tag === 'INPUT' && (name === 'type' || name === 'checked')) return;
+        if (tag === 'A' && name === 'href') {
+          const safe = safeHref(attr.value);
+          if (safe) node.setAttribute('href', safe);
+          else node.removeAttribute('href');
+          return;
+        }
+        // The title is the full URL, shown on hover - plain text, and useful
+        // because the visible label is just "Link".
+        if (tag === 'A' && name === 'title') return;
         // Nested checklists carry their indent as an inline margin-left, so a
         // blanket style strip silently flattened them on every save. Rather
         // than allow style through, the value is rebuilt from scratch: parse
@@ -376,6 +404,22 @@ function sanitizeRichText(html) {
         // attribute allowlist can't be outflanked the way a blocklist can.
         node.removeAttribute(attr.name);
       });
+
+      if (tag === 'A') {
+        if (!node.getAttribute('href')) {
+          // The href didn't survive validation, so this is no longer a link.
+          // Unwrap rather than keep a dead anchor that still looks clickable.
+          const parent = node.parentNode;
+          while (node.firstChild) parent.insertBefore(node.firstChild, node);
+          parent.removeChild(node);
+          return;
+        }
+        // Set here rather than trusted from the input: a link that opens in
+        // this tab would navigate away from the app and lose unsaved edits,
+        // and without noopener the opened page can reach back via window.opener.
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
 
       walk(node);
     });
@@ -3974,6 +4018,14 @@ function LittleFiresApp() {
           checkbox.contentEditable = 'false';
           checkbox.onclick = null;
           checkbox.onchange = null;
+        });
+
+        // Links get the same treatment. The paste handler marks them
+        // non-editable so the "Link" label can't be typed into, but the
+        // sanitizer strips contenteditable - so it has to be reapplied
+        // whenever stored content is loaded back in.
+        detailsArea.querySelectorAll('a.task-link').forEach(a => {
+          a.contentEditable = 'false';
         });
       }
       

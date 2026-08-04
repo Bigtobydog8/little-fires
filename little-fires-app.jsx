@@ -385,6 +385,36 @@ function sanitizeRichText(html) {
   return doc.body.innerHTML;
 }
 
+// Battery saver defaults on for touch devices. Phones and tablets run on a
+// battery and pay the real cost of backdrop blur and a full-screen gradient
+// layer; a desktop plugged into the wall does not. Deliberately tests the
+// pointer rather than the viewport width - a desktop browser with a narrow
+// window is still a desktop, and would otherwise be opted in for no reason.
+//
+// Evaluated once at module load rather than inside the component, because
+// DEFAULT_SETTINGS is rebuilt on every render and the answer cannot change for
+// the life of the page.
+const IS_TOUCH_DEVICE =
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+// The timer's duration choices, defined once. The dropdown, the label shown on
+// it and the progress ring all read from here - previously the list and a long
+// ternary chain that mapped values to labels were each duplicated across two
+// render sites, so adding an option meant four edits and leaving one behind
+// showed a duration with no name.
+const DURATION_OPTIONS = [
+  { value: '', label: 'Timer' },
+  { value: 300, label: '5 Minutes' },
+  { value: 420, label: '7 Minutes' },
+  { value: 600, label: '10 Minutes' },
+  { value: 900, label: '15 Minutes' },
+  { value: 1500, label: '25 Minutes' },
+  { value: 1800, label: '30 Minutes' },
+  { value: 3600, label: '60 Minutes' }
+];
+
 function LittleFiresApp() {
   // ---- Guarded storage ----------------------------------------------------
   // localStorage.setItem throws when the quota is exceeded, and in Safari
@@ -569,10 +599,19 @@ function LittleFiresApp() {
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
     reduceMotion: false,
-    // Drops the frosted-glass backdrop blur. Separate from reduceMotion because
-    // it's not about motion: blur is a continuous GPU cost, re-computed on every
-    // composite, whereas an animation costs only while it runs.
-    batterySaver: false,
+    // --- Pomodoro ---
+    // Cirillo's canonical numbers: 25 work, 5 short, 15 long, long every 4th.
+    pomodoroEnabled: false,
+    pomodoroWork: 1500,
+    pomodoroShortBreak: 300,
+    pomodoroLongBreak: 900,
+    pomodoroInterval: 4,
+    pomodoroAutoStart: true,
+    // Drops the frosted-glass backdrop blur and the ambient glow layer. Separate
+    // from reduceMotion because it's not about motion: blur is a continuous GPU
+    // cost, re-computed on every composite, whereas an animation costs only
+    // while it runs. Defaults on for touch devices - see IS_TOUCH_DEVICE.
+    batterySaver: IS_TOUCH_DEVICE,
     // --- Partner (shared list) ---
     // partnerName is the display name shown on shared tasks. It is separate
     // from listLabels.partner, which renames the list itself - one is a person,
@@ -1526,6 +1565,7 @@ function LittleFiresApp() {
   const [showTimeLogger, setShowTimeLogger] = useState(false);
   const [isLogging, setIsLogging] = useState(false);
   const [loggedMinutes, setLoggedMinutes] = useState(0);
+
   const [loggedSeconds, setLoggedSeconds] = useState(0); // Accumulated seconds while logging
   const [timerDuration, setTimerDuration] = useState(() => {
     try {
@@ -1541,6 +1581,169 @@ function LittleFiresApp() {
   const [timeLogFocus, setTimeLogFocus] = useState('');
   const [timeLogDescription, setTimeLogDescription] = useState('');
   const [timeLogTakeAway, setTimeLogTakeAway] = useState('');
+  // --- Pomodoro ---------------------------------------------------------
+  // A layer on top of the existing timer rather than a replacement. Work
+  // phases run the normal logger, so time still lands against whatever you
+  // picked. Breaks are tracked separately and never touch loggedSeconds -
+  // resting isn't work, and logging it would corrupt the reports.
+  //
+  // The break is stored as an END TIMESTAMP, not a countdown. Remaining time is
+  // derived from the clock, so it stays correct through a backgrounded app,
+  // a throttled tab or a device sleeping - and if the break finished while you
+  // were away, that's visible on return rather than silently lost.
+  const [pomodoroPhase, setPomodoroPhase] = useState('work'); // 'work' | 'short' | 'long'
+  const [pomodoroCount, setPomodoroCount] = useState(0);      // completed work sessions this cycle
+  const [breakEndsAt, setBreakEndsAt] = useState(null);
+  const [breakRemaining, setBreakRemaining] = useState(0);
+  const [pomodoroMessage, setPomodoroMessage] = useState(null);
+  const audioCtxRef = React.useRef(null);
+
+  // iOS will not let a page make sound until the user has interacted with it,
+  // and a context created later stays suspended. So one context is created on
+  // the first gesture and reused - resumed rather than recreated.
+  const unlockAudio = React.useCallback(() => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      if (!audioCtxRef.current) audioCtxRef.current = new Ctx();
+      if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
+      return audioCtxRef.current;
+    } catch (err) {
+      return null;
+    }
+  }, []);
+
+  // Synthesised rather than an audio file: nothing to load, nothing to ship,
+  // and it works offline.
+  const playChime = React.useCallback((tone = 880) => {
+    const ctx = audioCtxRef.current;
+    if (!ctx || ctx.state !== 'running') return;
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = tone;
+      // Ramped, not switched: an abrupt start or stop on a sine wave clicks.
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.7);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.75);
+    } catch (err) {
+      // Sound is a nicety; never let it break the phase change.
+    }
+  }, []);
+
+  const notify = React.useCallback((title, body) => {
+    try {
+      if (typeof Notification === 'undefined') return;
+      if (Notification.permission === 'granted') new Notification(title, { body, tag: 'little-fires-pomodoro' });
+    } catch (err) {
+      // Same: advisory only.
+    }
+  }, []);
+
+  const signalPhase = React.useCallback((title, body, tone) => {
+    playChime(tone);
+    notify(title, body);
+    setPomodoroMessage(body);
+  }, [playChime, notify]);
+
+  // Enabled in Settings makes the option available; choosing it in the Time
+  // dropdown is what actually runs it. So the mode can be switched on and left
+  // on without every timer becoming a Pomodoro.
+  const durationOptions = settings.pomodoroEnabled
+    ? [...DURATION_OPTIONS, { value: 'pomodoro', label: 'Pomodoro' }]
+    : DURATION_OPTIONS;
+  const durationLabel = (v) => {
+    const found = durationOptions.find(o => o.value === v);
+    return found ? found.label : 'Timer';
+  };
+  const pomodoroOn = timerDuration === 'pomodoro';
+  const pomodoroInterval = Math.max(1, Number(settings.pomodoroInterval) || 4);
+  const workTarget = Math.max(60, Number(settings.pomodoroWork) || 1500);
+
+  // Work session reaches its target. Watched off loggedSeconds rather than run
+  // on its own clock, so it inherits the main timer's timestamp accuracy.
+  useEffect(() => {
+    if (!pomodoroOn || pomodoroPhase !== 'work' || !isLogging) return;
+    if (loggedSeconds < workTarget) return;
+
+    setIsLogging(false);
+    const done = pomodoroCount + 1;
+    setPomodoroCount(done);
+    const isLong = done % pomodoroInterval === 0;
+    const breakLen = isLong
+      ? Math.max(60, Number(settings.pomodoroLongBreak) || 900)
+      : Math.max(60, Number(settings.pomodoroShortBreak) || 300);
+    setPomodoroPhase(isLong ? 'long' : 'short');
+    setBreakEndsAt(Date.now() + breakLen * 1000);
+    setBreakRemaining(breakLen);
+    signalPhase(
+      'Session complete',
+      `${isLong ? 'Long' : 'Short'} break — ${Math.round(breakLen / 60)} minutes.`,
+      880
+    );
+  }, [loggedSeconds, isLogging, pomodoroOn, pomodoroPhase, workTarget,
+      pomodoroCount, pomodoroInterval, settings.pomodoroLongBreak,
+      settings.pomodoroShortBreak, signalPhase]);
+
+  // Break countdown. Derived from the end timestamp on every tick, so a tab
+  // that was throttled or asleep catches up rather than drifting.
+  useEffect(() => {
+    if (!breakEndsAt) return;
+
+    const check = () => {
+      const left = Math.max(0, Math.round((breakEndsAt - Date.now()) / 1000));
+      setBreakRemaining(left);
+      if (left > 0) return;
+
+      const overdueBy = Math.round((Date.now() - breakEndsAt) / 1000);
+      setBreakEndsAt(null);
+      setPomodoroPhase('work');
+      signalPhase(
+        'Break over',
+        overdueBy > 90
+          ? `Break finished ${Math.round(overdueBy / 60)} minutes ago.`
+          : 'Back to it.',
+        660
+      );
+      if (settings.pomodoroAutoStart) setIsLogging(true);
+    };
+
+    check();
+    const id = setInterval(check, 1000);
+    // Recheck the moment the app comes back, rather than waiting for a tick
+    // that iOS may have suspended entirely.
+    const onVisible = () => { if (!document.hidden) check(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [breakEndsAt, settings.pomodoroAutoStart, signalPhase]);
+
+  const skipPomodoroPhase = () => {
+    unlockAudio();
+    if (breakEndsAt) {
+      setBreakEndsAt(null);
+      setPomodoroPhase('work');
+      setPomodoroMessage(null);
+      if (settings.pomodoroAutoStart) setIsLogging(true);
+    } else {
+      setBreakEndsAt(Date.now());
+    }
+  };
+
+  const resetPomodoroCycle = () => {
+    setPomodoroCount(0);
+    setPomodoroPhase('work');
+    setBreakEndsAt(null);
+    setPomodoroMessage(null);
+  };
+
   const [timeLogMinutes, setTimeLogMinutes] = useState('');
   const [expandedTimeLogId, setExpandedTimeLogId] = useState(null);
 
@@ -1792,10 +1995,33 @@ function LittleFiresApp() {
     start();
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
+      // Bank the part-second since the last tick before shutting down. This
+      // cleanup runs on pause, so without it every pause quietly discarded up
+      // to a second - invisible once, but it compounds across a session of
+      // stopping and starting.
+      accrue();
       stop();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [isLogging]);
+
+  // A chosen duration is a target, not just something for the ring to fill:
+  // reaching it stops the timer. Pomodoro is excluded because it has its own
+  // completion path - it starts a break rather than simply stopping.
+  //
+  // No clamping to the target. If the app was backgrounded and comes back past
+  // the end, that time really did pass, and this is a time tracker before it is
+  // a countdown - silently rewriting the total to look tidy would be the wrong
+  // trade.
+  useEffect(() => {
+    if (pomodoroOn || !isLogging) return;
+    const target = Number(timerDuration);
+    if (!(target > 0) || loggedSeconds < target) return;
+
+    setIsLogging(false);
+    playChime(880);
+    notify('Timer finished', `${Math.round(target / 60)} minute timer complete.`);
+  }, [loggedSeconds, isLogging, timerDuration, pomodoroOn, playChime, notify]);
 
   // ---- Progress ring geometry ---------------------------------------------
   // The ring is fed by a once-a-second state update and a 1s linear transition,
@@ -1807,8 +2033,13 @@ function LittleFiresApp() {
   // through the second it represents, so the ring reads as live and starts
   // moving the instant you hit the button.
   const RING_CIRCUMFERENCE = 597;
-  const ringCapped = Number(timerDuration) > 0;
-  const ringSpan = ringCapped ? Number(timerDuration) : 60;
+  // 'pomodoro' isn't a number, so the ring has to be told its span explicitly -
+  // otherwise Number('pomodoro') is NaN and it falls back to the 60-second
+  // cycling ring, which would be wrong for a 25 minute session.
+  const ringCapped = pomodoroOn || Number(timerDuration) > 0;
+  const ringSpan = pomodoroOn
+    ? workTarget
+    : (Number(timerDuration) > 0 ? Number(timerDuration) : 60);
   const ringFraction = (secs) => ringCapped
     ? Math.min(1, secs / ringSpan)
     : (secs % ringSpan) / ringSpan;
@@ -2041,6 +2272,21 @@ function LittleFiresApp() {
       };
     });
   };
+
+  // Collapse state for the calendar day panel. Unlike the archive equivalent
+  // this defaults to EXPANDED - you clicked a date to see what's on it, so
+  // hiding it by default would defeat the point. Keys are flat, not scoped per
+  // date, so collapsing a section keeps it collapsed as you move between days.
+  const [collapsedCalendarSections, setCollapsedCalendarSections] = useState({});
+
+  const toggleCalendarSection = (sectionKey) => {
+    setCollapsedCalendarSections(prev => ({
+      ...prev,
+      [sectionKey]: !prev[sectionKey]
+    }));
+  };
+
+  const isCalendarSectionCollapsed = (sectionKey) => !!collapsedCalendarSections[sectionKey];
 
   const toggleArchiveSection = (sectionKey) => {
     setCollapsedArchiveSections(prev => ({
@@ -2655,28 +2901,32 @@ function LittleFiresApp() {
     const allTaskLists = visibleTaskLists;
     allTaskLists.forEach(listName => {
       (allLists[listName] || []).forEach(task => {
-        // Show incomplete tasks on their due date (both To Do and Backlog)
-        if (showOpenTasks && task.dueDate && !task.completed) {
-          const taskDate = parseLocalDate(task.dueDate);
-          if (taskDate && isSameDate(taskDate, date)) {
+        // One task, one place on the calendar, chosen by precedence:
+        //   completed date  >  due date  >  created date
+        // A finished task belongs on the day it was finished. An unfinished one
+        // belongs on the day it's for, if it has one; otherwise on the day you
+        // added it, so nothing is invisible just for lacking a due date.
+        //
+        // Note the two date shapes: dueDate is a plain date string and needs
+        // parseLocalDate, while createdAt and completedAt are ISO timestamps.
+        // Passing a date-only string to new Date() would read it as UTC and
+        // land on the wrong day for anyone behind it.
+        const anchorFor = (t) => {
+          if (t.completed && t.completedAt) return new Date(t.completedAt);
+          if (t.dueDate) return parseLocalDate(t.dueDate);
+          if (t.createdAt) return new Date(t.createdAt);
+          return null;
+        };
+
+        const show = task.completed ? showCompletedTasks : showOpenTasks;
+        if (show) {
+          const anchor = anchorFor(task);
+          if (anchor && isSameDate(anchor, date)) {
             items.push({
               type: 'task',
               data: task,
               list: listName,
-              status: 'open'
-            });
-          }
-        }
-        
-        // Show completed tasks on their completion date
-        if (showCompletedTasks && task.completed && task.completedAt) {
-          const completedDate = new Date(task.completedAt);
-          if (isSameDate(completedDate, date)) {
-            items.push({
-              type: 'task',
-              data: task,
-              list: listName,
-              status: 'completed'
+              status: task.completed ? 'completed' : 'open'
             });
           }
         }
@@ -7606,6 +7856,26 @@ function LittleFiresApp() {
           border-bottom: 4px solid rgba(var(--accent-rgb), 0.3);
         }
 
+        .day-section-toggle {
+          cursor: pointer;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+
+        .day-list-group {
+          margin-bottom: 18px;
+        }
+
+        /* Lighter than the All Tasks version: this one sits under the "Tasks"
+           heading rather than at the top of a view, so it shouldn't compete
+           with it. */
+        .day-list-header {
+          font-size: 1rem;
+          margin-bottom: 10px;
+          padding-bottom: 6px;
+          border-bottom: 1px solid rgba(var(--accent-rgb), 0.15);
+        }
+
         .calendar-item {
           background: rgba(30, 30, 46, 0.6);
           border-radius: 12px;
@@ -11115,8 +11385,33 @@ function LittleFiresApp() {
                     <div className="day-items">
                       {tasks.length > 0 && (
                         <div className="day-section">
-                          <h4>Tasks ({tasks.length})</h4>
-                          {tasks.map((item, idx) => {
+                          <h4
+                            className="day-section-toggle"
+                            onClick={() => toggleCalendarSection('tasks')}
+                          >
+                            Tasks ({tasks.length})
+                          </h4>
+                          {!isCalendarSectionCollapsed('tasks') && (<>
+                          {/* Grouped by list, in the order set in Settings, so this
+                              reads like All Tasks. Driven off orderedTaskLists rather
+                              than the order tasks happen to arrive in, and filtered to
+                              lists that actually have something on this day so empty
+                              headers never appear. Not grouped by status within a list
+                              - a single day rarely has enough to need it. */}
+                          {orderedTaskLists
+                            .filter(listName => tasks.some(t => t.list === listName))
+                            .map(listName => {
+                          const listTasks = tasks.filter(t => t.list === listName);
+                          return (
+                            <div key={listName} className="day-list-group">
+                              <div
+                                className="list-section-header day-list-header day-section-toggle"
+                                onClick={() => toggleCalendarSection(`list-${listName}`)}
+                              >
+                                <span>{listLabel(listName)}</span>
+                                <span className={`badge ${listName}`}>{listTasks.length}</span>
+                              </div>
+                          {!isCalendarSectionCollapsed(`list-${listName}`) && listTasks.map((item, idx) => {
                             const project = item.data.projectId 
                               ? getAllProjects().find(p => p.id == item.data.projectId)
                               : null;
@@ -11126,7 +11421,7 @@ function LittleFiresApp() {
                             
                             return (
                               <div 
-                                key={idx} 
+                                key={taskId} 
                                 className={`calendar-item task-item ${isExpanded ? 'expanded' : ''}`}
                                 onClick={() => setExpandedCalendarTaskId(isExpanded ? null : taskId)}
                                 style={{cursor: 'pointer'}}
@@ -11199,12 +11494,22 @@ function LittleFiresApp() {
                               </div>
                             );
                           })}
+                            </div>
+                          );
+                          })}
+                          </>)}
                         </div>
                       )}
                       
                       {notes.length > 0 && (
                         <div className="day-section">
-                          <h4>Notes ({notes.length})</h4>
+                          <h4
+                            className="day-section-toggle"
+                            onClick={() => toggleCalendarSection('notes')}
+                          >
+                            Notes ({notes.length})
+                          </h4>
+                          {!isCalendarSectionCollapsed('notes') && (<>
                           {notes.map((item, idx) => {
                             const noteId = `calendar-note-${item.data.id}`;
                             const isExpanded = expandedCalendarNoteId === noteId;
@@ -11275,12 +11580,19 @@ function LittleFiresApp() {
                               </div>
                             );
                           })}
+                          </>)}
                         </div>
                       )}
                       
                       {projectItems.length > 0 && (
                         <div className="day-section">
-                          <h4>Projects ({projectItems.length})</h4>
+                          <h4
+                            className="day-section-toggle"
+                            onClick={() => toggleCalendarSection('projects')}
+                          >
+                            Projects ({projectItems.length})
+                          </h4>
+                          {!isCalendarSectionCollapsed('projects') && (<>
                           {projectItems.map((item, idx) => {
                             const projectId = `calendar-project-${item.data.id}`;
                             const isExpanded = expandedCalendarProjectId === projectId;
@@ -11353,6 +11665,7 @@ function LittleFiresApp() {
                               </div>
                             );
                           })}
+                          </>)}
                         </div>
                       )}
                     </div>
@@ -12565,6 +12878,10 @@ function LittleFiresApp() {
                   {/* Fire Logo */}
                   <div 
                     onClick={() => {
+                      // Unlocking audio needs a user gesture, and this is the
+                      // only reliable one before a session ends - so the chime
+                      // is armed here, whether or not Pomodoro is on.
+                      unlockAudio();
                       // Simply toggle logging on/off. loggedSeconds persists
                       // across pauses, so resuming continues from where it left off.
                       setIsLogging(prev => !prev);
@@ -12725,7 +13042,7 @@ function LittleFiresApp() {
                           alignItems: 'center'
                         }}
                       >
-                        <span>{timerDuration === '' || timerDuration === 0 ? 'Timer' : timerDuration === 300 ? '5 Minutes' : timerDuration === 420 ? '7 Minutes' : timerDuration === 900 ? '15 Minutes' : timerDuration === 600 ? '10 Minutes' : timerDuration === 1800 ? '30 Minutes' : timerDuration === 3600 ? '60 Minutes' : 'Timer'}</span>
+                        <span>{durationLabel(timerDuration === 0 ? '' : timerDuration)}</span>
                         <span style={{
                           transform: timeDurationDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                           transition: 'transform 0.3s ease',
@@ -12749,20 +13066,23 @@ function LittleFiresApp() {
                           zIndex: 1000,
                           boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
                         }}>
-                          {[
-                            { value: '', label: 'Timer' },
-                            { value: 300, label: '5 Minutes' },
-                            { value: 420, label: '7 Minutes' },
-                            { value: 600, label: '10 Minutes' },
-                            { value: 900, label: '15 Minutes' },
-                            { value: 1800, label: '30 Minutes' },
-                            { value: 3600, label: '60 Minutes' }
-                          ].map((option, idx) => (
+                          {durationOptions.map((option, idx) => (
                             <div
                               key={option.value}
                               onClick={() => {
                                 setTimerDuration(option.value === '' ? '' : option.value);
                                 setTimeDurationDropdownOpen(false);
+                                if (option.value === 'pomodoro') {
+                                  // This tap is the user gesture that lets the
+                                  // page make sound later.
+                                  unlockAudio();
+                                  // Fresh cycle, but loggedSeconds is left alone
+                                  // on purpose - it may hold time you haven't
+                                  // saved yet, and silently discarding it would
+                                  // be worse than starting mid-count.
+                                  resetPomodoroCycle();
+                                  setIsLogging(true);
+                                }
                               }}
                               style={{
                                 padding: '10px',
@@ -12770,7 +13090,7 @@ function LittleFiresApp() {
                                 fontSize: '1rem',
                                 cursor: 'pointer',
                                 background: timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
-                                borderBottom: idx < 6 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
+                                borderBottom: idx < durationOptions.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                 transition: 'background 0.2s ease',
                                 fontFamily: 'Quicksand, sans-serif'
                               }}
@@ -12871,13 +13191,68 @@ function LittleFiresApp() {
                     />
                   </div>
 
+                  {/* Pomodoro */}
+                  {pomodoroOn && (
+                    <div style={{
+                      background: 'rgba(42, 42, 62, 0.7)',
+                      border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                      borderRadius: '14px', padding: '14px', marginBottom: '18px'
+                    }}>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        gap: '10px', flexWrap: 'wrap'
+                      }}>
+                        <div style={{
+                          color: '#f4e8d8', fontFamily: 'Quicksand, sans-serif',
+                          fontWeight: 700, fontSize: '1rem'
+                        }}>
+                          {breakEndsAt
+                            ? `${pomodoroPhase === 'long' ? 'Long' : 'Short'} break — ${Math.floor(breakRemaining / 60)}:${String(breakRemaining % 60).padStart(2, '0')}`
+                            : `Focus — ${Math.max(0, Math.ceil((workTarget - loggedSeconds) / 60))} min left`}
+                        </div>
+                        {/* One dot per session toward the long break, so the
+                            cycle position is readable at a glance. */}
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          {Array.from({ length: pomodoroInterval }).map((_, i) => (
+                            <span key={i} style={{
+                              width: '9px', height: '9px', borderRadius: '50%',
+                              background: (pomodoroCount % pomodoroInterval) > i
+                                || (pomodoroCount > 0 && pomodoroCount % pomodoroInterval === 0)
+                                ? 'var(--accent)' : 'rgba(var(--accent-rgb), 0.25)'
+                            }} />
+                          ))}
+                        </div>
+                      </div>
+
+                      {pomodoroMessage && (
+                        <div style={{
+                          color: '#b8a99a', fontSize: '0.82rem',
+                          fontFamily: 'Quicksand, sans-serif', marginTop: '8px'
+                        }}>
+                          {pomodoroMessage}
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+                        <button className="edit-btn" onClick={skipPomodoroPhase}>
+                          {breakEndsAt ? 'Skip break' : 'End session'}
+                        </button>
+                        <button className="edit-btn" onClick={resetPomodoroCycle}>
+                          Reset cycle
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Instructions */}
                   <p style={{
                     color: '#b8a99a',
                     fontSize: '0.9rem',
                     marginBottom: '20px'
                   }}>
-                    {isLogging ? 'Click fire to stop timer' : 'Click fire to start logging'}
+                    {breakEndsAt
+                      ? 'On a break — the timer resumes when it ends'
+                      : (isLogging ? 'Click fire to stop timer' : 'Click fire to start logging')}
                   </p>
 
                   {/* Action Buttons */}
@@ -13994,7 +14369,7 @@ function LittleFiresApp() {
                           boxSizing: 'border-box'
                         }}
                       >
-                        <span>{timerDuration === '' || timerDuration === 0 ? 'Timer' : timerDuration === 300 ? '5 Minutes' : timerDuration === 420 ? '7 Minutes' : timerDuration === 900 ? '15 Minutes' : timerDuration === 600 ? '10 Minutes' : timerDuration === 1800 ? '30 Minutes' : timerDuration === 3600 ? '60 Minutes' : 'Timer'}</span>
+                        <span>{durationLabel(timerDuration === 0 ? '' : timerDuration)}</span>
                         <span style={{
                           transform: timeDurationDropdownOpen ? 'rotate(360deg)' : 'rotate(180deg)',
                           transition: 'transform 0.3s ease',
@@ -14018,20 +14393,23 @@ function LittleFiresApp() {
                           zIndex: 1000,
                           boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
                         }}>
-                          {[
-                            { value: '', label: 'Timer' },
-                            { value: 300, label: '5 Minutes' },
-                            { value: 420, label: '7 Minutes' },
-                            { value: 600, label: '10 Minutes' },
-                            { value: 900, label: '15 Minutes' },
-                            { value: 1800, label: '30 Minutes' },
-                            { value: 3600, label: '60 Minutes' }
-                          ].map((option, idx) => (
+                          {durationOptions.map((option, idx) => (
                             <div
                               key={option.value}
                               onClick={() => {
                                 setTimerDuration(option.value === '' ? '' : option.value);
                                 setTimeDurationDropdownOpen(false);
+                                if (option.value === 'pomodoro') {
+                                  // This tap is the user gesture that lets the
+                                  // page make sound later.
+                                  unlockAudio();
+                                  // Fresh cycle, but loggedSeconds is left alone
+                                  // on purpose - it may hold time you haven't
+                                  // saved yet, and silently discarding it would
+                                  // be worse than starting mid-count.
+                                  resetPomodoroCycle();
+                                  setIsLogging(true);
+                                }
                               }}
                               style={{
                                 padding: '10px',
@@ -14039,7 +14417,7 @@ function LittleFiresApp() {
                                 fontSize: '1rem',
                                 cursor: 'pointer',
                                 background: timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
-                                borderBottom: idx < 6 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
+                                borderBottom: idx < durationOptions.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                 transition: 'background 0.2s ease',
                                 fontFamily: 'Quicksand, sans-serif'
                               }}
@@ -15926,6 +16304,109 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
+                  {/* ---- Pomodoro ---- */}
+                  <div style={card}>
+                    <div style={heading}>Pomodoro</div>
+                    <div style={sub}>
+                      Splits Time into focus sessions with breaks between them. Work
+                      is logged as normal; breaks are not.
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Pomodoro mode</div>
+                        <div style={hint}>
+                          A chime and a notification mark the end of each session.
+                          Notifications only arrive while the app is open — iOS stops
+                          web apps running in the background.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.pomodoroEnabled}
+                        onChange={(v) => {
+                          updateSetting('pomodoroEnabled', v);
+                          // Permission must be asked for from a user gesture, and
+                          // this toggle is the only one guaranteed to be one.
+                          if (v && typeof Notification !== 'undefined'
+                              && Notification.permission === 'default') {
+                            Notification.requestPermission();
+                          }
+                        }}
+                      />
+                    </div>
+
+                    <div style={row}>
+                      <div style={label}>Focus length</div>
+                      <select
+                        value={settings.pomodoroWork}
+                        onChange={(e) => updateSetting('pomodoroWork', Number(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
+                      >
+                        <option value={900}>15 minutes</option>
+                        <option value={1500}>25 minutes</option>
+                        <option value={1800}>30 minutes</option>
+                        <option value={2700}>45 minutes</option>
+                        <option value={3000}>50 minutes</option>
+                      </select>
+                    </div>
+
+                    <div style={row}>
+                      <div style={label}>Short break</div>
+                      <select
+                        value={settings.pomodoroShortBreak}
+                        onChange={(e) => updateSetting('pomodoroShortBreak', Number(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
+                      >
+                        <option value={180}>3 minutes</option>
+                        <option value={300}>5 minutes</option>
+                        <option value={600}>10 minutes</option>
+                      </select>
+                    </div>
+
+                    <div style={row}>
+                      <div style={label}>Long break</div>
+                      <select
+                        value={settings.pomodoroLongBreak}
+                        onChange={(e) => updateSetting('pomodoroLongBreak', Number(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
+                      >
+                        <option value={600}>10 minutes</option>
+                        <option value={900}>15 minutes</option>
+                        <option value={1800}>30 minutes</option>
+                      </select>
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Long break after</div>
+                        <div style={hint}>How many focus sessions before the long break.</div>
+                      </div>
+                      <input
+                        type="number"
+                        min="2"
+                        max="8"
+                        value={settings.pomodoroInterval}
+                        onChange={(e) => updateSetting('pomodoroInterval',
+                          Math.min(8, Math.max(2, parseInt(e.target.value) || 4)))}
+                        style={numInput}
+                      />
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Auto-start next session</div>
+                        <div style={hint}>
+                          Starts the next focus session as soon as a break ends. Off
+                          means the break simply finishes and waits for you.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.pomodoroAutoStart}
+                        onChange={(v) => updateSetting('pomodoroAutoStart', v)}
+                      />
+                    </div>
+                  </div>
+
                   {/* ---- App Behavior ---- */}
                   <div style={card}>
                     <div style={heading}>App Behavior</div>
@@ -15964,7 +16445,8 @@ function LittleFiresApp() {
                         <div style={hint}>
                           Drops the frosted-glass blur and the ambient glow layer.
                           The app looks slightly flatter and asks much less of the
-                          GPU, especially while scrolling.
+                          GPU, especially while scrolling. On by default on phones
+                          and tablets, off on desktop.
                         </div>
                       </div>
                       <Toggle

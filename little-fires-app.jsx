@@ -694,8 +694,10 @@ function LittleFiresApp() {
     completionDelay: true,    // pause so the checkmark is visible before a task moves
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
-    // 'system' follows the phone; 'dark' and 'light' pin it.
-    theme: 'system',
+    // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
+    // default for a fresh install - see the loader below, which keeps everyone
+    // who was already using the app on what they had.
+    theme: 'light',
     reduceMotion: false,
     // --- Pomodoro ---
     // Cirillo's canonical numbers: 25 work, 5 short, 15 long, long every 4th.
@@ -728,7 +730,16 @@ function LittleFiresApp() {
   const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('little_fires_settings');
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+      if (!saved) return DEFAULT_SETTINGS;
+      const parsed = JSON.parse(saved);
+      // Changing a default normally reaches everyone, because only deltas are
+      // stored - that's the point of the delta scheme. It's the wrong outcome
+      // for theme: someone who has been using a dark app would open it one day
+      // to find it light, having changed nothing. A stored blob means an
+      // existing install, so anyone who never picked a theme is pinned to the
+      // behaviour they already had rather than inheriting the new default.
+      if (parsed.theme === undefined) parsed.theme = 'system';
+      return { ...DEFAULT_SETTINGS, ...parsed };
     } catch {
       return DEFAULT_SETTINGS;
     }
@@ -2260,6 +2271,47 @@ function LittleFiresApp() {
   }, []);
 
   // Close dropdowns when clicking outside
+  // Tapping anywhere outside an open task closes it.
+  //
+  // The tap that closes is consumed: if it landed on another task, that task
+  // does NOT open. Otherwise one tap would both close and open, which on a
+  // phone reads as the app jumping to somewhere you didn't ask for - and if
+  // you were mid-edit, the details you were writing would collapse and a
+  // different card would expand in the same motion.
+  const collapseGuardRef = React.useRef(false);
+  const collapseGuardTimer = React.useRef(null);
+
+  useEffect(() => {
+    if (!expandedTaskId) return;
+    const onDown = (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      // Inside the open card - including its toolbar, date picker and details
+      // editor - is not "outside".
+      if (t.closest('.task.expanded')) return;
+      // Modals and confirmations float above the list; dismissing one should
+      // not also collapse whatever is open behind it.
+      if (t.closest('.modal-overlay, .modal-content')) return;
+
+      setExpandedTaskId(null);
+      collapseGuardRef.current = true;
+      // Safety net: if no click follows - a tap on empty space, or a scroll -
+      // the guard must not survive to eat the next genuine tap.
+      if (collapseGuardTimer.current) clearTimeout(collapseGuardTimer.current);
+      collapseGuardTimer.current = setTimeout(() => {
+        collapseGuardRef.current = false;
+      }, 400);
+    };
+    // Capture phase, and on the down event rather than click, so this always
+    // runs before the tapped card's own handler decides to expand.
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('touchstart', onDown, true);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('touchstart', onDown, true);
+    };
+  }, [expandedTaskId]);
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (archiveDropdownOpen && !e.target.closest('[data-archive-dropdown]')) {
@@ -2533,6 +2585,37 @@ function LittleFiresApp() {
 
   // Used by the inline rename field, which is a controlled input - so unlike
   // the mutate-in-place helpers around it, this replaces the task object.
+  // Manual ordering within a list. No new field is needed: the display sort
+  // returns 0 for equal priority and Array.prototype.sort is stable, so the
+  // array's own order already decides what comes first within a band. Moving
+  // the array element is the whole feature.
+  //
+  // Moves are refused across bands rather than clamped. Pinning to the top is
+  // the flame's entire job, so letting an unflagged task sit above a flagged
+  // one would quietly undo it - and silently relocating the task somewhere the
+  // user didn't drop it is worse than simply not moving.
+  const draggingTaskRef = React.useRef(null);
+
+  const canReorderTogether = (a, b) =>
+    a && b &&
+    (a.priority === 'high') === (b.priority === 'high') &&
+    a.section === b.section &&
+    !!a.completed === !!b.completed;
+
+  const reorderTask = (listName, fromId, toId) => {
+    if (!fromId || fromId === toId) return;
+    setAllLists(prev => {
+      const list = prev[listName] || [];
+      const from = findTaskIndex(list, fromId);
+      const to = findTaskIndex(list, toId);
+      if (from < 0 || to < 0) return prev;
+      if (!canReorderTogether(list[from], list[to])) return prev;
+      const next = [...list];
+      next.splice(to, 0, next.splice(from, 1)[0]);
+      return { ...prev, [listName]: next };
+    });
+  };
+
   const renameTask = (listName, taskId, text) => {
     updateTask(listName, taskId, { text });
   };
@@ -4267,6 +4350,45 @@ function LittleFiresApp() {
       <div 
         ref={taskRef}
         className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${collapsing ? 'collapsing' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
+        // Not while expanded: the details editor needs normal text selection,
+        // and a draggable ancestor breaks it.
+        draggable={!isExpanded && !task.isArchived && !isCompleting}
+        onDragStart={(e) => {
+          draggingTaskRef.current = { id: task.id, listName };
+          e.dataTransfer.effectAllowed = 'move';
+          // Firefox refuses to start a drag without data set.
+          try { e.dataTransfer.setData('text/plain', String(task.id)); } catch (err) {}
+          if (taskRef.current) taskRef.current.style.opacity = '0.4';
+        }}
+        onDragEnd={() => {
+          draggingTaskRef.current = null;
+          if (taskRef.current) {
+            taskRef.current.style.opacity = '';
+            taskRef.current.style.boxShadow = '';
+          }
+        }}
+        onDragOver={(e) => {
+          const g = draggingTaskRef.current;
+          if (!g || g.listName !== listName || g.id === task.id) return;
+          if (!canReorderTogether(findTask(allLists[listName], g.id), task)) return;
+          e.preventDefault();
+          // Highlight written straight to the node. Doing this through state
+          // would re-render, and because Task is declared inside the parent
+          // that remounts the card and cancels the drag mid-gesture.
+          if (taskRef.current) {
+            taskRef.current.style.boxShadow = 'inset 0 3px 0 0 var(--accent)';
+          }
+        }}
+        onDragLeave={() => {
+          if (taskRef.current) taskRef.current.style.boxShadow = '';
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const g = draggingTaskRef.current;
+          if (taskRef.current) taskRef.current.style.boxShadow = '';
+          if (g && g.listName === listName) reorderTask(listName, g.id, task.id);
+          draggingTaskRef.current = null;
+        }}
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
@@ -4276,6 +4398,12 @@ function LittleFiresApp() {
           // A completed swipe is followed by a click; ignore it so the card
           // doesn't expand as a side effect of being completed.
           if (swipe.current.justSwiped) return;
+          // This tap already did a job - it closed a different task. Checked
+          // and cleared here so the tap after it behaves normally.
+          if (collapseGuardRef.current) {
+            collapseGuardRef.current = false;
+            return;
+          }
           
           // Save details before collapsing
           if (isExpanded && detailsRef.current) {

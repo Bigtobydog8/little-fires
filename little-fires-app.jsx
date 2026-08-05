@@ -67,7 +67,7 @@ function InlineDatePicker({ value, onChange, style }) {
     padding: '10px 12px', background: 'rgba(var(--surface-rgb), 0.8)',
     backdropFilter: 'blur(10px)',
     border: '2px solid rgba(var(--accent-rgb), 0.2)', borderRadius: '20px',
-    boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+    boxShadow: '0 4px 15px rgba(var(--shadow-rgb), 0.3)',
     color: value ? 'var(--text)' : '#8a8a9a', fontFamily: "'Nunito', sans-serif",
     fontSize: '0.95rem', cursor: 'pointer', minWidth: '132px', textAlign: 'left',
     // When a caller sizes the wrapper (width, flex, etc), the button should
@@ -99,7 +99,7 @@ function InlineDatePicker({ value, onChange, style }) {
           background: 'rgba(var(--surface-deep-rgb), 0.99)',
           border: '2px solid rgba(var(--accent-rgb), 0.4)',
           borderRadius: '12px', padding: '12px', width: '252px',
-          boxShadow: '0 10px 30px rgba(0,0,0,0.55)',
+          boxShadow: '0 10px 30px rgba(var(--shadow-rgb),0.55)',
           fontFamily: 'Quicksand, sans-serif'
         }}>
           <div style={{ display: 'flex', alignItems: 'center',
@@ -458,6 +458,15 @@ const DURATION_OPTIONS = [
   { value: 1800, label: '30 Minutes' },
   { value: 3600, label: '60 Minutes' }
 ];
+
+// Completion animation timing. These three numbers have to agree, and they used
+// to be written out separately - a JS timer, a CSS transition-delay and a commit
+// timeout - so nudging one silently desynchronised the others: the row could
+// start collapsing before the tick had been seen, or the task could swap lists
+// while still visibly fading.
+const COMPLETE_HOLD_MS = 900;   // tick lit, nothing moving yet
+const COMPLETE_ANIM_MS = 400;   // fade and collapse, run together
+const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 
 function LittleFiresApp() {
   // ---- Guarded storage ----------------------------------------------------
@@ -3788,6 +3797,95 @@ function LittleFiresApp() {
 
     const isExpanded = expandedTaskId === `${listName}-${task.id}`;
     const taskRef = React.useRef(null);
+
+    // --- Swipe to complete (touch only) ---------------------------------
+    // The card is moved by writing transform straight to the DOM rather than
+    // through state. Two reasons: a state update per touchmove would re-render
+    // the whole task tree sixty times a second, and because Task is declared
+    // inside the parent, any re-render remounts it - which would drop the
+    // gesture halfway through. Only the final decision touches React.
+    const swipe = React.useRef({ x: 0, y: 0, dx: 0, axis: null, active: false });
+    const SWIPE_TRIGGER = 90;
+
+    const setSwipeVisual = (dx, animate) => {
+      const el = taskRef.current;
+      if (!el) return;
+      el.style.transition = animate ? 'transform 0.2s ease' : 'none';
+      el.style.transform = dx ? `translateX(${dx}px)` : '';
+      // The reveal layer is a pseudo-element of the card, so it would slide
+      // along with it and never be revealed. Publishing the offset lets the
+      // CSS cancel it out, holding the check still while the card moves off it.
+      el.style.setProperty('--swipe-dx', `${dx}px`);
+      // Fades in as you approach the threshold, so the point of no return is
+      // visible before you commit rather than a surprise on release.
+      el.style.setProperty('--swipe-progress', String(Math.min(1, Math.abs(dx) / SWIPE_TRIGGER)));
+    };
+
+    const onTouchStart = (e) => {
+      // Not while expanded: the details editor owns touch there, for selecting
+      // text and ticking checkboxes.
+      if (isExpanded || task.isArchived || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      swipe.current = { x: t.clientX, y: t.clientY, dx: 0, axis: null, active: true };
+    };
+
+    const onTouchMove = (e) => {
+      const g = swipe.current;
+      if (!g.active) return;
+      const t = e.touches[0];
+      const dx = t.clientX - g.x;
+      const dy = t.clientY - g.y;
+
+      // Lock to one axis on the first decisive movement and never re-decide.
+      // Without this a slightly diagonal scroll drags the card sideways, which
+      // makes the whole list feel unstable.
+      if (!g.axis) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        g.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      }
+      if (g.axis !== 'x') return;
+
+      // Only rightward. Leftward is left alone deliberately - it's where a
+      // delete gesture would live, and an accidental destructive swipe is a
+      // much worse failure than a missed one.
+      g.dx = Math.max(0, dx);
+      setSwipeVisual(g.dx, false);
+    };
+
+    const onTouchEnd = () => {
+      const g = swipe.current;
+      if (!g.active) return;
+      const passed = g.axis === 'x' && g.dx >= SWIPE_TRIGGER;
+      g.active = false;
+      if (passed && !task.completed) {
+        // Clear the styles written during the gesture so React's own style prop
+        // takes over cleanly. Direct DOM writes and React's transform were both
+        // targeting the same property, and React won on the next render - which
+        // is what replaced the slide-off with a shrink.
+        const el = taskRef.current;
+        if (el) {
+          el.style.transition = '';
+          el.style.transform = '';
+          el.style.removeProperty('--swipe-dx');
+          el.style.removeProperty('--swipe-progress');
+        }
+        setSwipedOut(true);
+      } else {
+        setSwipeVisual(0, true);
+      }
+      if (passed) {
+        // Suppress the click that follows the touch, or the card would also
+        // expand on the way past.
+        swipe.current.justSwiped = true;
+        setTimeout(() => { swipe.current.justSwiped = false; }, 400);
+        // The same path the checkbox takes - so a swipe and a tick produce
+        // exactly the same hold, fade and collapse rather than two different
+        // ideas of what completing a task looks like.
+        requestComplete();
+      }
+      g.dx = 0;
+      g.axis = null;
+    };
     const detailsRef = React.useRef(null);
     const hasSetInitialContent = React.useRef(false);
     const saveTimeoutRef = React.useRef(null);
@@ -3795,6 +3893,11 @@ function LittleFiresApp() {
     // Holds the task in place briefly after checking it, so the checkmark is
     // visible before the task leaves the list.
     const [isCompleting, setIsCompleting] = React.useState(false);
+    // Set when completion came from a swipe. The card then leaves by sliding
+    // fully off to the right, uncovering the green panel, instead of shrinking
+    // in place - two different exits fighting each other was what made it look
+    // like the card was being sucked into the checkmark.
+    const [swipedOut, setSwipedOut] = React.useState(false);
     // Collapsing the row's height while it fades makes the tasks below slide up
     // instead of snapping. Height must animate from a real px value, not 'auto',
     // so we measure the row before starting.
@@ -3802,6 +3905,33 @@ function LittleFiresApp() {
     const [measuredHeight, setMeasuredHeight] = React.useState(null);
     const collapseTimeoutRef = React.useRef(null);
     const completeTimeoutRef = React.useRef(null);
+
+    // The one way a task gets completed, whichever gesture asked for it.
+    // Completing pauses: the tick stays lit while the card fades, then the card
+    // collapses its own height so everything below slides up into the gap
+    // rather than jumping. Un-completing is immediate - there's nothing to
+    // celebrate and no reason to make it wait.
+    const requestComplete = () => {
+      if (task.isArchived) return;
+      if (task.completed) {
+        toggleTask(listName, task.id);
+        return;
+      }
+      if (isCompleting) return; // already on its way out
+      if (!settings.completionDelay) {
+        toggleTask(listName, task.id);
+        return;
+      }
+      // Measured before anything changes, because once the card starts fading
+      // its height is no longer the height the collapse needs to animate from.
+      if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
+      setIsCompleting(true);
+      collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), COMPLETE_HOLD_MS);
+      completeTimeoutRef.current = setTimeout(() => {
+        toggleTask(listName, task.id);
+      }, COMPLETE_TOTAL_MS);
+    };
+
     // True while a native picker (date/select) is open. iOS presents these as a
     // sheet and moves focus off the input, so focus can't be used to detect it.
     const pickerActiveRef = React.useRef(false);
@@ -4136,9 +4266,16 @@ function LittleFiresApp() {
     return (
       <div 
         ref={taskRef}
-        className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
+        className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${collapsing ? 'collapsing' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onTouchCancel={onTouchEnd}
         onClick={() => {
           if (task.isArchived) return;
+          // A completed swipe is followed by a click; ignore it so the card
+          // doesn't expand as a side effect of being completed.
+          if (swipe.current.justSwiped) return;
           
           // Save details before collapsing
           if (isExpanded && detailsRef.current) {
@@ -4160,8 +4297,14 @@ function LittleFiresApp() {
         }}
         style={{
           pointerEvents: task.isArchived ? 'none' : 'auto',
-          opacity: task.isArchived ? 0.7 : (isCompleting ? 0 : 1),
-          transform: isCompleting ? 'translateX(14px) scale(0.97)' : 'none',
+          // Swiped out: the card stays opaque and slides clear, so what you're
+          // left looking at is the full green panel and its checkmark. Ticked:
+          // it fades in place as before.
+          ...(swipedOut ? { '--swipe-progress': 1, '--swipe-dx': '110%' } : {}),
+          opacity: task.isArchived ? 0.7 : (isCompleting && !swipedOut ? 0 : 1),
+          transform: swipedOut
+            ? 'translateX(110%)'
+            : (isCompleting ? 'translateX(14px) scale(0.97)' : 'none'),
           // Height collapse: pinned to the measured value first, then driven to 0
           // once `collapsing` flips, which pulls the rows below up smoothly.
           ...(isCompleting && measuredHeight != null ? {
@@ -4169,12 +4312,34 @@ function LittleFiresApp() {
             marginBottom: collapsing ? '0px' : undefined,
             paddingTop: collapsing ? '0px' : undefined,
             paddingBottom: collapsing ? '0px' : undefined,
-            overflow: 'hidden'
+            // Not while swiped out. The green panel is a pseudo-element that
+            // counter-translates to stay put while the card slides away, which
+            // puts it outside the card's own box - overflow:hidden would clip
+            // away the very thing the gesture is meant to reveal. The card is
+            // off-screen by then, so there is nothing left to spill.
+            ...(swipedOut ? {} : { overflow: 'hidden' })
           } : {}),
           // Opacity/transform wait for the hold; the collapse is already
           // delayed by its own timer, so it gets no extra delay here.
+          // Built from the same constants as the timers above. Opacity and
+          // transform wait out the hold; the collapse needs no delay here
+          // because its own timer already fires at that moment.
           transition: isCompleting
-            ? 'opacity 0.4s ease 0.5s, transform 0.4s ease 0.5s, max-height 0.4s ease, margin 0.4s ease, padding 0.4s ease'
+            ? (swipedOut ? [
+                // The slide-off happens immediately - it's the tail of the
+                // gesture, not something to wait for. Only the collapse waits
+                // out the hold, and its own timer already handles that.
+                'transform 260ms ease',
+                `max-height ${COMPLETE_ANIM_MS}ms ease`,
+                `margin ${COMPLETE_ANIM_MS}ms ease`,
+                `padding ${COMPLETE_ANIM_MS}ms ease`
+              ].join(', ') : [
+                `opacity ${COMPLETE_ANIM_MS}ms ease ${COMPLETE_HOLD_MS}ms`,
+                `transform ${COMPLETE_ANIM_MS}ms ease ${COMPLETE_HOLD_MS}ms`,
+                `max-height ${COMPLETE_ANIM_MS}ms ease`,
+                `margin ${COMPLETE_ANIM_MS}ms ease`,
+                `padding ${COMPLETE_ANIM_MS}ms ease`
+              ].join(', '))
             : 'none'
         }}
       >
@@ -4189,26 +4354,7 @@ function LittleFiresApp() {
               checked={task.completed || isCompleting}
               onChange={(e) => {
                 e.stopPropagation();
-                if (task.isArchived) return;
-                // Un-completing is immediate; completing pauses so the checkmark
-                // and fade-out are visible before the task leaves the list.
-                if (task.completed) {
-                  toggleTask(listName, task.id);
-                  return;
-                }
-                if (isCompleting) return; // already on its way out
-                if (!settings.completionDelay) {
-                  toggleTask(listName, task.id);
-                  return;
-                }
-                // Measure now, before anything changes
-                if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
-                setIsCompleting(true);
-                // Start collapsing as the fade begins, so they run together
-                collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), 500);
-                completeTimeoutRef.current = setTimeout(() => {
-                  toggleTask(listName, task.id);
-                }, 950);
+                requestComplete();
               }}
               onClick={(e) => e.stopPropagation()}
               disabled={task.isArchived}
@@ -5687,6 +5833,13 @@ function LittleFiresApp() {
           --surface-alt-rgb: 58, 58, 74;
           --surface-deep-rgb: 30, 30, 46;
           --border-rgb: 100, 116, 139;
+          /* Shadows are black on a dark ground, but pure black over warm ivory
+             goes dead grey and flattens the paper effect back to screen. */
+          --shadow-rgb: 0, 0, 0;
+          /* Fibre. A flat fill is the giveaway that a surface is a screen -
+             on dark it also breaks up the banding a large gradient produces.
+             Generated, not an asset: nothing to download, and it tiles. */
+          --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='none' filter='url(%23g)' opacity='0.07'/%3E%3C/svg%3E");
           --bg-1: #1a1a2e;
           --bg-2: #2d2d44;
           --bg-3: #3a3a52;
@@ -5700,18 +5853,27 @@ function LittleFiresApp() {
            widgets follow rather than staying dark. */
         .theme-light {
           color-scheme: light;
-          --text: #2c2c3a;
-          --text-muted: #5d5d70;
-          --text-soft: #55556a;
-          --surface-line: #d8d8e2;
-          --surface-rgb: 255, 255, 255;
-          --surface-raised-rgb: 250, 250, 253;
-          --surface-alt-rgb: 244, 244, 249;
-          --surface-deep-rgb: 255, 255, 255;
-          --border-rgb: 150, 158, 178;
-          --bg-1: #f2f2f6;
-          --bg-2: #e9e9f0;
-          --bg-3: #e2e2ec;
+          /* Warm ivory rather than cool grey. The first pass derived these from
+             the dark navy and came out blue-tinted, which sat oddly against an
+             app whose dark theme uses cream text - the warmth is the through
+             line between the two themes, not the hue. */
+          --text: #37352f;
+          --text-muted: #5f5b52;
+          --text-soft: #4a473f;
+          --surface-line: #e0dcd1;
+          --surface-rgb: 255, 254, 251;
+          --surface-raised-rgb: 252, 251, 246;
+          --surface-alt-rgb: 246, 244, 236;
+          --surface-deep-rgb: 255, 255, 253;
+          --border-rgb: 176, 169, 152;
+          --shadow-rgb: 92, 78, 54;
+          /* Heavier on light: dark flecks on a pale ground are what actually
+             read as paper, and light needs more of it than dark does before
+             the texture registers at all. */
+          --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='none' filter='url(%23g)' opacity='0.11'/%3E%3C/svg%3E");
+          --bg-1: #faf9f5;
+          --bg-2: #f0eee6;
+          --bg-3: #e9e6da;
         }
 
         /* Respect the OS "reduce motion" setting, and the in-app toggle.
@@ -5743,6 +5905,12 @@ function LittleFiresApp() {
           display: none !important;
         }
 
+        /* Grain is a full-screen tiled image composited under everything, so it
+           goes with the rest of the decorative load. */
+        .battery-saver .little-fires-container {
+          background: linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 50%, var(--bg-3) 100%) !important;
+        }
+
         .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after {
           animation-duration: 0.001ms !important;
           animation-iteration-count: 1 !important;
@@ -5751,7 +5919,12 @@ function LittleFiresApp() {
 
         .little-fires-container {
           font-family: 'Nunito', sans-serif;
-          background: linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 50%, var(--bg-3) 100%);
+          /* Grain first, gradient second - background layers paint front to
+             back, so this puts the texture over the colour while both stay
+             behind every element in the app. No overlay element, so nothing to
+             get the stacking order wrong with. */
+          background: var(--grain), linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 50%, var(--bg-3) 100%);
+          background-attachment: fixed, fixed;
           color: var(--text);
           min-height: 100vh;
           /* Plain values first, then the inset-aware versions. A browser
@@ -5877,7 +6050,7 @@ function LittleFiresApp() {
           border-radius: 15px;
           border: 2px solid rgba(var(--border-rgb), 0.4);
           padding: 10px;
-          box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+          box-shadow: 0 8px 25px rgba(var(--shadow-rgb), 0.4);
           z-index: 99;
         }
 
@@ -5962,7 +6135,7 @@ function LittleFiresApp() {
           cursor: pointer;
           transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
           border-radius: 30px;
-          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 4px 15px rgba(var(--shadow-rgb), 0.3);
         }
 
         .tab:hover {
@@ -6053,7 +6226,7 @@ function LittleFiresApp() {
           font-size: 1rem;
           outline: none;
           transition: all 0.3s ease;
-          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 4px 15px rgba(var(--shadow-rgb), 0.3);
           box-sizing: border-box;
           flex: 1;
           min-width: 120px;
@@ -6278,7 +6451,7 @@ function LittleFiresApp() {
           backdrop-filter: blur(10px);
           border-radius: 20px;
           padding: 25px;
-          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+          box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.4);
           border: 2px solid rgba(var(--accent-rgb), 0.1);
           max-height: 600px;
           overflow-y: auto;
@@ -7159,7 +7332,7 @@ function LittleFiresApp() {
         .archived-task:hover {
           border-color: rgba(var(--border-rgb), 0.5);
           transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 4px 12px rgba(var(--shadow-rgb), 0.3);
         }
 
         .archived-task .task-text {
@@ -7282,7 +7455,7 @@ function LittleFiresApp() {
           background: #1e1e2e;
           border-radius: 20px;
           padding: 30px;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 10px 40px rgba(var(--shadow-rgb), 0.3);
         }
 
         .goal-detail {
@@ -7306,7 +7479,7 @@ function LittleFiresApp() {
           background: #1e1e2e;
           border-radius: 20px;
           padding: 30px;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+          box-shadow: 0 10px 40px rgba(var(--shadow-rgb), 0.3);
         }
 
         .goal-projects-section {
@@ -7591,7 +7764,7 @@ function LittleFiresApp() {
           padding: 15px;
           max-width: 500px;
           width: 88%;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+          box-shadow: 0 10px 40px rgba(var(--shadow-rgb), 0.5);
           box-sizing: border-box;
         }
 
@@ -7960,7 +8133,7 @@ function LittleFiresApp() {
           font-weight: 600;
           color: var(--text);
           white-space: nowrap;
-          text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+          text-shadow: 0 1px 3px rgba(var(--shadow-rgb),0.8);
           pointer-events: none;
         }
 
@@ -8174,7 +8347,7 @@ function LittleFiresApp() {
 
         .calendar-item.expanded {
           background: rgba(var(--surface-deep-rgb), 0.8);
-          box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5);
+          box-shadow: 0 8px 25px rgba(var(--shadow-rgb), 0.5);
         }
 
         .task-detail-section {
@@ -8199,6 +8372,81 @@ function LittleFiresApp() {
            transparent border so nothing shifts sideways when the stripe
            appears; animating border-color rather than border-width also keeps
            this off the layout path. */
+        /* --- Swipe to complete -------------------------------------------
+           The check sits behind the card and is revealed as it slides, rather
+           than being a separate element that moves - so there is nothing to
+           keep in sync with the card's position.
+           --swipe-progress is written by the gesture handler and drives the
+           fade, so the threshold is visible before you let go. */
+        .task {
+          position: relative;
+          --swipe-progress: 0;
+          --swipe-dx: 0px;
+        }
+
+        .task::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          background: rgba(var(--accent-rgb), 0.28);
+          opacity: var(--swipe-progress);
+          /* Cancels the card's own translation, so this stays where the card
+             started and is uncovered as the card slides off it. */
+          transform: translateX(calc(-1 * var(--swipe-dx)));
+          /* Behind the card's own background, and never intercepting taps. */
+          z-index: -1;
+          pointer-events: none;
+        }
+
+        .task::after {
+          content: '✓';
+          position: absolute;
+          /* Full width, not a glyph-sized box pinned to the left. The counter-
+             translate uses a percentage, and percentages in translateX resolve
+             against the element's OWN width - so a glyph-sized box shifted back
+             by its own 110% (about 20px) while the card slid a full card-width,
+             and the checkmark rode off the screen with it. Matching the panel's
+             box makes the two move as one. */
+          inset: 0;
+          display: flex;
+          align-items: center;
+          padding-left: 20px;
+          box-sizing: border-box;
+          transform: translateX(calc(-1 * var(--swipe-dx)));
+          color: var(--accent-light);
+          /* Grown via font-size rather than scale(), which would resize the
+             whole box and reintroduce the same mismatch. */
+          font-size: calc(1rem + (var(--swipe-progress) * 0.5rem));
+          font-weight: 700;
+          opacity: var(--swipe-progress);
+          z-index: -1;
+          pointer-events: none;
+          transition: font-size ${COMPLETE_ANIM_MS}ms ease, opacity ${COMPLETE_ANIM_MS}ms ease;
+        }
+
+        /* The panel shrinks because its box shrinks - it's a background. Text
+           doesn't work that way: the box collapsed around a glyph that stayed
+           1.5rem and simply spilled out of it, which read as the checkmark
+           refusing to leave. Driving font-size to zero over the same duration
+           makes it close down with the panel instead. */
+        .task.collapsing::after {
+          font-size: 0;
+          opacity: 0;
+        }
+
+        /* An already-complete task swipes the same way to un-complete, so the
+           gesture is reversible and never destructive. */
+        .task.completed::after {
+          content: '↺';
+        }
+
+        /* Touch only. On a mouse the drag never starts, so the affordance
+           would be dead weight in the paint. */
+        @media (hover: hover) {
+          .task::before, .task::after { display: none; }
+        }
+
         .task-item {
           border-left: 4px solid transparent;
           transition: border-left-color 0.2s ease, border-color 0.3s ease,
@@ -10926,7 +11174,7 @@ function LittleFiresApp() {
                               borderRadius: '10px',
                               overflow: 'hidden',
                               zIndex: 1000,
-                              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                              boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.4)'
                             }}>
                               <div
                                 onClick={() => {
@@ -11051,7 +11299,7 @@ function LittleFiresApp() {
                                   borderRadius: '10px',
                                   overflow: 'hidden',
                                   zIndex: 1000,
-                                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                                  boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.4)'
                                 }}>
                                   {visibleTaskLists.map((list, idx) => (
                                     <div
@@ -13304,7 +13552,7 @@ function LittleFiresApp() {
                           borderRadius: '8px',
                           overflow: 'hidden',
                           zIndex: 1000,
-                          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                          boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.4)'
                         }}>
                           {durationOptions.map((option, idx) => (
                             <div
@@ -14631,7 +14879,7 @@ function LittleFiresApp() {
                           borderRadius: '8px',
                           overflow: 'hidden',
                           zIndex: 1000,
-                          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                          boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.4)'
                         }}>
                           {durationOptions.map((option, idx) => (
                             <div
@@ -15270,7 +15518,7 @@ function LittleFiresApp() {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   transition: 'all 0.3s ease',
-                  boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)'
+                  boxShadow: '0 4px 15px rgba(var(--shadow-rgb), 0.3)'
                 }}
               >
                 <span style={{ textTransform: 'capitalize' }}>{archiveType}</span>
@@ -15294,7 +15542,7 @@ function LittleFiresApp() {
                   borderRadius: '20px',
                   overflow: 'hidden',
                   zIndex: 1000,
-                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)'
+                  boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.4)'
                 }}>
                   {['tasks', 'goals', 'projects'].filter(o => o === 'tasks' || isFeatureOn(o)).map((option, idx) => (
                     <div
@@ -15983,7 +16231,6 @@ function LittleFiresApp() {
               // the two drift apart.
               const renderListRow = (key, idx) => {
         const hidden = isListHidden(key);
-        const count = (allLists[key] || []).filter(t => !t.completed).length;
         const isDragging = draggingList === key;
         const isDragTarget = dragOverList === key && draggingList && draggingList !== key;
         return (
@@ -16014,17 +16261,6 @@ function LittleFiresApp() {
               transition: 'opacity 0.2s ease'
             }}
           >
-            {isSharedList(key) && (
-              <span style={{
-                order: 3, fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.5px',
-                textTransform: 'uppercase', padding: '3px 8px', borderRadius: '8px',
-                background: 'rgba(var(--partner-rgb), 0.18)',
-                border: '1px solid rgba(var(--partner-rgb), 0.45)',
-                color: 'var(--partner)', flexShrink: 0
-              }}>
-                Shared
-              </span>
-            )}
             <span
               title="Drag to reorder"
               style={{
@@ -16056,11 +16292,24 @@ function LittleFiresApp() {
               }}
             />
 
+            {/* This slot is fixed width whether or not it holds anything, so
+                the arrows and toggle line up down the column. The badge sat
+                after them before, which pushed every shared row's controls out
+                of alignment with the rest. */}
             <span style={{
-              color: 'var(--text-muted)', fontSize: '0.75rem',
-              fontFamily: 'Quicksand, sans-serif', minWidth: '48px'
+              minWidth: '62px', display: 'flex', justifyContent: 'flex-start', flexShrink: 0
             }}>
-              {count} open
+              {isSharedList(key) && (
+                <span style={{
+                  fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.5px',
+                  textTransform: 'uppercase', padding: '3px 8px', borderRadius: '8px',
+                  background: 'rgba(var(--partner-rgb), 0.18)',
+                  border: '1px solid rgba(var(--partner-rgb), 0.45)',
+                  color: 'var(--partner)', whiteSpace: 'nowrap'
+                }}>
+                  Shared
+                </span>
+              )}
             </span>
 
             {/* Arrows aren't decoration: HTML5 drag doesn't work on
@@ -17215,7 +17464,7 @@ function LittleFiresApp() {
                           <div style={{
                             position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '-8px',
                             background: 'rgba(var(--surface-rgb), 1)', border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                            borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+                            borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(var(--shadow-rgb),0.4)'
                           }}>
                             {[
                               { value: 'complete', label: 'Complete' },
@@ -17264,7 +17513,7 @@ function LittleFiresApp() {
                           <div style={{
                             position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '-8px',
                             background: 'rgba(var(--surface-rgb), 1)', border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                            borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+                            borderRadius: '8px', overflow: 'hidden', zIndex: 1000, boxShadow: '0 8px 24px rgba(var(--shadow-rgb),0.4)'
                           }}>
                             {[
                               { value: 'thisWeek', label: 'This Week' },
@@ -17642,7 +17891,7 @@ function LittleFiresApp() {
                           pointerEvents: 'none',
                           minWidth: isMobile ? '110px' : '150px',
                           fontSize: isMobile ? '0.9em' : '1em',
-                          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                          boxShadow: '0 8px 24px rgba(var(--shadow-rgb),0.5)',
                           zIndex: 10,
                           fontFamily: 'Quicksand, sans-serif'
                         }}>

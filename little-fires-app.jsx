@@ -303,7 +303,12 @@ const RICH_TEXT_TAGS = new Set([
 // Classes carry real behaviour and styling here, so a few are kept - but only
 // these, so nothing can borrow the app's own styling to fake UI.
 const RICH_TEXT_CLASSES = new Set([
-  'task-checkbox', 'checkbox-line', 'follow-up-heading', 'task-link'
+  'task-checkbox', 'checkbox-line', 'follow-up-heading', 'task-link',
+  // Mark a checkbox that has indented children beneath it, and the item that
+  // closes such a group. Task details recompute these on load, so their absence
+  // went unnoticed there - but a note is rendered straight from stored HTML with
+  // nothing to recompute, so the hierarchy was flattened every time one saved.
+  'has-children', 'ends-list'
 ]);
 
 // Link targets are rebuilt, never passed through. Parsing with the URL
@@ -2283,32 +2288,79 @@ function LittleFiresApp() {
 
   useEffect(() => {
     if (!expandedTaskId) return;
-    const onDown = (e) => {
-      const t = e.target;
-      if (!t || !t.closest) return;
-      // Inside the open card - including its toolbar, date picker and details
-      // editor - is not "outside".
-      if (t.closest('.task.expanded')) return;
-      // Modals and confirmations float above the list; dismissing one should
-      // not also collapse whatever is open behind it.
-      if (t.closest('.modal-overlay, .modal-content')) return;
 
+    // Is this event somewhere that should dismiss the open task at all?
+    const isOutside = (t) => {
+      if (!t || !t.closest) return false;
+      // Inside the open card - its toolbar, date picker and details editor -
+      // is not "outside".
+      if (t.closest('.task.expanded')) return false;
+      // Modals float above the list; dismissing one shouldn't also collapse
+      // whatever is open behind it.
+      if (t.closest('.modal-overlay, .modal-content')) return false;
+      return true;
+    };
+
+    const collapse = () => {
       setExpandedTaskId(null);
       collapseGuardRef.current = true;
-      // Safety net: if no click follows - a tap on empty space, or a scroll -
-      // the guard must not survive to eat the next genuine tap.
       if (collapseGuardTimer.current) clearTimeout(collapseGuardTimer.current);
       collapseGuardTimer.current = setTimeout(() => {
         collapseGuardRef.current = false;
       }, 400);
     };
-    // Capture phase, and on the down event rather than click, so this always
-    // runs before the tapped card's own handler decides to expand.
-    document.addEventListener('mousedown', onDown, true);
-    document.addEventListener('touchstart', onDown, true);
+
+    // Mouse: a press outside is unambiguous, so collapse immediately. Desktop
+    // scrolling uses the wheel, not a drag, so there's no gesture to confuse
+    // this with.
+    const onMouseDown = (e) => { if (isOutside(e.target)) collapse(); };
+
+    // Touch has to wait. Putting a finger down outside the card is how you
+    // scroll, and collapsing on touchstart meant the details closed the moment
+    // you tried to look further down the page. So the decision is deferred to
+    // touchend and only made if the finger effectively stayed put - a tap is a
+    // dismissal, a drag is a scroll.
+    const touch = { x: 0, y: 0, pending: false };
+    const MOVE_TOLERANCE = 10;
+
+    const onTouchStart = (e) => {
+      if (e.touches.length !== 1 || !isOutside(e.target)) {
+        touch.pending = false;
+        return;
+      }
+      const t = e.touches[0];
+      touch.x = t.clientX;
+      touch.y = t.clientY;
+      touch.pending = true;
+    };
+
+    const onTouchMove = (e) => {
+      if (!touch.pending) return;
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - touch.x) > MOVE_TOLERANCE ||
+          Math.abs(t.clientY - touch.y) > MOVE_TOLERANCE) {
+        touch.pending = false; // this is a scroll, leave the task alone
+      }
+    };
+
+    const onTouchEnd = () => {
+      if (!touch.pending) return;
+      touch.pending = false;
+      collapse();
+    };
+
+    // Capture phase so this runs before the tapped card's own handler.
+    document.addEventListener('mousedown', onMouseDown, true);
+    document.addEventListener('touchstart', onTouchStart, true);
+    document.addEventListener('touchmove', onTouchMove, true);
+    document.addEventListener('touchend', onTouchEnd, true);
+    document.addEventListener('touchcancel', onTouchEnd, true);
     return () => {
-      document.removeEventListener('mousedown', onDown, true);
-      document.removeEventListener('touchstart', onDown, true);
+      document.removeEventListener('mousedown', onMouseDown, true);
+      document.removeEventListener('touchstart', onTouchStart, true);
+      document.removeEventListener('touchmove', onTouchMove, true);
+      document.removeEventListener('touchend', onTouchEnd, true);
+      document.removeEventListener('touchcancel', onTouchEnd, true);
     };
   }, [expandedTaskId]);
 
@@ -3981,6 +4033,42 @@ function LittleFiresApp() {
     // in place - two different exits fighting each other was what made it look
     // like the card was being sucked into the checkmark.
     const [swipedOut, setSwipedOut] = React.useState(false);
+
+    // Whether bold+underline is active where the cursor is. Read from the
+    // document rather than tracked as an intent, because formatting can also
+    // change by moving the caret into or out of styled text - a flag set when
+    // the button was pressed would go stale immediately and show "engaged"
+    // when nothing is.
+    const [formatOn, setFormatOn] = React.useState(false);
+
+    React.useEffect(() => {
+      if (!isExpanded) return;
+      let raf = null;
+      const check = () => {
+        raf = null;
+        try {
+          const el = detailsRef.current;
+          const sel = window.getSelection();
+          if (!el || !sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
+            setFormatOn(false);
+            return;
+          }
+          setFormatOn(document.queryCommandState('bold') || document.queryCommandState('underline'));
+        } catch (err) {
+          setFormatOn(false);
+        }
+      };
+      // selectionchange fires on every caret move, so the work is coalesced to
+      // one check per frame. queryCommandState forces style resolution, which
+      // is not something to run per keystroke.
+      const onSel = () => { if (!raf) raf = requestAnimationFrame(check); };
+      document.addEventListener('selectionchange', onSel);
+      check();
+      return () => {
+        document.removeEventListener('selectionchange', onSel);
+        if (raf) cancelAnimationFrame(raf);
+      };
+    }, [isExpanded]);
     // Collapsing the row's height while it fades makes the tasks below slide up
     // instead of snapping. Height must animate from a real px value, not 'auto',
     // so we measure the row before starting.
@@ -4090,13 +4178,12 @@ function LittleFiresApp() {
           if (nextIndent > indent) {
             const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
             if (txt) {
+              // Class only. These used to also set fontWeight, borderBottom and
+              // paddingBottom inline, with a comment claiming that was what made
+              // the styling survive a save - but the sanitizer strips the style
+              // attribute, so those three lines never once did anything. The
+              // .has-children CSS is what actually renders it.
               lines[i].classList.add('has-children');
-              // Inline styles too, so it persists in saved HTML
-              lines[i].style.fontWeight = 'bold';
-              lines[i].style.borderBottom = '2px solid rgba(var(--accent-rgb), 0.55)';
-              lines[i].style.paddingBottom = '6px';
-              const sp = lines[i].querySelector('span');
-              if (sp) sp.style.fontWeight = 'bold';
             }
           } else {
             // Not a parent anymore - remove any leftover bold from inline styles
@@ -4699,13 +4786,40 @@ function LittleFiresApp() {
                       // else: leftover markup with no checkbox - fall through to convert it
                     }
                     
+                    // An empty bullet at the caret is an intent, not content:
+                    // you started a bullet and then chose a checkbox instead.
+                    // It has to be handled separately because currentLine walks
+                    // up to the direct child of the details area, which for a
+                    // bullet is the whole <ul> - so an empty <li> inside a list
+                    // that still has other items was invisible to the checks
+                    // below, and the checkbox landed under a stray dot.
+                    let explicitAnchor = null;
+                    const caretEl = currentNode.nodeType === Node.ELEMENT_NODE
+                      ? currentNode : currentNode.parentElement;
+                    const emptyLi = caretEl && caretEl.closest ? caretEl.closest('li') : null;
+                    if (emptyLi && detailsArea.contains(emptyLi) &&
+                        (emptyLi.textContent || '').replace(/\u00A0/g, '').trim() === '') {
+                      const list = emptyLi.parentElement;
+                      const wasOnlyItem = list && list.querySelectorAll('li').length === 1;
+                      // Anchor captured before removing anything, or the
+                      // reference point disappears along with the node.
+                      explicitAnchor = { parent: list.parentElement, before: list.nextSibling };
+                      emptyLi.remove();
+                      // A list with no items left is empty scaffolding, not a
+                      // list - drop it rather than leaving invisible markup
+                      // that still takes vertical space.
+                      if (wasOnlyItem || !list.querySelector('li')) list.remove();
+                    }
+
                     const { line: checkboxLine, span: textSpan } = buildCheckboxLine();
                     
                     // Determine if the current line has text
                     const isProperLine = currentLine && currentLine !== detailsArea && currentLine.parentElement === detailsArea;
                     const currentLineText = isProperLine ? (currentLine.textContent || '').replace(/\u00A0/g, '').trim() : '';
                     
-                    if (isProperLine && currentLineText === '') {
+                    if (explicitAnchor) {
+                      explicitAnchor.parent.insertBefore(checkboxLine, explicitAnchor.before);
+                    } else if (isProperLine && currentLineText === '') {
                       // Empty line (including leftover empty checkbox-line) - replace with checkbox line
                       currentLine.parentElement.replaceChild(checkboxLine, currentLine);
                     } else if (isProperLine && currentLineText !== '') {
@@ -4762,6 +4876,34 @@ function LittleFiresApp() {
                 title="Bullet List"
               >
                 • Bullets
+              </button>
+              <button
+                className={`toolbar-btn ${formatOn ? 'format-on' : ''}`}
+                onMouseDown={(e) => {
+                  // onMouseDown with preventDefault, like its neighbours: the
+                  // selection has to survive the press, and a plain click would
+                  // have already moved focus out of the editor by then.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                  detailsArea.focus();
+                  const selection = window.getSelection();
+                  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+                    const range = document.createRange();
+                    range.selectNodeContents(detailsArea);
+                    range.collapse(false);
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                  }
+                  // Both at once, so the button is one state rather than two
+                  // that can drift apart. With a selection it styles it; with a
+                  // bare cursor it arms the styling for what you type next.
+                  document.execCommand('bold', false, null);
+                  document.execCommand('underline', false, null);
+                }}
+                title="Bold + underline"
+              >
+                <strong style={{ textDecoration: 'underline', fontWeight: 800 }}>B</strong>
               </button>
               <button 
                 className="toolbar-btn"
@@ -4873,7 +5015,24 @@ function LittleFiresApp() {
               }}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                
+
+                // A bold+underline run ends at the line it was written on.
+                // contentEditable carries active formatting across a newline,
+                // so without this a heading would quietly turn the rest of the
+                // note bold - and turning it off by hand means finding the
+                // button again. Deferred a tick: the new line has to exist
+                // before the commands apply to it.
+                if (e.key === 'Enter') {
+                  const wasBold = document.queryCommandState('bold');
+                  const wasUnderline = document.queryCommandState('underline');
+                  if (wasBold || wasUnderline) {
+                    setTimeout(() => {
+                      if (document.queryCommandState('bold')) document.execCommand('bold', false, null);
+                      if (document.queryCommandState('underline')) document.execCommand('underline', false, null);
+                    }, 0);
+                  }
+                }
+
                 const selection = window.getSelection();
                 if (!selection.rangeCount) return;
                 
@@ -4889,35 +5048,23 @@ function LittleFiresApp() {
                 if (e.key === 'Tab' && checkboxLine) {
                   e.preventDefault();
                   const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
-                  const newIndent = currentIndent + 20;
+                  // Shift+Tab outdents. The handler used to ignore the modifier
+                  // entirely, so Shift+Tab indented like a plain Tab and there
+                  // was no way back out of a nesting level except backspacing
+                  // from the start of the line.
+                  const newIndent = e.shiftKey
+                    ? Math.max(0, currentIndent - 20)
+                    : currentIndent + 20;
+                  if (newIndent === currentIndent) return;
                   checkboxLine.style.marginLeft = newIndent + 'px';
-                  
-                  // Auto-bold the parent line: the nearest preceding sibling
-                  // whose indent is strictly less than this line's new indent.
-                  // Use both a CSS class and inline fontWeight so it renders and persists.
-                  let prevLine = checkboxLine.previousElementSibling;
-                  while (prevLine) {
-                    const prevIndent = parseInt(prevLine.style.marginLeft || '0') || 0;
-                    if (prevIndent < newIndent) {
-                      const lineTxt = (prevLine.textContent || '').replace(/\u00A0/g, '').trim();
-                      if (lineTxt) {
-                        prevLine.classList.add('has-children');
-                        prevLine.style.fontWeight = 'bold';
-                        // Inline underline so it survives save/reload even if the
-                        // class-based rule doesn't re-apply on load.
-                        prevLine.style.borderBottom = '2px solid rgba(var(--accent-rgb), 0.55)';
-                        prevLine.style.paddingBottom = '6px';
-                        prevLine.style.marginBottom = '8px';
-                        // Also bold the inner span directly so it survives save/reload
-                        const parentSpan = prevLine.querySelector('span');
-                        if (parentSpan) {
-                          parentSpan.style.fontWeight = 'bold';
-                        }
-                      }
-                      break;
-                    }
-                    prevLine = prevLine.previousElementSibling;
-                  }
+
+                  // Parent and boundary marks are recomputed for the whole list
+                  // rather than patched for this one line. Outdenting can orphan
+                  // a parent that no longer has children, which hand-patching
+                  // the line you just moved could never notice - and this is
+                  // the same function that runs on load, so the two can't
+                  // disagree about what the list looks like.
+                  refreshListMarkers(checkboxLine.closest('.details-richtext'));
                 }
                 
                 // Handle Backspace at the start of a checkbox line - remove the checkbox.
@@ -6674,6 +6821,11 @@ function LittleFiresApp() {
            Keyed off .badge alone, nothing can be missed. */
         .badge {
           background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          /* Fixed white, not var(--text). The badge sits on the accent gradient
+             in both themes, so its text has to contrast with that - not with
+             the page. Inheriting from the header meant it followed the theme
+             and turned dark-on-green in light mode. */
+          color: #fff;
         }
 
         .task {
@@ -7216,6 +7368,14 @@ function LittleFiresApp() {
         .toolbar-btn:hover {
           background: rgba(var(--accent-rgb), 0.3);
           border-color: rgba(var(--accent-rgb), 0.5);
+        }
+
+        /* Genuinely engaged - filled rather than tinted, so it can't be
+           confused with the momentary highlight of having just been tapped. */
+        .toolbar-btn.format-on {
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border-color: rgba(var(--accent-rgb), 0.7);
+          color: #fff;
         }
 
         .toolbar-btn:active {
@@ -8393,10 +8553,22 @@ function LittleFiresApp() {
           border-bottom: 4px solid rgba(var(--accent-rgb), 0.3);
         }
 
+        /* Label left, count right - the count is data, not part of the title,
+           so brackets were doing the job an aligned column does better. */
         .day-section-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
           cursor: pointer;
           user-select: none;
           -webkit-user-select: none;
+        }
+
+        .day-section-count {
+          color: var(--text-muted);
+          font-weight: 600;
+          flex-shrink: 0;
         }
 
         .day-list-group {
@@ -9044,6 +9216,35 @@ function LittleFiresApp() {
           .priority-btn:hover,
           button:hover,
           .fire-flag-btn:hover,
+          /* Toolbar buttons latch too, and there it's worse than cosmetic:
+             the last button pressed stays lit, which reads as "this formatting
+             is switched on" when nothing is. Reset to the base values rather
+             than to none, or they'd lose their normal appearance entirely. */
+          .toolbar-btn:hover {
+            background: rgba(var(--accent-rgb), 0.2);
+            border-color: rgba(var(--accent-rgb), 0.3);
+          }
+
+          .tab:hover {
+            background: rgba(var(--surface-rgb), 0.8);
+            border-color: rgba(var(--accent-rgb), 0.2);
+          }
+
+          .tab.shared:hover {
+            background: rgba(var(--partner-rgb), 0.12);
+            border-color: rgba(var(--partner-rgb), 0.45);
+          }
+
+          /* Background and border too, not just transform. A tap latches
+             :hover on touch, so the card stayed visibly highlighted after it
+             was used to dismiss something - looking selected when nothing was
+             selected. */
+          .task:not(.expanded):hover {
+            background: rgba(var(--surface-raised-rgb), 0.6);
+            border-color: rgba(var(--accent-rgb), 0.15);
+            box-shadow: none;
+          }
+
           .task:not(.expanded):hover,
           .delete-btn:hover,
           .edit-btn:hover,
@@ -9061,6 +9262,23 @@ function LittleFiresApp() {
           .note-content .task-checkbox:hover {
             transform: none;
           }
+        }
+
+        /* Settings is a form, not a dashboard. The global button rule hangs an
+           accent-coloured glow on everything - the reorder arrows, the toggles,
+           the add buttons - which on a dark ground reads as every control
+           floating slightly off the page. Scoped by container so the rest of
+           the app keeps its depth. */
+        .settings-section button,
+        .settings-section input,
+        .settings-section select,
+        .settings-section textarea {
+          box-shadow: none;
+        }
+
+        .settings-section button:hover,
+        .settings-section button:focus {
+          box-shadow: none;
         }
 
         /* --- Touch feedback ------------------------------------------------
@@ -12005,7 +12223,8 @@ function LittleFiresApp() {
                             className="day-section-toggle"
                             onClick={() => toggleCalendarSection('tasks')}
                           >
-                            Tasks ({tasks.length})
+                            <span>Tasks</span>
+                            <span className="day-section-count">{tasks.length}</span>
                           </h4>
                           {!isCalendarSectionCollapsed('tasks') && (<>
                           {/* Grouped by list, in the order set in Settings, so this
@@ -12123,7 +12342,8 @@ function LittleFiresApp() {
                             className="day-section-toggle"
                             onClick={() => toggleCalendarSection('notes')}
                           >
-                            Notes ({notes.length})
+                            <span>Notes</span>
+                            <span className="day-section-count">{notes.length}</span>
                           </h4>
                           {!isCalendarSectionCollapsed('notes') && (<>
                           {notes.map((item, idx) => {
@@ -12206,7 +12426,8 @@ function LittleFiresApp() {
                             className="day-section-toggle"
                             onClick={() => toggleCalendarSection('projects')}
                           >
-                            Projects ({projectItems.length})
+                            <span>Projects</span>
+                            <span className="day-section-count">{projectItems.length}</span>
                           </h4>
                           {!isCalendarSectionCollapsed('projects') && (<>
                           {projectItems.map((item, idx) => {

@@ -1,8 +1,20 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Little Fires</title>
+
+<!-- Fonts are requested here rather than from an @import inside the app's
+     <style> block. From there nothing was fetched until the JS bundle had
+     downloaded, parsed, and React had mounted and rendered - a fully
+     serialised chain before a single font byte was asked for. In the document
+     head the browser's preload scanner finds these while the HTML is still
+     parsing, so they download in parallel with the bundle.
+     preconnect opens the TLS connections up front; gstatic is where the font
+     files themselves live and needs crossorigin. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap">
 </head>
 
 <body>

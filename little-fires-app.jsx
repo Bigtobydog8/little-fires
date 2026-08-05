@@ -5972,6 +5972,24 @@ function LittleFiresApp() {
           border-color: rgba(var(--accent-rgb), 0.4);
         }
 
+        /* Inactive shared tab: tinted enough to read as a different kind of
+           list at a glance, without competing with the active tab. */
+        .tab.shared {
+          border-color: rgba(var(--partner-rgb), 0.45);
+          background: rgba(var(--partner-rgb), 0.12);
+          color: var(--partner);
+        }
+
+        /* Active shared tab keeps the partner colour rather than reverting to
+           the accent - otherwise selecting a shared list would make it look
+           like every other list. */
+        .tab.shared.active {
+          background: linear-gradient(135deg, var(--partner), var(--partner));
+          color: #fff;
+          border-color: rgba(var(--partner-rgb), 0.7);
+          box-shadow: 0 0 8px rgba(var(--partner-rgb), 0.5);
+        }
+
         .tab.active {
           background: linear-gradient(135deg, var(--accent), var(--accent-light));
           color: #fff;
@@ -8979,7 +8997,11 @@ function LittleFiresApp() {
                 {visibleTaskLists.map(key => (
                   <button
                     key={key}
-                    className={`tab ${currentList === key ? 'active' : ''}`}
+                    // `shared` tints the tab in the partner colour wherever it
+                    // appears. With shared lists free to sit anywhere in the
+                    // order, colour is what makes them recognisable - grouping
+                    // no longer does that job.
+                    className={`tab ${isSharedList(key) ? 'shared' : ''} ${currentList === key ? 'active' : ''}`}
                     onClick={() => setCurrentList(key)}
                   >
                     {listLabel(key)}
@@ -15992,6 +16014,17 @@ function LittleFiresApp() {
               transition: 'opacity 0.2s ease'
             }}
           >
+            {isSharedList(key) && (
+              <span style={{
+                order: 3, fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.5px',
+                textTransform: 'uppercase', padding: '3px 8px', borderRadius: '8px',
+                background: 'rgba(var(--partner-rgb), 0.18)',
+                border: '1px solid rgba(var(--partner-rgb), 0.45)',
+                color: 'var(--partner)', flexShrink: 0
+              }}>
+                Shared
+              </span>
+            )}
             <span
               title="Drag to reorder"
               style={{
@@ -16260,43 +16293,120 @@ function LittleFiresApp() {
                       are kept, not deleted.
                     </div>
 
-                    {/* Two groups. orderedTaskLists carries the user's drag
-                        ordering; filtering it per set preserves that within
-                        each group rather than imposing a new order. */}
-                    <div style={subheading}>Personal Lists</div>
+                    {/* Live tab preview, and the surface you reorder on.
+                        Dragging a chip calls the same reorderList the rows
+                        below use, so the two can't disagree - and this is the
+                        actual artifact being ordered rather than a proxy for
+                        it. HTML5 drag doesn't fire on touch, so on a phone this
+                        is read-only feedback and the arrows below do the work. */}
                     <div style={{ ...hint, marginTop: 0, marginBottom: '8px' }}>
-                      Yours alone. {personalListKeys.length} of {MAX_LISTS_PER_SET}.
+                      Your tabs, in order. Drag to rearrange.
                     </div>
-                    {orderedTaskLists.filter(k => !isSharedList(k)).map(renderListRow)}
+                    <div style={{
+                      display: 'flex', flexWrap: 'wrap', gap: '6px',
+                      padding: '12px', marginBottom: '18px',
+                      background: 'rgba(var(--surface-deep-rgb), 0.5)',
+                      border: '2px solid rgba(var(--border-rgb), 0.2)',
+                      borderRadius: '14px'
+                    }}>
+                      {visibleTaskLists.length === 0 && (
+                        <span style={{ ...hint, margin: 0 }}>Every list is switched off.</span>
+                      )}
+                      {visibleTaskLists.map(key => {
+                        const shared = isSharedList(key);
+                        const over = dragOverList === key;
+                        return (
+                          <span
+                            key={key}
+                            draggable
+                            onDragStart={() => setDraggingList(key)}
+                            onDragOver={(e) => { e.preventDefault(); setDragOverList(key); }}
+                            onDragLeave={() => setDragOverList(prev => (prev === key ? null : prev))}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (draggingList) reorderList(draggingList, key);
+                              setDraggingList(null);
+                              setDragOverList(null);
+                            }}
+                            onDragEnd={() => { setDraggingList(null); setDragOverList(null); }}
+                            style={{
+                              padding: '7px 14px', borderRadius: '20px', cursor: 'grab',
+                              fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.5px',
+                              textTransform: 'uppercase', fontFamily: 'Quicksand, sans-serif',
+                              // Shared tabs carry the partner colour wherever they
+                              // appear, so "this one is shared" is a thing you
+                              // recognise rather than a label you have to read.
+                              background: shared
+                                ? 'rgba(var(--partner-rgb), 0.18)'
+                                : 'rgba(var(--surface-rgb), 0.9)',
+                              border: shared
+                                ? '1px solid rgba(var(--partner-rgb), 0.5)'
+                                : '1px solid rgba(var(--border-rgb), 0.3)',
+                              color: shared ? 'var(--partner)' : 'var(--text-muted)',
+                              outline: over ? '2px solid var(--accent)' : 'none'
+                            }}
+                          >
+                            {listLabel(key)}
+                          </span>
+                        );
+                      })}
+                    </div>
 
-                    {personalListKeys.length < MAX_LISTS_PER_SET ? (
-                      <button onClick={() => addListQuick(false)} style={{ padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', marginTop: '14px', background: 'rgba(var(--surface-rgb), 1)', border: '2px solid rgba(var(--accent-rgb), 0.35)', color: 'var(--accent-light)', fontSize: '0.85rem', fontWeight: 600, fontFamily: 'Quicksand, sans-serif' }}>
-                        + Add List
-                      </button>
-                    ) : (
-                      <div style={{ ...hint, marginTop: '14px' }}>
-                        You've reached the maximum of {MAX_LISTS_PER_SET} personal lists.
-                      </div>
-                    )}
+                    {/* One flat list, in true tab order. Previously two filtered
+                        groups - which quietly made cross-group reordering
+                        impossible, because a shared list had no personal list to
+                        be dropped onto. */}
+                    {orderedTaskLists.map(renderListRow)}
 
                     <div style={divider} />
 
-                    <div style={subheading}>Shared Lists</div>
-                    <div style={{ ...hint, marginTop: 0, marginBottom: '8px' }}>
-                      Tasks here show who they're for, and are the lists a partner will
-                      also see once syncing is set up. {sharedListKeys.length} of {MAX_LISTS_PER_SET}.
-                    </div>
-                    {orderedTaskLists.filter(k => isSharedList(k)).map(renderListRow)}
-
-                    {sharedListKeys.length < MAX_LISTS_PER_SET ? (
-                      <button onClick={() => addListQuick(true)} style={{ padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', marginTop: '14px', background: 'rgba(var(--surface-rgb), 1)', border: '2px solid rgba(var(--accent-rgb), 0.35)', color: 'var(--accent-light)', fontSize: '0.85rem', fontWeight: 600, fontFamily: 'Quicksand, sans-serif' }}>
-                        + Add Shared List
-                      </button>
-                    ) : (
-                      <div style={{ ...hint, marginTop: '14px' }}>
-                        You've reached the maximum of {MAX_LISTS_PER_SET} shared lists.
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'stretch' }}>
+                      <div style={{ flex: 1, minWidth: '150px' }}>
+                        <button
+                          onClick={() => addListQuick(false)}
+                          disabled={personalListKeys.length >= MAX_LISTS_PER_SET}
+                          style={{
+                            width: '100%', padding: '12px 16px', borderRadius: '10px',
+                            cursor: personalListKeys.length >= MAX_LISTS_PER_SET ? 'default' : 'pointer',
+                            background: 'rgba(var(--surface-rgb), 1)',
+                            border: '2px solid rgba(var(--border-rgb), 0.35)',
+                            color: 'var(--text-muted)', fontSize: '0.85rem', fontWeight: 600,
+                            fontFamily: 'Quicksand, sans-serif',
+                            opacity: personalListKeys.length >= MAX_LISTS_PER_SET ? 0.5 : 1
+                          }}
+                        >
+                          + Personal List
+                        </button>
+                        <div style={{ ...hint, marginTop: '6px', textAlign: 'center' }}>
+                          {personalListKeys.length} of {MAX_LISTS_PER_SET}
+                        </div>
                       </div>
-                    )}
+
+                      <div style={{ flex: 1, minWidth: '150px' }}>
+                        {/* Deliberately the louder of the two. A shared list is
+                            the thing that involves another person, so adding one
+                            should read as a decision, not a twin of the button
+                            beside it. */}
+                        <button
+                          onClick={() => addListQuick(true)}
+                          disabled={sharedListKeys.length >= MAX_LISTS_PER_SET}
+                          style={{
+                            width: '100%', padding: '12px 16px', borderRadius: '10px',
+                            cursor: sharedListKeys.length >= MAX_LISTS_PER_SET ? 'default' : 'pointer',
+                            background: 'rgba(var(--partner-rgb), 0.18)',
+                            border: '2px solid rgba(var(--partner-rgb), 0.55)',
+                            color: 'var(--partner)', fontSize: '0.85rem', fontWeight: 700,
+                            fontFamily: 'Quicksand, sans-serif',
+                            opacity: sharedListKeys.length >= MAX_LISTS_PER_SET ? 0.5 : 1
+                          }}
+                        >
+                          + Shared List
+                        </button>
+                        <div style={{ ...hint, marginTop: '6px', textAlign: 'center' }}>
+                          {sharedListKeys.length} of {MAX_LISTS_PER_SET} · seen by your partner
+                        </div>
+                      </div>
+                    </div>
 
                     {listMessage && (
                       <div style={{

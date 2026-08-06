@@ -4280,7 +4280,15 @@ function LittleFiresApp() {
     // changes -> effect re-runs -> cleanup saves again, with no paint in
     // between to break the cycle. React kills it as a runaway update.
     React.useEffect(() => {
-      if (isExpanded && detailsRef.current) {
+      // Captured here, while the element is still mounted. React sets refs to
+      // null during unmount, and passive effect cleanups run AFTER that - so a
+      // cleanup reading detailsRef.current on collapse found null and saved
+      // nothing. Everything typed since the last blur was lost, and only on the
+      // collapse path, which is why clicking away without collapsing worked.
+      // A detached node still holds its innerHTML, so this stays readable.
+      const area = detailsRef.current;
+
+      if (isExpanded && area) {
         // Only set content once when first expanded
         if (!hasSetInitialContent.current) {
           if (task.details === lastSavedHtmlRef.current) {
@@ -4294,19 +4302,19 @@ function LittleFiresApp() {
             // stored value can't be assumed to have gone through this app's own
             // editor. This assignment is into a live element, so anything unsafe
             // would execute immediately.
-            detailsRef.current.innerHTML = sanitizeRichText(task.details || '');
+            area.innerHTML = sanitizeRichText(task.details || '');
             hasSetInitialContent.current = true;
             // After loading, reflect any already-complete child sets on their parents
-            setTimeout(() => syncParentCheckboxes(detailsRef.current), 0);
-            setTimeout(() => refreshListMarkers(detailsRef.current), 0);
+            setTimeout(() => syncParentCheckboxes(area), 0);
+            setTimeout(() => refreshListMarkers(area), 0);
           }
         }
       }
       
       // Cleanup: save details when task is about to collapse
       return () => {
-        if (isExpanded && detailsRef.current && hasSetInitialContent.current) {
-          saveDetails(detailsRef.current);
+        if (isExpanded && area && hasSetInitialContent.current) {
+          saveDetails(area);
         }
         // Reset flag when collapsed so it will load fresh next time
         hasSetInitialContent.current = false;
@@ -4903,7 +4911,7 @@ function LittleFiresApp() {
                 }}
                 title="Bold + underline"
               >
-                <strong style={{ textDecoration: 'underline', fontWeight: 800 }}>B</strong>
+                <strong style={{ textDecoration: 'underline', fontWeight: 800 }}>Bold</strong>
               </button>
               <button 
                 className="toolbar-btn"
@@ -6105,6 +6113,10 @@ function LittleFiresApp() {
           --surface-line: #3a3a4a;
           --surface-rgb: 42, 42, 62;
           --surface-raised-rgb: 52, 52, 72;
+          /* One step brighter than a resting card - on dark that means lighter,
+             on light it means very slightly darker. Only the direction differs,
+             which is exactly why it needed a token rather than a fixed value. */
+          --surface-hover-rgb: 62, 62, 82;
           --surface-alt-rgb: 58, 58, 74;
           --surface-deep-rgb: 30, 30, 46;
           --border-rgb: 100, 116, 139;
@@ -6138,6 +6150,9 @@ function LittleFiresApp() {
           --surface-line: #e0dcd1;
           --surface-rgb: 255, 254, 251;
           --surface-raised-rgb: 252, 251, 246;
+          /* Warm, and only a touch darker than the resting card. A hover should
+             read as a nudge on paper, not as a highlighter. */
+          --surface-hover-rgb: 240, 237, 227;
           --surface-alt-rgb: 246, 244, 236;
           --surface-deep-rgb: 255, 255, 253;
           --border-rgb: 176, 169, 152;
@@ -6845,7 +6860,7 @@ function LittleFiresApp() {
         }
 
         .task:not(.expanded):hover {
-          background: rgba(62, 62, 82, 0.8);
+          background: rgba(var(--surface-hover-rgb), 0.8);
           border-color: rgba(var(--accent-rgb), 0.3);
           transform: translateX(5px);
           box-shadow: 0 4px 20px rgba(var(--accent-rgb), 0.2);
@@ -7343,6 +7358,10 @@ function LittleFiresApp() {
         }
 
         .toolbar-btn {
+          /* No glow. The global button rule hangs an accent shadow on every
+             button; on a row of small controls attached to a text field that
+             reads as each one floating rather than sitting in the toolbar. */
+          box-shadow: none;
           /* Laid out as a row rather than as inline content. Now that one of
              these holds an SVG plus a label, inline layout gave the browser a
              break opportunity between them and the icon ended up stacked above
@@ -7368,6 +7387,7 @@ function LittleFiresApp() {
         .toolbar-btn:hover {
           background: rgba(var(--accent-rgb), 0.3);
           border-color: rgba(var(--accent-rgb), 0.5);
+          box-shadow: none;
         }
 
         /* Genuinely engaged - filled rather than tinted, so it can't be
@@ -7376,6 +7396,7 @@ function LittleFiresApp() {
           background: linear-gradient(135deg, var(--accent), var(--accent-light));
           border-color: rgba(var(--accent-rgb), 0.7);
           color: #fff;
+          box-shadow: none;
         }
 
         .toolbar-btn:active {

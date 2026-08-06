@@ -4617,8 +4617,12 @@ function LittleFiresApp() {
                 className="task-text"
                 onClick={(e) => {
                   e.stopPropagation();
-                  // If already expanded, single click enters edit mode
-                  if (isExpanded && !task.isArchived) {
+                  // Renaming needs the click to land on the words. Clicking the
+                  // space beside them is a click on the row, and falls through
+                  // to the same expand/collapse everything else does.
+                  const onLabel = e.target && e.target.closest
+                    && e.target.closest('.task-text-label');
+                  if (isExpanded && !task.isArchived && onLabel) {
                     setEditingTaskName(`${listName}-${task.id}`);
                   } else {
                     // If collapsed, single click expands
@@ -4663,7 +4667,11 @@ function LittleFiresApp() {
                 }}
                 style={{cursor: isExpanded ? 'text' : 'pointer'}}
               >
-                {task.text}
+                {/* Inline span, so its box ends where the text ends. The div
+                    around it is a flex child that fills the row, so hanging the
+                    rename off the div meant the whole empty area beside a short
+                    title opened the editor. */}
+                <span className="task-text-label">{task.text}</span>
               </div>
             )}
 
@@ -6207,6 +6215,13 @@ function LittleFiresApp() {
           transition-duration: 0.001ms !important;
         }
 
+        /* The container clips its own overflow, but the document is a separate
+           scroller - a transformed child can still widen the page itself. */
+        html, body {
+          overflow-x: hidden;
+          overscroll-behavior-x: none;
+        }
+
         .little-fires-container {
           font-family: 'Nunito', sans-serif;
           /* Grain first, gradient second - background layers paint front to
@@ -6933,6 +6948,10 @@ function LittleFiresApp() {
 
         .task-content {
           flex: 1;
+        }
+
+        .task-text-label {
+          cursor: text;
         }
 
         .task-text {
@@ -8703,6 +8722,19 @@ function LittleFiresApp() {
           position: relative;
           --swipe-progress: 0;
           --swipe-dx: 0px;
+        }
+
+        /* The swipe translates the card to the right, which widens the page and
+           lets the browser pan horizontally to follow it - so the whole screen
+           drifted sideways during the gesture.
+           pan-y tells the browser this element only participates in vertical
+           scrolling, so a horizontal drag is ours alone and never becomes a
+           pan. It also removes the delay while the browser waits to decide
+           which of the two the gesture is.
+           Scoped to collapsed cards: an expanded one contains the details
+           toolbar, which scrolls horizontally on purpose. */
+        .task:not(.expanded) {
+          touch-action: pan-y;
         }
 
         .task::before {

@@ -100,7 +100,7 @@ function InlineDatePicker({ value, onChange, style }) {
           border: '2px solid rgba(var(--accent-rgb), 0.4)',
           borderRadius: '12px', padding: '12px', width: '252px',
           boxShadow: '0 10px 30px rgba(var(--shadow-rgb),0.55)',
-          fontFamily: 'Quicksand, sans-serif'
+          fontFamily: 'var(--font-ui)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center',
             justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -132,7 +132,7 @@ function InlineDatePicker({ value, onChange, style }) {
                   style={{
                     ...btnReset,
                     padding: '6px 0', borderRadius: '7px', cursor: 'pointer',
-                    fontSize: '0.8rem', fontFamily: 'Quicksand, sans-serif',
+                    fontSize: '0.8rem', fontFamily: 'var(--font-ui)',
                     border: isToday(d) && !sel ? '1px solid rgba(var(--accent-rgb), 0.6)' : '1px solid transparent',
                     background: sel ? 'linear-gradient(135deg, var(--accent), var(--accent-light))' : 'transparent',
                     color: sel ? '#fff' : 'var(--text)', fontWeight: sel ? 700 : 500
@@ -151,12 +151,12 @@ function InlineDatePicker({ value, onChange, style }) {
                 setOpen(false);
               }}
               style={{ ...btnReset, background: 'transparent', border: 'none', color: 'var(--accent-light)',
-                cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'Quicksand, sans-serif' }}>
+                cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'var(--font-ui)' }}>
               Today
             </button>
             <button type="button" onClick={(e) => { stop(e); setOpen(false); }}
               style={{ ...btnReset, background: 'transparent', border: 'none', color: '#8a8a9a',
-                cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'Quicksand, sans-serif' }}>
+                cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'var(--font-ui)' }}>
               Close
             </button>
           </div>
@@ -448,6 +448,41 @@ const IS_TOUCH_DEVICE =
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(hover: none) and (pointer: coarse)').matches;
 
+// Font choices. `ui` is the display face (headings, tabs, buttons); `body` is
+// the reading face (task text, notes). Both are named per option so a choice is
+// a coherent pairing rather than two dropdowns to get wrong.
+//
+// `google` is the families to request, or null for the system stack - which
+// costs no network at all and is the fastest possible option.
+const FONT_OPTIONS = [
+  {
+    id: 'default', label: 'Quicksand & Nunito', note: 'The original pairing',
+    ui: "'Quicksand', sans-serif", body: "'Nunito', sans-serif",
+    google: 'Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700'
+  },
+  {
+    id: 'system', label: 'System', note: 'Your device\'s own font - loads instantly',
+    ui: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    body: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    google: null
+  },
+  {
+    id: 'serif', label: 'Lora & Inter', note: 'Bookish headings, plain body',
+    ui: "'Lora', Georgia, serif", body: "'Inter', sans-serif",
+    google: 'Lora:wght@500;600;700&family=Inter:wght@400;500;600;700'
+  },
+  {
+    id: 'mono', label: 'Space Grotesk & Inter', note: 'Geometric and technical',
+    ui: "'Space Grotesk', sans-serif", body: "'Inter', sans-serif",
+    google: 'Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700'
+  },
+  {
+    id: 'humanist', label: 'Nunito', note: 'One rounded face throughout',
+    ui: "'Nunito', sans-serif", body: "'Nunito', sans-serif",
+    google: 'Nunito:wght@400;500;600;700;800'
+  }
+];
+
 // The timer's duration choices, defined once. The dropdown, the label shown on
 // it and the progress ring all read from here - previously the list and a long
 // ternary chain that mapped values to labels were each duplicated across two
@@ -699,6 +734,7 @@ function LittleFiresApp() {
     completionDelay: true,    // pause so the checkmark is visible before a task moves
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
+    fontChoice: 'default',
     // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
     // default for a fresh install - see the loader below, which keeps everyone
     // who was already using the app on what they had.
@@ -732,6 +768,13 @@ function LittleFiresApp() {
   };
   // Bump when the settings shape changes in a way that needs migrating
   const SETTINGS_VERSION = 1;
+  // True once the user has actually touched the Battery Saver switch. Distinct
+  // from the setting's own value, because that value can also be filled in
+  // automatically below - and only a real choice should be treated as one.
+  // Set synchronously inside the settings initializer just below, before
+  // anything else reads it.
+  const batterySaverUserChoiceRef = React.useRef(false);
+
   const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('little_fires_settings');
@@ -744,11 +787,39 @@ function LittleFiresApp() {
       // existing install, so anyone who never picked a theme is pinned to the
       // behaviour they already had rather than inheriting the new default.
       if (parsed.theme === undefined) parsed.theme = 'system';
+      if ('batterySaver' in parsed) batterySaverUserChoiceRef.current = true;
       return { ...DEFAULT_SETTINGS, ...parsed };
     } catch {
       return DEFAULT_SETTINGS;
     }
   });
+
+  // Battery Saver defaults on for touch devices, resolved synchronously via
+  // IS_TOUCH_DEVICE. A laptop isn't touch but drains a real battery the same
+  // way, and until now the setting did nothing for it. This fills in the one
+  // case IS_TOUCH_DEVICE can't see: on battery power, not plugged in.
+  //
+  // Resolved once, not watched continuously. A live listener that flipped the
+  // setting the instant you plugged in would mean the app's chrome changing
+  // while you're using it, for a decision you didn't make - closing the lid
+  // and reopening later is a natural point to re-check; mid-session isn't.
+  //
+  // Battery Status API support is inconsistent across browsers, so its absence
+  // is treated as "cannot tell," not "must be plugged in" - nothing here fires
+  // where it's unavailable, and desktop keeps exactly today's behaviour there.
+  useEffect(() => {
+    if (IS_TOUCH_DEVICE) return;                    // already resolved correctly
+    if (batterySaverUserChoiceRef.current) return;  // user has an actual opinion
+    if (typeof navigator === 'undefined' || typeof navigator.getBattery !== 'function') return;
+
+    let cancelled = false;
+    navigator.getBattery().then((battery) => {
+      if (cancelled || batterySaverUserChoiceRef.current) return;
+      setSettings(prev => ({ ...prev, batterySaver: !battery.charging }));
+    }).catch(() => {}); // advisory only - never let a rejected promise surface
+
+    return () => { cancelled = true; };
+  }, []);
 
   // Persist only what the user has actually changed. Writing the whole object
   // would freeze today's defaults into their storage forever - so a default we
@@ -756,6 +827,25 @@ function LittleFiresApp() {
   useEffect(() => {
     const overrides = { _v: SETTINGS_VERSION };
     Object.keys(DEFAULT_SETTINGS).forEach(k => {
+      // Battery Saver has two rules, not the usual one.
+      //
+      // Auto-detected guesses are excluded entirely, or persisting one would
+      // be self-defeating: unplugging today writes an override of true, the
+      // effect above then sees a stored value and assumes it was chosen, and
+      // it stops checking - so the setting stays stuck on forever, even after
+      // being plugged back in.
+      //
+      // Once the user HAS chosen a value, it is written unconditionally - even
+      // if it happens to match today's static default. That exception is
+      // necessary specifically here: DEFAULT_SETTINGS.batterySaver on desktop
+      // is always false, so "I chose off" and "I never touched it" produce the
+      // identical value. The generic equals-default check below can't tell
+      // those apart, and without this, choosing off would go unrecorded and
+      // the next auto-detect could silently override it back to on.
+      if (k === 'batterySaver') {
+        if (batterySaverUserChoiceRef.current) overrides.batterySaver = settings.batterySaver;
+        return;
+      }
       if (JSON.stringify(settings[k]) !== JSON.stringify(DEFAULT_SETTINGS[k])) {
         overrides[k] = settings[k];
       }
@@ -893,6 +983,33 @@ function LittleFiresApp() {
     document.body.classList.toggle('reduce-motion', !!settings.reduceMotion);
     return () => document.body.classList.remove('reduce-motion');
   }, [settings.reduceMotion]);
+
+  // Font. The variables are set on <html> alongside the theme tokens.
+  //
+  // The chosen family is requested only when it isn't the default - the default
+  // pairing is already in index.html's <link> tags, where the preload scanner
+  // finds it while the HTML is still parsing. Loading all five upfront would
+  // mean downloading four families nobody is using on every visit.
+  useEffect(() => {
+    const choice = FONT_OPTIONS.find(f => f.id === settings.fontChoice) || FONT_OPTIONS[0];
+    const root = document.documentElement;
+    root.style.setProperty('--font-ui', choice.ui);
+    root.style.setProperty('--font-body', choice.body);
+
+    if (!choice.google || choice.id === 'default') return;
+
+    // Keyed by id so switching fonts twice doesn't stack duplicate <link>s.
+    const id = 'lf-font-' + choice.id;
+    if (document.getElementById(id)) return;
+    const link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=' + choice.google + '&display=swap';
+    document.head.appendChild(link);
+    // Deliberately not removed on cleanup: a font that has been swapped away
+    // from is very likely to be swapped back to, and re-requesting it would
+    // flash unstyled text again for no benefit.
+  }, [settings.fontChoice]);
 
   // Theme. The class goes on <html> rather than <body> so the tokens are in
   // scope for anything portalled or rendered outside the app root, and so the
@@ -1337,7 +1454,13 @@ function LittleFiresApp() {
     }
   };
 
-  const updateSetting = (key, value) => setSettings(prev => ({ ...prev, [key]: value }));
+  const updateSetting = (key, value) => {
+    // Marks this as the user's own decision, so the auto-detection effect
+    // never revisits it and the persistence effect is now allowed to save it -
+    // both of which are otherwise deliberately withheld from a guessed value.
+    if (key === 'batterySaver') batterySaverUserChoiceRef.current = true;
+    setSettings(prev => ({ ...prev, [key]: value }));
+  };
 
   // Display label for a list. Falls back to the built-in name if unset/blank.
   const listLabel = (key) => {
@@ -4608,7 +4731,7 @@ function LittleFiresApp() {
                   borderRadius: '8px',
                   color: 'var(--text)',
                   fontSize: '1rem',
-                  fontFamily: 'Quicksand, sans-serif',
+                  fontFamily: 'var(--font-ui)',
                   fontWeight: '600'
                 }}
               />
@@ -4775,6 +4898,44 @@ function LittleFiresApp() {
                       return { line, span };
                     };
                     
+                    // A selection spanning several lines converts each of them,
+                    // rather than the single line the caret happens to sit in.
+                    // Everything below this point assumes one line - it walks up
+                    // from range.startContainer and never looks at where the
+                    // selection ends - so multi-line is handled here and returns.
+                    if (!range.collapsed) {
+                      const blocks = Array.from(detailsArea.children).filter(
+                        el => range.intersectsNode(el)
+                      );
+                      if (blocks.length > 1) {
+                        blocks.forEach(block => {
+                          // Already a real checkbox line - leave it alone rather
+                          // than nesting a second box inside it.
+                          if (block.classList.contains('checkbox-line') &&
+                              block.querySelector('.task-checkbox')) return;
+
+                          const { line, span } = buildCheckboxLine();
+                          // Text is moved, not copied: this converts the line in
+                          // place, so anything already on it has to come across
+                          // including its formatting.
+                          span.innerHTML = '';
+                          while (block.firstChild) span.appendChild(block.firstChild);
+                          if (!span.textContent.trim()) span.innerHTML = '&nbsp;';
+                          // Indent carries over so converting a nested bullet
+                          // doesn't silently flatten the hierarchy.
+                          if (block.style && block.style.marginLeft) {
+                            line.style.marginLeft = block.style.marginLeft;
+                          }
+                          block.parentElement.replaceChild(line, block);
+                        });
+                        setTimeout(() => {
+                          syncParentCheckboxes(detailsArea);
+                          refreshListMarkers(detailsArea);
+                        }, 0);
+                        return;
+                      }
+                    }
+
                     // Find the current line/block the cursor is on
                     let currentNode = range.startContainer;
                     let currentLine = currentNode.nodeType === Node.ELEMENT_NODE ?
@@ -4887,6 +5048,36 @@ function LittleFiresApp() {
                     selection.addRange(range);
                   }
                   
+                  // execCommand handles ordinary block elements, but the editor's
+                  // lines are custom checkbox-line divs containing an <input> -
+                  // it either skips those or nests the box inside the new <li>.
+                  // A multi-line selection is converted explicitly instead, and
+                  // only genuinely plain lines fall through to the native path.
+                  const range = selection.getRangeAt(0);
+                  if (!range.collapsed) {
+                    const blocks = Array.from(detailsArea.children).filter(
+                      el => range.intersectsNode(el)
+                    );
+                    if (blocks.length > 1) {
+                      const list = document.createElement('ul');
+                      blocks[0].parentElement.insertBefore(list, blocks[0]);
+                      blocks.forEach(block => {
+                        const li = document.createElement('li');
+                        // The checkbox itself is dropped: a line is either a
+                        // checkbox or a bullet, and keeping both would leave a
+                        // dead box sitting inside the bullet.
+                        const box = block.querySelector('.task-checkbox');
+                        if (box) box.remove();
+                        while (block.firstChild) li.appendChild(block.firstChild);
+                        if (!li.textContent.trim()) li.innerHTML = '<br>';
+                        list.appendChild(li);
+                        block.remove();
+                      });
+                      setTimeout(() => refreshListMarkers(detailsArea), 0);
+                      return;
+                    }
+                  }
+
                   document.execCommand('insertUnorderedList', false, null);
                 }}
                 title="Bullet List"
@@ -4919,7 +5110,10 @@ function LittleFiresApp() {
                 }}
                 title="Bold + underline"
               >
-                <strong style={{ textDecoration: 'underline', fontWeight: 800 }}>Bold</strong>
+                {/* A span, not <strong>: the underline is the only cue this
+                    button needs, and <strong> was overriding the toolbar's own
+                    font weight so it sat heavier than its neighbours. */}
+                <span style={{ textDecoration: 'underline' }}>Bold</span>
               </button>
               <button 
                 className="toolbar-btn"
@@ -4990,9 +5184,12 @@ function LittleFiresApp() {
                 e.preventDefault();
                 e.stopPropagation();
                 
-                // Get plain text from clipboard
                 const text = (e.clipboardData?.getData('text/plain') || '');
                 const trimmed = text.trim();
+                // A bare URL still wins over the HTML branch below, so copying
+                // a link out of a browser bar keeps producing a compact anchor
+                // rather than a page's worth of markup.
+                const html = (e.clipboardData?.getData('text/html') || '');
                 
                 const selection = window.getSelection();
                 if (!selection.rangeCount) return;
@@ -5022,6 +5219,55 @@ function LittleFiresApp() {
                   newRange.collapse(true);
                   selection.removeAllRanges();
                   selection.addRange(newRange);
+                } else if (html) {
+                  // Structure survives a copy/paste: checkboxes, bullets,
+                  // indent and formatting all come through.
+                  //
+                  // Pasting HTML from an arbitrary source is only safe because
+                  // sanitizeRichText is an allowlist, and it happens to permit
+                  // exactly what this editor creates - so content copied from
+                  // within a task arrives intact, while anything from a web page
+                  // is reduced to the same small set of tags or to plain text.
+                  // This is the sanitizer doing the job it exists for, not a
+                  // relaxation of it.
+                  const holder = document.createElement('div');
+                  holder.innerHTML = sanitizeRichText(html);
+
+                  const fragment = document.createDocumentFragment();
+                  while (holder.firstChild) fragment.appendChild(holder.firstChild);
+                  // Captured before insertion - a fragment is emptied by
+                  // insertNode, so afterwards there is nothing left to measure
+                  // the caret position against.
+                  const lastNode = fragment.lastChild;
+                  range.insertNode(fragment);
+
+                  if (lastNode) {
+                    const after = document.createRange();
+                    after.setStartAfter(lastNode);
+                    after.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(after);
+                  }
+
+                  // Pasted nodes need the same treatment as freshly loaded ones:
+                  // contentEditable is stripped by the sanitizer by design, so
+                  // without this a pasted checkbox's label would be typeable and
+                  // a pasted link would take a caret instead of opening.
+                  const area = e.currentTarget;
+                  area.querySelectorAll('.task-checkbox').forEach(cb => {
+                    cb.contentEditable = 'false';
+                  });
+                  area.querySelectorAll('a.task-link').forEach(a => {
+                    a.contentEditable = 'false';
+                  });
+                  // Parent/boundary marks are recomputed rather than trusted
+                  // from the pasted markup, which may have been copied from the
+                  // middle of a list and describe a hierarchy that no longer
+                  // holds where it landed.
+                  setTimeout(() => {
+                    syncParentCheckboxes(area);
+                    refreshListMarkers(area);
+                  }, 0);
                 } else {
                   // Insert plain text without formatting
                   const textNode = document.createTextNode(text);
@@ -6076,7 +6322,7 @@ function LittleFiresApp() {
             style={{ width: '90%', maxWidth: '380px', padding: '20px' }}
           >
             <div style={{
-              color: 'var(--text)', fontFamily: 'Quicksand, sans-serif',
+              color: 'var(--text)', fontFamily: 'var(--font-ui)',
               fontSize: '0.95rem', lineHeight: 1.5, whiteSpace: 'pre-line',
               marginBottom: '18px'
             }}>
@@ -6115,6 +6361,8 @@ function LittleFiresApp() {
              is a change of values here rather than a change everywhere.
              The rgba ones are raw triplets because they're composed at dozens
              of different opacities. */
+          --font-ui: 'Quicksand', sans-serif;
+          --font-body: 'Nunito', sans-serif;
           --text: #f4e8d8;
           --text-muted: #b8a99a;
           --text-soft: #d0c8c0;
@@ -6223,7 +6471,7 @@ function LittleFiresApp() {
         }
 
         .little-fires-container {
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           /* Grain first, gradient second - background layers paint front to
              back, so this puts the texture over the colour while both stay
              behind every element in the app. No overlay element, so nothing to
@@ -6364,7 +6612,7 @@ function LittleFiresApp() {
           cursor: pointer;
           border-radius: 10px;
           transition: all 0.3s ease;
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-weight: 600;
           font-size: 1rem;
           color: var(--text);
@@ -6434,7 +6682,7 @@ function LittleFiresApp() {
           border: 2px solid rgba(var(--accent-rgb), 0.2);
           padding: 12px 24px;
           color: var(--text);
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-weight: 600;
           font-size: 0.9rem;
           cursor: pointer;
@@ -6495,7 +6743,7 @@ function LittleFiresApp() {
           border-radius: 25px;
           padding: 12px 20px;
           color: var(--text);
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-size: 0.95rem;
           outline: none;
           transition: all 0.3s ease;
@@ -6527,7 +6775,7 @@ function LittleFiresApp() {
           border-radius: 25px;
           padding: 16px 24px;
           color: var(--text);
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-size: 1rem;
           outline: none;
           transition: all 0.3s ease;
@@ -6563,7 +6811,7 @@ function LittleFiresApp() {
           border-radius: 20px;
           padding: 12px 16px;
           color: var(--accent);
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-size: 0.9rem;
           cursor: pointer;
           transition: all 0.3s ease;
@@ -6644,7 +6892,7 @@ function LittleFiresApp() {
           border: 2px solid rgba(var(--accent-rgb), 0.2);
           padding: 8px 16px;
           color: var(--text);
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-weight: 600;
           font-size: 0.8rem;
           cursor: pointer;
@@ -6700,7 +6948,7 @@ function LittleFiresApp() {
           border-radius: 25px;
           padding: 16px 32px;
           color: #ffffff;
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-weight: 700;
           font-size: 1rem;
           cursor: pointer;
@@ -6791,7 +7039,7 @@ function LittleFiresApp() {
         }
 
         .list-section-header {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 1.3rem;
           font-weight: 700;
           color: var(--text);
@@ -7089,7 +7337,7 @@ function LittleFiresApp() {
           padding: 6px 12px;
           border-radius: 14px;
           font-size: 0.8rem;
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-weight: 600;
           cursor: pointer;
           border: 1px solid rgba(var(--accent-rgb), 0.3);
@@ -7154,7 +7402,7 @@ function LittleFiresApp() {
           border-radius: 12px;
           padding: 12px 16px;
           color: var(--text);
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-size: 0.95rem;
           outline: none;
           resize: vertical;
@@ -7177,7 +7425,7 @@ function LittleFiresApp() {
           border-radius: 12px;
           padding: 12px 16px;
           color: var(--text);
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-size: 0.95rem;
           outline: none;
           min-height: 100px;
@@ -7636,7 +7884,7 @@ function LittleFiresApp() {
         }
 
         .archive-list-section .section-header {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 1.3rem;
           font-weight: 700;
           color: var(--text);
@@ -7741,7 +7989,7 @@ function LittleFiresApp() {
         }
 
         .goal-header h3 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 1.4rem;
           color: var(--text);
           margin: 0 0 8px 0;
@@ -7826,7 +8074,7 @@ function LittleFiresApp() {
         }
 
         .projects-header h2 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 2rem;
           color: var(--text);
           margin: 0;
@@ -7863,7 +8111,7 @@ function LittleFiresApp() {
         }
 
         .project-header h3 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 1.4rem;
           color: var(--text);
           margin: 0 0 8px 0;
@@ -7916,7 +8164,7 @@ function LittleFiresApp() {
         }
 
         .project-detail-header h2 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 2.5rem;
           font-weight: 700;
           color: var(--text);
@@ -7925,11 +8173,11 @@ function LittleFiresApp() {
         }
 
         .project-detail-name {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
         }
 
         .project-name-edit {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 2.5rem;
           font-weight: 700;
           color: var(--text);
@@ -7970,7 +8218,7 @@ function LittleFiresApp() {
         }
 
         .project-date-label {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 0.95rem;
           font-weight: 600;
           color: var(--text-muted);
@@ -7991,7 +8239,7 @@ function LittleFiresApp() {
           font-size: 0.95rem;
           cursor: pointer;
           transition: all 0.3s ease;
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-weight: 600;
           align-self: flex-start;
         }
@@ -8035,7 +8283,7 @@ function LittleFiresApp() {
           border: 1px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 10px;
           color: var(--accent);
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 0.8rem;
           font-weight: 600;
           cursor: pointer;
@@ -8056,7 +8304,7 @@ function LittleFiresApp() {
           border: 1px solid rgba(255, 107, 107, 0.3);
           border-radius: 10px;
           color: #ff6b6b;
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 0.9rem;
           font-weight: 600;
           cursor: pointer;
@@ -8097,7 +8345,7 @@ function LittleFiresApp() {
         }
 
         .modal-content h3 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 1.8rem;
           color: var(--text);
           margin: 0 0 25px 0;
@@ -8124,7 +8372,7 @@ function LittleFiresApp() {
           border-radius: 12px;
           padding: 12px 16px;
           color: var(--text);
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-size: 1rem;
           outline: none;
           transition: all 0.3s ease;
@@ -8159,7 +8407,7 @@ function LittleFiresApp() {
         }
 
         .notes-header h2 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 2rem;
           color: var(--text);
           margin: 0;
@@ -8197,7 +8445,7 @@ function LittleFiresApp() {
         }
 
         .note-date {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-weight: 600;
           font-size: 1.1rem;
           color: var(--accent);
@@ -8220,7 +8468,7 @@ function LittleFiresApp() {
           max-height: 500px;
           overflow-y: auto;
           transition: all 0.3s ease;
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
         }
 
         .note-content:focus {
@@ -8254,7 +8502,7 @@ function LittleFiresApp() {
           font-size: 0.85rem;
           cursor: pointer;
           transition: all 0.3s ease;
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           font-weight: 600;
         }
 
@@ -8312,7 +8560,7 @@ function LittleFiresApp() {
           font-size: 0.9rem;
           outline: none;
           transition: all 0.3s ease;
-          font-family: 'Nunito', sans-serif;
+          font-family: var(--font-body);
           width: 100%;
         }
 
@@ -8333,7 +8581,7 @@ function LittleFiresApp() {
         }
 
         .calendar-header h2 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 2rem;
           color: var(--text);
           margin: 0;
@@ -8573,7 +8821,7 @@ function LittleFiresApp() {
         }
 
         .day-details h3 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           color: var(--accent);
           margin: 0 0 20px 0;
           font-size: 1.5rem;
@@ -8584,7 +8832,7 @@ function LittleFiresApp() {
         }
 
         .day-section h4 {
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 1.3rem;
           font-weight: 700;
           color: var(--text);
@@ -8670,7 +8918,7 @@ function LittleFiresApp() {
           color: #fff;
           border: none;
           border-radius: 10px;
-          font-family: 'Quicksand', sans-serif;
+          font-family: var(--font-ui);
           font-size: 0.9rem;
           font-weight: 600;
           cursor: pointer;
@@ -9105,10 +9353,25 @@ function LittleFiresApp() {
           }
 
           .toolbar-btn {
-            padding: 7px 8px;
-            font-size: 0.68rem;
+            padding: 7px 6px;
+            font-size: 0.62rem;
             letter-spacing: 0;
             border-radius: 6px;
+            /* Was flex-shrink: 0 from the base rule, which is what pushed the
+               fourth button off the edge once Bold was added - the row could
+               only scroll, never compress. Letting them share the width means
+               adding a button shortens the others rather than hiding one.
+               min-width: 0 is required as well: a flex item won't shrink below
+               its content width without it, so the padding change alone
+               wouldn't have been enough. */
+            flex-shrink: 1;
+            min-width: 0;
+          }
+
+          /* The icon must not be squeezed with the label - it has no text to
+             give up, so shrinking it just distorts it. */
+          .toolbar-btn svg {
+            flex-shrink: 0;
           }
 
           /* --- Typography --- */
@@ -9387,7 +9650,7 @@ function LittleFiresApp() {
             border: '2px solid rgba(255, 107, 107, 0.5)',
             borderRadius: '10px', padding: '12px 14px', margin: '12px 0',
             display: 'flex', alignItems: 'flex-start', gap: '12px',
-            fontFamily: 'Quicksand, sans-serif'
+            fontFamily: 'var(--font-ui)'
           }}>
             <div style={{ flex: 1, color: '#ff8f8f', fontSize: '0.85rem', lineHeight: 1.5 }}>
               <strong>Changes aren't being saved.</strong> {storageError}
@@ -9868,7 +10131,7 @@ function LittleFiresApp() {
                       <div 
                         onClick={() => toggleJournalSection(`year-${year}`)}
                         style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.5rem',
                           fontWeight: '700',
                           color: 'var(--accent)',
@@ -9895,7 +10158,7 @@ function LittleFiresApp() {
                               <div 
                                 onClick={() => toggleJournalSection(`month-${year}-${month}`)}
                                 style={{
-                                  fontFamily: 'Quicksand, sans-serif',
+                                  fontFamily: 'var(--font-ui)',
                                   fontSize: '1.2rem',
                                   fontWeight: '600',
                                   color: 'var(--text-muted)',
@@ -9952,7 +10215,7 @@ function LittleFiresApp() {
                           border: '2px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           <div style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.3rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -10417,7 +10680,7 @@ function LittleFiresApp() {
                             <label style={{
                               color: 'var(--text-muted)',
                               fontSize: '0.9rem',
-                              fontFamily: 'Quicksand, sans-serif',
+                              fontFamily: 'var(--font-ui)',
                               fontWeight: '600'
                             }}>
                               Photos:
@@ -10527,7 +10790,7 @@ function LittleFiresApp() {
                             <label style={{
                               color: 'var(--text-muted)',
                               fontSize: '0.9rem',
-                              fontFamily: 'Quicksand, sans-serif',
+                              fontFamily: 'var(--font-ui)',
                               fontWeight: '600',
                               minWidth: 'fit-content'
                             }}>
@@ -10553,7 +10816,7 @@ function LittleFiresApp() {
                                 borderRadius: '8px',
                                 color: 'var(--text)',
                                 fontSize: '0.9rem',
-                                fontFamily: 'Quicksand, sans-serif',
+                                fontFamily: 'var(--font-ui)',
                                 boxSizing: 'border-box'
                               }}
                             />
@@ -10618,7 +10881,7 @@ function LittleFiresApp() {
                           border: '2px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
                           <div style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.3rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -10630,7 +10893,7 @@ function LittleFiresApp() {
                           </div>
                           {(note.timeLogged || 0) > 0 && (
                             <div style={{
-                              fontFamily: 'Quicksand, sans-serif',
+                              fontFamily: 'var(--font-ui)',
                               fontSize: '2rem',
                               fontWeight: '700',
                               color: 'var(--text)',
@@ -11127,7 +11390,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -11168,7 +11431,7 @@ function LittleFiresApp() {
                             color: 'var(--text-muted)',
                             fontSize: '0.9rem',
                             marginBottom: '8px',
-                            fontFamily: 'Quicksand, sans-serif'
+                            fontFamily: 'var(--font-ui)'
                           }}>
                             Description:
                           </label>
@@ -11185,7 +11448,7 @@ function LittleFiresApp() {
                               borderRadius: '10px',
                               color: 'var(--text)',
                             fontSize: '0.95rem',
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             resize: 'vertical',
                             boxSizing: 'border-box'
                           }}
@@ -11199,7 +11462,7 @@ function LittleFiresApp() {
                           color: 'var(--text-muted)',
                           fontSize: '0.9rem',
                           marginBottom: '8px',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}>
                           Challenge:
                         </label>
@@ -11216,7 +11479,7 @@ function LittleFiresApp() {
                             borderRadius: '10px',
                             color: 'var(--text)',
                             fontSize: '0.95rem',
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             resize: 'vertical',
                             boxSizing: 'border-box'
                           }}
@@ -11230,7 +11493,7 @@ function LittleFiresApp() {
                           color: 'var(--text-muted)',
                           fontSize: '0.9rem',
                           marginBottom: '8px',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}>
                           Outcome:
                         </label>
@@ -11247,7 +11510,7 @@ function LittleFiresApp() {
                             borderRadius: '10px',
                             color: 'var(--text)',
                             fontSize: '0.95rem',
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             resize: 'vertical',
                             boxSizing: 'border-box'
                           }}
@@ -11283,7 +11546,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -11402,7 +11665,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -11522,7 +11785,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -11630,7 +11893,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -11673,7 +11936,7 @@ function LittleFiresApp() {
                                   display: 'flex',
                                   justifyContent: 'space-between',
                                   alignItems: 'center',
-                                  fontFamily: 'Nunito, sans-serif'
+                                  fontFamily: 'var(--font-body)'
                                 }}
                               >
                                 <span>{listLabel(projectTaskList)}</span>
@@ -11716,7 +11979,7 @@ function LittleFiresApp() {
                                         borderBottom: idx < 4 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                         transition: 'background 0.2s ease',
                                         textTransform: 'capitalize',
-                                        fontFamily: 'Nunito, sans-serif'
+                                        fontFamily: 'var(--font-body)'
                                       }}
                                       onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
                                       onMouseOut={(e) => e.currentTarget.style.background = projectTaskList === list ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
@@ -12028,7 +12291,7 @@ function LittleFiresApp() {
                             color: 'var(--accent)',
                             fontSize: '0.9rem',
                             fontWeight: '600',
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             cursor: 'pointer'
                           }}
                         >
@@ -12948,7 +13211,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -13080,7 +13343,7 @@ function LittleFiresApp() {
                         {/* Before Photos */}
                         <div style={{marginBottom: '20px'}}>
                           <div style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.1rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -13192,7 +13455,7 @@ function LittleFiresApp() {
                         {/* After Photos */}
                         <div style={{marginBottom: '20px'}}>
                           <div style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.1rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -13305,7 +13568,7 @@ function LittleFiresApp() {
                       {/* Associated Projects */}
                       <div className="goal-projects-section">
                         <h3 style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -13385,7 +13648,7 @@ function LittleFiresApp() {
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
                         <div style={{
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
@@ -13397,7 +13660,7 @@ function LittleFiresApp() {
                         </div>
                         {(goal.timeLogged || 0) > 0 && (
                           <div style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '2.5rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -13437,7 +13700,7 @@ function LittleFiresApp() {
                         {(goal.timeLogs || []).length > 0 && (
                           <div style={{marginTop: '30px'}}>
                             <h3 style={{
-                              fontFamily: 'Quicksand, sans-serif',
+                              fontFamily: 'var(--font-ui)',
                               fontSize: '1.1rem',
                               fontWeight: '700',
                               color: 'var(--text)',
@@ -13484,7 +13747,7 @@ function LittleFiresApp() {
                                   marginBottom: '8px'
                                 }}>
                                   <div style={{
-                                    fontFamily: 'Quicksand, sans-serif',
+                                    fontFamily: 'var(--font-ui)',
                                     fontSize: '1rem',
                                     fontWeight: '600',
                                     color: 'var(--text)'
@@ -13573,7 +13836,7 @@ function LittleFiresApp() {
                             color: 'var(--accent)',
                             fontSize: '0.9rem',
                             fontWeight: '600',
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             cursor: 'pointer'
                           }}
                         >
@@ -13892,7 +14155,7 @@ function LittleFiresApp() {
                   {/* Timer Display */}
                   {loggedSeconds >= 60 && (
                     <div style={{
-                      fontFamily: 'Quicksand, sans-serif',
+                      fontFamily: 'var(--font-ui)',
                       fontSize: '2rem',
                       fontWeight: '600',
                       color: isLogging ? 'var(--accent)' : '#a0aec0',
@@ -13910,7 +14173,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Duration:
                     </label>
@@ -13925,7 +14188,7 @@ function LittleFiresApp() {
                           borderRadius: '8px',
                           color: 'var(--text)',
                           fontSize: '1rem',
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           cursor: 'pointer',
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -13982,7 +14245,7 @@ function LittleFiresApp() {
                                 background: timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
                                 borderBottom: idx < durationOptions.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                 transition: 'background 0.2s ease',
-                                fontFamily: 'Quicksand, sans-serif'
+                                fontFamily: 'var(--font-ui)'
                               }}
                               onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
                               onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
@@ -14002,7 +14265,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Focus:
                     </label>
@@ -14028,7 +14291,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Description:
                     </label>
@@ -14058,7 +14321,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Take Away:
                     </label>
@@ -14093,7 +14356,7 @@ function LittleFiresApp() {
                         gap: '10px', flexWrap: 'wrap'
                       }}>
                         <div style={{
-                          color: 'var(--text)', fontFamily: 'Quicksand, sans-serif',
+                          color: 'var(--text)', fontFamily: 'var(--font-ui)',
                           fontWeight: 700, fontSize: '1rem'
                         }}>
                           {breakEndsAt
@@ -14117,7 +14380,7 @@ function LittleFiresApp() {
                       {pomodoroMessage && (
                         <div style={{
                           color: 'var(--text-muted)', fontSize: '0.82rem',
-                          fontFamily: 'Quicksand, sans-serif', marginTop: '8px'
+                          fontFamily: 'var(--font-ui)', marginTop: '8px'
                         }}>
                           {pomodoroMessage}
                         </div>
@@ -14247,7 +14510,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '8px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Minutes:
                     </label>
@@ -14276,7 +14539,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '8px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Focus:
                     </label>
@@ -14304,7 +14567,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '8px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Description:
                     </label>
@@ -14334,7 +14597,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '8px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Take Away:
                     </label>
@@ -14525,7 +14788,7 @@ function LittleFiresApp() {
                         <div 
                           onClick={() => setShowStandaloneTimeLogs(!showStandaloneTimeLogs)}
                           style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.3rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -14570,7 +14833,7 @@ function LittleFiresApp() {
                                     <div style={{
                                       color: '#999',
                                       fontSize: '0.85rem',
-                                      fontFamily: 'Quicksand, sans-serif'
+                                      fontFamily: 'var(--font-ui)'
                                     }}>
                                       {new Date(log.date).toLocaleDateString('en-US', { 
                                         month: 'short', 
@@ -14583,7 +14846,7 @@ function LittleFiresApp() {
                                       <div style={{
                                         color: 'var(--text)',
                                         fontSize: '0.9rem',
-                                        fontFamily: 'Quicksand, sans-serif',
+                                        fontFamily: 'var(--font-ui)',
                                         marginTop: '3px'
                                       }}>
                                         {log.focus}
@@ -14594,7 +14857,7 @@ function LittleFiresApp() {
                                     color: 'var(--accent)',
                                     fontSize: '1rem',
                                     fontWeight: '700',
-                                    fontFamily: 'Quicksand, sans-serif'
+                                    fontFamily: 'var(--font-ui)'
                                   }}>
                                     {log.minutes} min
                                   </div>
@@ -14607,7 +14870,7 @@ function LittleFiresApp() {
                                         <div style={{
                                           color: 'var(--text-muted)',
                                           fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontFamily: 'var(--font-ui)',
                                           marginBottom: '3px'
                                         }}>
                                           Focus:
@@ -14615,7 +14878,7 @@ function LittleFiresApp() {
                                         <div style={{
                                           color: 'var(--text-soft)',
                                           fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif'
+                                          fontFamily: 'var(--font-ui)'
                                         }}>
                                           {log.focus}
                                         </div>
@@ -14626,7 +14889,7 @@ function LittleFiresApp() {
                                         <div style={{
                                           color: 'var(--text-muted)',
                                           fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontFamily: 'var(--font-ui)',
                                           marginBottom: '3px'
                                         }}>
                                           Description:
@@ -14634,7 +14897,7 @@ function LittleFiresApp() {
                                         <div style={{
                                           color: 'var(--text-soft)',
                                           fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif'
+                                          fontFamily: 'var(--font-ui)'
                                         }}>
                                           {log.description}
                                         </div>
@@ -14645,7 +14908,7 @@ function LittleFiresApp() {
                                         <div style={{
                                           color: 'var(--text-muted)',
                                           fontSize: '0.8rem',
-                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontFamily: 'var(--font-ui)',
                                           marginBottom: '3px'
                                         }}>
                                           Take Away:
@@ -14653,7 +14916,7 @@ function LittleFiresApp() {
                                         <div style={{
                                           color: 'var(--text-soft)',
                                           fontSize: '0.9rem',
-                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontFamily: 'var(--font-ui)',
                                           fontStyle: 'italic'
                                         }}>
                                           {log.takeAway}
@@ -14675,7 +14938,7 @@ function LittleFiresApp() {
                                           borderRadius: '20px',
                                           color: 'var(--accent)',
                                           fontSize: '0.85rem',
-                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontFamily: 'var(--font-ui)',
                                           cursor: 'pointer',
                                           transition: 'all 0.2s ease',
                                           fontWeight: '600'
@@ -14695,7 +14958,7 @@ function LittleFiresApp() {
                                           borderRadius: '20px',
                                           color: '#ff6b6b',
                                           fontSize: '0.85rem',
-                                          fontFamily: 'Quicksand, sans-serif',
+                                          fontFamily: 'var(--font-ui)',
                                           cursor: 'pointer',
                                           transition: 'all 0.2s ease'
                                         }}
@@ -14719,7 +14982,7 @@ function LittleFiresApp() {
                         <div 
                           onClick={() => setShowGoalTimeLogs(!showGoalTimeLogs)}
                           style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.3rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -14764,7 +15027,7 @@ function LittleFiresApp() {
                                     <div style={{
                                       color: '#999',
                                       fontSize: '0.85rem',
-                                      fontFamily: 'Quicksand, sans-serif'
+                                      fontFamily: 'var(--font-ui)'
                                     }}>
                                       {new Date(log.date).toLocaleDateString('en-US', { 
                                         month: 'short', 
@@ -14776,7 +15039,7 @@ function LittleFiresApp() {
                                     <div style={{
                                       color: 'var(--text)',
                                       fontSize: '0.9rem',
-                                      fontFamily: 'Quicksand, sans-serif',
+                                      fontFamily: 'var(--font-ui)',
                                       marginTop: '3px'
                                     }}>
                                       {log.sourceName}
@@ -14786,7 +15049,7 @@ function LittleFiresApp() {
                                     color: 'var(--accent)',
                                     fontSize: '1rem',
                                     fontWeight: '700',
-                                    fontFamily: 'Quicksand, sans-serif'
+                                    fontFamily: 'var(--font-ui)'
                                   }}>
                                     {log.minutes} min
                                   </div>
@@ -14811,7 +15074,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-muted)',
                                             fontSize: '0.8rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             marginBottom: '3px'
                                           }}>
                                             Focus:
@@ -14819,7 +15082,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-soft)',
                                             fontSize: '0.9rem',
-                                            fontFamily: 'Quicksand, sans-serif'
+                                            fontFamily: 'var(--font-ui)'
                                           }}>
                                             {log.focus}
                                           </div>
@@ -14830,7 +15093,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-muted)',
                                             fontSize: '0.8rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             marginBottom: '3px'
                                           }}>
                                             Description:
@@ -14838,7 +15101,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-soft)',
                                             fontSize: '0.9rem',
-                                            fontFamily: 'Quicksand, sans-serif'
+                                            fontFamily: 'var(--font-ui)'
                                           }}>
                                             {log.description}
                                           </div>
@@ -14849,7 +15112,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-muted)',
                                             fontSize: '0.8rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             marginBottom: '3px'
                                           }}>
                                             Take Away:
@@ -14857,7 +15120,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-soft)',
                                             fontSize: '0.9rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             fontStyle: 'italic'
                                           }}>
                                             {log.takeAway}
@@ -14901,7 +15164,7 @@ function LittleFiresApp() {
                         <div 
                           onClick={() => setShowJournalTimeLogs(!showJournalTimeLogs)}
                           style={{
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             fontSize: '1.3rem',
                             fontWeight: '700',
                             color: 'var(--text)',
@@ -14946,7 +15209,7 @@ function LittleFiresApp() {
                                     <div style={{
                                       color: '#999',
                                       fontSize: '0.85rem',
-                                      fontFamily: 'Quicksand, sans-serif'
+                                      fontFamily: 'var(--font-ui)'
                                     }}>
                                       {new Date(log.date).toLocaleDateString('en-US', { 
                                         month: 'short', 
@@ -14958,7 +15221,7 @@ function LittleFiresApp() {
                                     <div style={{
                                       color: 'var(--text)',
                                       fontSize: '0.9rem',
-                                      fontFamily: 'Quicksand, sans-serif',
+                                      fontFamily: 'var(--font-ui)',
                                       marginTop: '3px'
                                     }}>
                                       {log.sourceName}
@@ -14968,7 +15231,7 @@ function LittleFiresApp() {
                                     color: 'var(--accent)',
                                     fontSize: '1rem',
                                     fontWeight: '700',
-                                    fontFamily: 'Quicksand, sans-serif'
+                                    fontFamily: 'var(--font-ui)'
                                   }}>
                                     {log.minutes} min
                                   </div>
@@ -14992,7 +15255,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-muted)',
                                             fontSize: '0.8rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             marginBottom: '3px'
                                           }}>
                                             Focus:
@@ -15000,7 +15263,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-soft)',
                                             fontSize: '0.9rem',
-                                            fontFamily: 'Quicksand, sans-serif'
+                                            fontFamily: 'var(--font-ui)'
                                           }}>
                                             {log.focus}
                                           </div>
@@ -15011,7 +15274,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-muted)',
                                             fontSize: '0.8rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             marginBottom: '3px'
                                           }}>
                                             Description:
@@ -15019,7 +15282,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-soft)',
                                             fontSize: '0.9rem',
-                                            fontFamily: 'Quicksand, sans-serif'
+                                            fontFamily: 'var(--font-ui)'
                                           }}>
                                             {log.description}
                                           </div>
@@ -15030,7 +15293,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-muted)',
                                             fontSize: '0.8rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             marginBottom: '3px'
                                           }}>
                                             Take Away:
@@ -15038,7 +15301,7 @@ function LittleFiresApp() {
                                           <div style={{
                                             color: 'var(--text-soft)',
                                             fontSize: '0.9rem',
-                                            fontFamily: 'Quicksand, sans-serif',
+                                            fontFamily: 'var(--font-ui)',
                                             fontStyle: 'italic'
                                           }}>
                                             {log.takeAway}
@@ -15218,7 +15481,7 @@ function LittleFiresApp() {
                   {/* Timer Display */}
                   {loggedSeconds >= 60 && (
                     <div style={{
-                      fontFamily: 'Quicksand, sans-serif',
+                      fontFamily: 'var(--font-ui)',
                       fontSize: '2rem',
                       fontWeight: '600',
                       color: isLogging ? 'var(--accent)' : '#a0aec0',
@@ -15236,7 +15499,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Duration:
                     </label>
@@ -15251,7 +15514,7 @@ function LittleFiresApp() {
                           borderRadius: '8px',
                           color: 'var(--text)',
                           fontSize: '1rem',
-                          fontFamily: 'Quicksand, sans-serif',
+                          fontFamily: 'var(--font-ui)',
                           cursor: 'pointer',
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -15309,7 +15572,7 @@ function LittleFiresApp() {
                                 background: timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
                                 borderBottom: idx < durationOptions.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
                                 transition: 'background 0.2s ease',
-                                fontFamily: 'Quicksand, sans-serif'
+                                fontFamily: 'var(--font-ui)'
                               }}
                               onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
                               onMouseOut={(e) => e.currentTarget.style.background = timerDuration === option.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
@@ -15329,7 +15592,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Focus:
                     </label>
@@ -15358,7 +15621,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Description:
                     </label>
@@ -15389,7 +15652,7 @@ function LittleFiresApp() {
                       color: 'var(--text-muted)',
                       fontSize: '0.9rem',
                       marginBottom: '5px',
-                      fontFamily: 'Quicksand, sans-serif'
+                      fontFamily: 'var(--font-ui)'
                     }}>
                       Take Away:
                     </label>
@@ -15502,7 +15765,7 @@ function LittleFiresApp() {
                   borderRadius: '10px',
                   color: 'var(--text)',
                   fontSize: '1rem',
-                  fontFamily: 'Quicksand, sans-serif',
+                  fontFamily: 'var(--font-ui)',
                   boxSizing: 'border-box'
                 }}
               />
@@ -15680,7 +15943,7 @@ function LittleFiresApp() {
                           padding: '40px 20px',
                           color: 'var(--text-muted)',
                           fontSize: '1rem',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}>
                           No results found for "{searchQuery}"
                         </div>
@@ -15913,7 +16176,7 @@ function LittleFiresApp() {
                   color: 'var(--text)',
                   fontSize: '1rem',
                   fontWeight: 'normal',
-                  fontFamily: 'Nunito, sans-serif',
+                  fontFamily: 'var(--font-body)',
                   cursor: 'pointer',
                   boxSizing: 'border-box',
                   display: 'flex',
@@ -15957,7 +16220,7 @@ function LittleFiresApp() {
                         padding: '16px 24px',
                         color: 'var(--text)',
                         fontSize: '1rem',
-                        fontFamily: 'Nunito, sans-serif',
+                        fontFamily: 'var(--font-body)',
                         cursor: 'pointer',
                         background: archiveType === option ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
                         borderBottom: idx < 2 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
@@ -16609,18 +16872,18 @@ function LittleFiresApp() {
               };
               const heading = {
                 color: 'var(--text)', fontSize: '1.05rem', fontWeight: '700',
-                fontFamily: 'Quicksand, sans-serif', marginBottom: '4px'
+                fontFamily: 'var(--font-ui)', marginBottom: '4px'
               };
               const sub = {
                 color: 'var(--text-muted)', fontSize: '0.82rem',
-                fontFamily: 'Quicksand, sans-serif', marginBottom: '16px', lineHeight: 1.45
+                fontFamily: 'var(--font-ui)', marginBottom: '16px', lineHeight: 1.45
               };
               // For grouping within a card: lighter than `heading` so the card
               // still reads as one thing, heavier than `label` so it doesn't
               // look like a field name.
               const subheading = {
                 color: 'var(--text)', fontSize: '0.92rem', fontWeight: '700',
-                fontFamily: 'Quicksand, sans-serif', marginBottom: '4px'
+                fontFamily: 'var(--font-ui)', marginBottom: '4px'
               };
               const divider = {
                 borderTop: '1px solid rgba(var(--accent-rgb), 0.15)',
@@ -16690,7 +16953,7 @@ function LittleFiresApp() {
                 background: 'rgba(var(--surface-rgb), 1)',
                 border: '2px solid rgba(var(--accent-rgb), 0.3)',
                 borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
-                fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
               }}
             />
 
@@ -16779,16 +17042,16 @@ function LittleFiresApp() {
                 gap: '14px', flexWrap: 'wrap', marginBottom: '14px'
               };
               const label = {
-                color: 'var(--text)', fontSize: '0.92rem', fontFamily: 'Quicksand, sans-serif'
+                color: 'var(--text)', fontSize: '0.92rem', fontFamily: 'var(--font-ui)'
               };
               const hint = {
                 color: 'var(--text-muted)', fontSize: '0.76rem',
-                fontFamily: 'Quicksand, sans-serif', marginTop: '2px'
+                fontFamily: 'var(--font-ui)', marginTop: '2px'
               };
               const numInput = {
                 width: '90px', padding: '9px 10px', background: 'rgba(var(--surface-rgb), 1)',
                 border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
-                color: 'var(--text)', fontSize: '0.95rem', fontFamily: 'Quicksand, sans-serif',
+                color: 'var(--text)', fontSize: '0.95rem', fontFamily: 'var(--font-ui)',
                 textAlign: 'center', boxSizing: 'border-box'
               };
 
@@ -16838,7 +17101,7 @@ function LittleFiresApp() {
                               style={{
                                 padding: '8px 14px', borderRadius: '8px', cursor: 'pointer',
                                 textTransform: 'capitalize', fontSize: '0.82rem', fontWeight: 600,
-                                fontFamily: 'Quicksand, sans-serif',
+                                fontFamily: 'var(--font-ui)',
                                 background: on
                                   ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
                                   : 'rgba(var(--surface-rgb), 1)',
@@ -16886,7 +17149,7 @@ function LittleFiresApp() {
                             }} />
                             <div style={{
                               color: active ? 'var(--text)' : 'var(--text-muted)',
-                              fontSize: '0.72rem', fontFamily: 'Quicksand, sans-serif'
+                              fontSize: '0.72rem', fontFamily: 'var(--font-ui)'
                             }}>
                               {preset.name}
                             </div>
@@ -16926,13 +17189,72 @@ function LittleFiresApp() {
                             background: 'rgba(var(--surface-rgb), 1)',
                             border: '2px solid rgba(var(--accent-rgb), 0.3)',
                             color: 'var(--text-muted)', fontSize: '0.8rem',
-                            fontFamily: 'Quicksand, sans-serif'
+                            fontFamily: 'var(--font-ui)'
                           }}
                         >
                           Reset
                         </button>
                       </div>
                     </div>
+                  </div>
+
+                  {/* ---- Font ---- */}
+                  <div style={card}>
+                    <div style={heading}>Font</div>
+                    <div style={sub}>
+                      Each option previews in its own face. Headings and body text
+                      are chosen together as a pair.
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {FONT_OPTIONS.map(font => {
+                        const on = (settings.fontChoice || 'default') === font.id;
+                        return (
+                          <button
+                            key={font.id}
+                            onClick={() => updateSetting('fontChoice', font.id)}
+                            style={{
+                              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                              gap: '10px', textAlign: 'left', width: '100%',
+                              padding: '10px 14px', borderRadius: '10px', cursor: 'pointer',
+                              boxShadow: 'none',
+                              background: on
+                                ? 'rgba(var(--accent-rgb), 0.18)'
+                                : 'rgba(var(--surface-rgb), 1)',
+                              border: on
+                                ? '2px solid rgba(var(--accent-rgb), 0.6)'
+                                : '2px solid rgba(var(--border-rgb), 0.25)',
+                              textTransform: 'none', letterSpacing: 'normal'
+                            }}
+                          >
+                            <span style={{ minWidth: 0 }}>
+                              {/* Rendered in the font it selects, so the choice
+                                  can be judged by looking rather than by name.
+                                  These are literal stacks, not the variables -
+                                  the variables describe what's active now. */}
+                              <span style={{
+                                display: 'block', fontFamily: font.ui,
+                                color: 'var(--text)', fontSize: '0.95rem', fontWeight: 600
+                              }}>
+                                {font.label}
+                              </span>
+                              <span style={{
+                                display: 'block', fontFamily: font.body,
+                                color: 'var(--text-muted)', fontSize: '0.78rem', marginTop: '2px'
+                              }}>
+                                {font.note}
+                              </span>
+                            </span>
+                            {on && (
+                              <span style={{ color: 'var(--accent-light)', fontSize: '1rem', flexShrink: 0 }}>
+                                ✓
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
                   </div>
 
                   {/* ---- Lists ---- */}
@@ -16983,7 +17305,7 @@ function LittleFiresApp() {
                             style={{
                               padding: '7px 14px', borderRadius: '20px', cursor: 'grab',
                               fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.5px',
-                              textTransform: 'uppercase', fontFamily: 'Quicksand, sans-serif',
+                              textTransform: 'uppercase', fontFamily: 'var(--font-ui)',
                               // Shared tabs carry the partner colour wherever they
                               // appear, so "this one is shared" is a thing you
                               // recognise rather than a label you have to read.
@@ -17022,7 +17344,7 @@ function LittleFiresApp() {
                             background: 'rgba(var(--surface-rgb), 1)',
                             border: '2px solid rgba(var(--border-rgb), 0.35)',
                             color: 'var(--text-muted)', fontSize: '0.85rem', fontWeight: 600,
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             opacity: personalListKeys.length >= MAX_LISTS_PER_SET ? 0.5 : 1
                           }}
                         >
@@ -17047,7 +17369,7 @@ function LittleFiresApp() {
                             background: 'rgba(var(--partner-rgb), 0.18)',
                             border: '2px solid rgba(var(--partner-rgb), 0.55)',
                             color: 'var(--partner)', fontSize: '0.85rem', fontWeight: 700,
-                            fontFamily: 'Quicksand, sans-serif',
+                            fontFamily: 'var(--font-ui)',
                             opacity: sharedListKeys.length >= MAX_LISTS_PER_SET ? 0.5 : 1
                           }}
                         >
@@ -17062,7 +17384,7 @@ function LittleFiresApp() {
                     {listMessage && (
                       <div style={{
                         marginTop: '10px', fontSize: '0.8rem',
-                        fontFamily: 'Quicksand, sans-serif',
+                        fontFamily: 'var(--font-ui)',
                         color: listMessage.ok ? 'var(--text)' : '#ff8f8f'
                       }}>
                         {listMessage.message}
@@ -17103,7 +17425,7 @@ function LittleFiresApp() {
                           background: 'rgba(var(--surface-rgb), 1)',
                           border: '2px solid rgba(var(--accent-rgb), 0.3)',
                           borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
-                          fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                          fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
                         }}
                       />
                     </div>
@@ -17140,7 +17462,7 @@ function LittleFiresApp() {
                             background: 'rgba(var(--surface-rgb), 1)',
                             border: '2px solid rgba(var(--accent-rgb), 0.3)',
                             color: 'var(--text-muted)', fontSize: '0.8rem',
-                            fontFamily: 'Quicksand, sans-serif'
+                            fontFamily: 'var(--font-ui)'
                           }}
                         >
                           Reset
@@ -17169,7 +17491,7 @@ function LittleFiresApp() {
                           background: 'rgba(var(--surface-rgb), 1)',
                           border: '2px solid rgba(var(--accent-rgb), 0.3)',
                           borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
-                          fontFamily: 'Quicksand, sans-serif', boxSizing: 'border-box'
+                          fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
                         }}
                       />
                     </div>
@@ -17225,7 +17547,7 @@ function LittleFiresApp() {
                           </div>
                           <span style={{
                             color: 'var(--text-muted)', fontSize: '0.75rem',
-                            fontFamily: 'Quicksand, sans-serif', minWidth: '58px'
+                            fontFamily: 'var(--font-ui)', minWidth: '58px'
                           }}>
                             {counts[f.key] === null ? '' : `${counts[f.key]} saved`}
                           </span>
@@ -17461,7 +17783,9 @@ function LittleFiresApp() {
                           Drops the frosted-glass blur and the ambient glow layer.
                           The app looks slightly flatter and asks much less of the
                           GPU, especially while scrolling. On by default on phones
-                          and tablets, off on desktop.
+                          and tablets, and on a laptop running on battery power
+                          where that can be detected. Your own choice here always
+                          wins over any of that.
                         </div>
                       </div>
                       <Toggle
@@ -17487,7 +17811,7 @@ function LittleFiresApp() {
                           background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
                           border: '1px solid rgba(var(--accent-rgb), 0.5)',
                           color: '#ffffff', fontSize: '0.85rem', fontWeight: '600',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}
                       >
                         Export Backup
@@ -17500,7 +17824,7 @@ function LittleFiresApp() {
                           background: 'rgba(var(--surface-rgb), 1)',
                           border: '2px solid rgba(var(--accent-rgb), 0.4)',
                           color: 'var(--text)', fontSize: '0.85rem', fontWeight: '600',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}
                       >
                         Import &amp; Merge
@@ -17522,7 +17846,7 @@ function LittleFiresApp() {
                           background: 'rgba(var(--surface-rgb), 1)',
                           border: '2px solid rgba(255, 107, 107, 0.4)',
                           color: '#ff8f8f', fontSize: '0.85rem', fontWeight: '600',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}
                       >
                         Import &amp; Replace
@@ -17551,7 +17875,7 @@ function LittleFiresApp() {
                           ? 'rgba(255, 107, 107, 0.4)'
                           : 'rgba(var(--accent-rgb), 0.4)'}`,
                         color: backupStatus.type === 'error' ? '#ff8f8f' : 'var(--text)',
-                        fontSize: '0.82rem', fontFamily: 'Quicksand, sans-serif', lineHeight: 1.5
+                        fontSize: '0.82rem', fontFamily: 'var(--font-ui)', lineHeight: 1.5
                       }}>
                         {backupStatus.message}
                       </div>
@@ -17582,7 +17906,7 @@ function LittleFiresApp() {
                           background: 'rgba(var(--surface-rgb), 1)',
                           border: '2px solid rgba(var(--accent-rgb), 0.4)',
                           color: 'var(--text)', fontSize: '0.85rem', fontWeight: '600',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}
                       >
                         Tasks (.csv)
@@ -17594,7 +17918,7 @@ function LittleFiresApp() {
                           background: 'rgba(var(--surface-rgb), 1)',
                           border: '2px solid rgba(var(--accent-rgb), 0.4)',
                           color: 'var(--text)', fontSize: '0.85rem', fontWeight: '600',
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}
                       >
                         Time Logs (.csv)
@@ -17846,7 +18170,7 @@ function LittleFiresApp() {
                   }}>
                     {/* Task Status dropdown */}
                     <div style={{ minWidth: isMobile ? '100%' : '200px', flex: isMobile ? '1 1 100%' : '0 1 auto' }}>
-                      <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
+                      <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'var(--font-ui)' }}>
                         Task Status:
                       </label>
                       <div data-report-status-dropdown style={{ position: 'relative' }}>
@@ -17855,7 +18179,7 @@ function LittleFiresApp() {
                           style={{
                             width: '100%', padding: '10px', background: 'rgba(var(--surface-rgb), 1)',
                             border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
-                            color: 'var(--text)', fontSize: '1rem', fontFamily: 'Quicksand, sans-serif',
+                            color: 'var(--text)', fontSize: '1rem', fontFamily: 'var(--font-ui)',
                             cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
                           }}
                         >
@@ -17880,7 +18204,7 @@ function LittleFiresApp() {
                                   padding: '10px', color: 'var(--text)', fontSize: '1rem', cursor: 'pointer',
                                   background: reportTaskStatus === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
                                   borderBottom: idx < arr.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
-                                  transition: 'background 0.2s ease', fontFamily: 'Quicksand, sans-serif'
+                                  transition: 'background 0.2s ease', fontFamily: 'var(--font-ui)'
                                 }}
                                 onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
                                 onMouseOut={(e) => e.currentTarget.style.background = reportTaskStatus === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
@@ -17895,7 +18219,7 @@ function LittleFiresApp() {
 
                     {/* Timeframe dropdown */}
                     <div style={{ minWidth: isMobile ? '100%' : '200px', flex: isMobile ? '1 1 100%' : '0 1 auto' }}>
-                      <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
+                      <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'var(--font-ui)' }}>
                         Timeframe:
                       </label>
                       <div data-report-timeframe-dropdown style={{ position: 'relative' }}>
@@ -17904,7 +18228,7 @@ function LittleFiresApp() {
                           style={{
                             width: '100%', padding: '10px', background: 'rgba(var(--surface-rgb), 1)',
                             border: '2px solid rgba(var(--accent-rgb), 0.3)', borderRadius: '8px',
-                            color: 'var(--text)', fontSize: '1rem', fontFamily: 'Quicksand, sans-serif',
+                            color: 'var(--text)', fontSize: '1rem', fontFamily: 'var(--font-ui)',
                             cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxSizing: 'border-box'
                           }}
                         >
@@ -17932,7 +18256,7 @@ function LittleFiresApp() {
                                   padding: '10px', color: 'var(--text)', fontSize: '1rem', cursor: 'pointer',
                                   background: reportTimeframe === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent',
                                   borderBottom: idx < arr.length - 1 ? '1px solid rgba(var(--accent-rgb), 0.2)' : 'none',
-                                  transition: 'background 0.2s ease', fontFamily: 'Quicksand, sans-serif'
+                                  transition: 'background 0.2s ease', fontFamily: 'var(--font-ui)'
                                 }}
                                 onMouseOver={(e) => e.currentTarget.style.background = 'rgba(var(--accent-rgb), 0.3)'}
                                 onMouseOut={(e) => e.currentTarget.style.background = reportTimeframe === opt.value ? 'rgba(var(--accent-rgb), 0.4)' : 'transparent'}
@@ -17947,7 +18271,7 @@ function LittleFiresApp() {
 
                     {/* Chart type toggle */}
                     <div>
-                      <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'Quicksand, sans-serif' }}>
+                      <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '5px', fontFamily: 'var(--font-ui)' }}>
                         Chart:
                       </label>
                       <div style={{ display: 'flex', gap: '8px' }}>
@@ -17957,7 +18281,7 @@ function LittleFiresApp() {
                             onClick={() => setReportChartType(type)}
                             style={{
                               padding: '10px 20px', borderRadius: '8px', cursor: 'pointer',
-                              fontFamily: 'Quicksand, sans-serif', fontSize: '0.95rem', textTransform: 'capitalize',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.95rem', textTransform: 'capitalize',
                               border: reportChartType === type ? '2px solid var(--accent)' : '2px solid rgba(var(--accent-rgb), 0.3)',
                               background: reportChartType === type ? 'linear-gradient(135deg, var(--accent), var(--accent-light))' : 'rgba(var(--surface-rgb), 1)',
                               color: reportChartType === type ? '#fff' : 'var(--text-muted)',
@@ -17980,10 +18304,10 @@ function LittleFiresApp() {
                       background: 'rgba(var(--surface-raised-rgb), 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                       borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
-                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
                         {({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
                       </div>
-                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
                         {grandTotal}
                       </div>
                     </div>
@@ -17992,10 +18316,10 @@ function LittleFiresApp() {
                       background: 'rgba(var(--surface-raised-rgb), 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                       borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
-                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
                         Open Tasks
                       </div>
-                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
                         {openTasksCount}
                       </div>
                     </div>
@@ -18004,10 +18328,10 @@ function LittleFiresApp() {
                       background: 'rgba(var(--surface-raised-rgb), 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
                       borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
                     }}>
-                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'Quicksand, sans-serif', marginBottom: '4px', lineHeight: 1.25 }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
                         Backlog
                       </div>
-                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'Quicksand, sans-serif' }}>
+                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
                         {backlogTasksCount}
                       </div>
                     </div>
@@ -18123,7 +18447,7 @@ function LittleFiresApp() {
                             </g>
                           </svg>
                           <div style={{
-                            marginTop: '8px', textAlign: 'center', fontFamily: 'Quicksand, sans-serif'
+                            marginTop: '8px', textAlign: 'center', fontFamily: 'var(--font-ui)'
                           }}>
                             <div style={{ color: 'var(--text)', fontSize: '1.8rem', fontWeight: '700', lineHeight: 1 }}>
                               {count}
@@ -18295,7 +18619,7 @@ function LittleFiresApp() {
                           fontSize: isMobile ? '0.9em' : '1em',
                           boxShadow: '0 8px 24px rgba(var(--shadow-rgb),0.5)',
                           zIndex: 10,
-                          fontFamily: 'Quicksand, sans-serif'
+                          fontFamily: 'var(--font-ui)'
                         }}>
                           <div style={{ color: 'var(--text)', fontSize: '0.85rem', fontWeight: '700', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px' }}>
                             {rangeLabel}
@@ -18339,7 +18663,7 @@ function LittleFiresApp() {
                               display: 'inline-block', boxSizing: 'border-box'
                             }}></span>
                             <span style={{
-                              color: 'var(--text)', fontSize: '0.9rem', fontFamily: 'Quicksand, sans-serif',
+                              color: 'var(--text)', fontSize: '0.9rem', fontFamily: 'var(--font-ui)',
                               textDecoration: hidden ? 'line-through' : 'none'
                             }}>
                               {listLabels[k]} <span style={{ color: 'var(--text-muted)' }}>({totals[k]})</span>
@@ -18351,7 +18675,7 @@ function LittleFiresApp() {
                   </div>
 
                   {grandTotal === 0 && (
-                    <div style={{ order: 4, textAlign: 'center', color: 'var(--text-muted)', fontFamily: 'Quicksand, sans-serif', marginTop: '20px', fontSize: '0.95rem' }}>
+                    <div style={{ order: 4, textAlign: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-ui)', marginTop: '20px', fontSize: '0.95rem' }}>
                       No completed tasks in this timeframe.
                     </div>
                   )}
@@ -18432,13 +18756,13 @@ class LittleFiresErrorBoundary extends React.Component {
 
     const btn = {
       padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
-      fontFamily: 'Quicksand, sans-serif', fontSize: '0.9rem', fontWeight: 600
+      fontFamily: 'var(--font-ui)', fontSize: '0.9rem', fontWeight: 600
     };
 
     return (
       <div style={{
         minHeight: '100vh', background: 'linear-gradient(135deg, #1a1a2e 0%, #2d2d44 100%)',
-        color: 'var(--text)', fontFamily: 'Quicksand, sans-serif',
+        color: 'var(--text)', fontFamily: 'var(--font-ui)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px'
       }}>
         <div style={{

@@ -448,6 +448,19 @@ const IS_TOUCH_DEVICE =
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(hover: none) and (pointer: coarse)').matches;
 
+// An internal clipboard, used only as a fallback.
+//
+// Pasting rich content depends on reading 'text/html' from the paste event, and
+// that is not dependable - iOS Safari in particular often exposes only
+// 'text/plain', which is why copying a checklist from one task to another came
+// back as bare text. So a copy out of the details editor also stashes its own
+// HTML here, keyed to the exact plain text the browser will carry alongside it.
+//
+// The text acts as the key on purpose: if the user copies something else in
+// between, from any other app, the plain text won't match and the stash is
+// correctly ignored rather than pasting stale content.
+let internalClipboard = { text: '', html: '' };
+
 // Font choices. `ui` is the display face (headings, tabs, buttons); `body` is
 // the reading face (task text, notes). Both are named per option so a choice is
 // a coherent pairing rather than two dropdowns to get wrong.
@@ -4147,6 +4160,9 @@ function LittleFiresApp() {
     const detailsRef = React.useRef(null);
     const hasSetInitialContent = React.useRef(false);
     const saveTimeoutRef = React.useRef(null);
+    // Set while a drag-to-indent is finishing, so the click that follows it
+    // doesn't also toggle the checkbox that was used as the handle.
+    const indentSuppressRef = React.useRef(false);
     const clickTimeoutRef = React.useRef(null);
     // Holds the task in place briefly after checking it, so the checkmark is
     // visible before the task leaves the list.
@@ -4199,6 +4215,30 @@ function LittleFiresApp() {
     const [measuredHeight, setMeasuredHeight] = React.useState(null);
     const collapseTimeoutRef = React.useRef(null);
     const completeTimeoutRef = React.useRef(null);
+
+    // A field holding only a stray <br> is empty to a reader but not to
+    // :empty, so emptiness is decided here and published as a class. Checkboxes
+    // and images count as content even with no text alongside them.
+    const syncPlaceholder = (area) => {
+      if (!area) return;
+      const hasText = (area.textContent || '').replace(/\u00A0/g, '').trim() !== '';
+      const hasWidgets = !!area.querySelector('input, img, li');
+      area.classList.toggle('is-empty', !hasText && !hasWidgets);
+    };
+
+    // Serialises whatever is selected, so a copy out of this editor keeps its
+    // structure even when the clipboard will only carry plain text.
+    const stashSelectionHtml = () => {
+      try {
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+        const holder = document.createElement('div');
+        holder.appendChild(sel.getRangeAt(0).cloneContents());
+        internalClipboard = { text: sel.toString(), html: holder.innerHTML };
+      } catch (err) {
+        internalClipboard = { text: '', html: '' };
+      }
+    };
 
     // The one way a task gets completed, whichever gesture asked for it.
     // Completing pauses: the tick stays lit while the card fades, then the card
@@ -4430,6 +4470,7 @@ function LittleFiresApp() {
             // After loading, reflect any already-complete child sets on their parents
             setTimeout(() => syncParentCheckboxes(area), 0);
             setTimeout(() => refreshListMarkers(area), 0);
+            syncPlaceholder(area);
           }
         }
       }
@@ -4507,6 +4548,12 @@ function LittleFiresApp() {
           return;
         }
         if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
+          if (indentSuppressRef.current) {
+            // The box was a drag handle, not a target. Undo the toggle the
+            // browser already applied before this handler saw the event.
+            evt.target.checked = !evt.target.checked;
+            return;
+          }
           // Ticking a box is a complete action on its own: sync parents, save,
           // and hand focus back out. Handled here rather than per-checkbox so
           // boxes created later in the session behave identically - a per-
@@ -4528,7 +4575,131 @@ function LittleFiresApp() {
           runSync();
         }
       };
+      // Declared in the effect's own scope, not inside the `if` below.
+      // These are referenced by the cleanup, which lives outside that block -
+      // declaring them inside it meant every cleanup threw a ReferenceError,
+      // so collapsing, rotating, or anything that re-ran the effect crashed.
+      // --- Indent by dragging a checkbox sideways ------------------------
+      // iOS has no Tab key, so the keyboard route to nesting doesn't exist on
+      // a phone. This uses the gesture that's free here: swipe-to-complete is
+      // disabled while a task is expanded, so horizontal drags inside the
+      // editor are unclaimed.
+      //
+      // The drag must START on the checkbox. That element is
+      // contentEditable="false", so dragging from it can't begin a text
+      // selection - starting anywhere in the text would fight iOS's own
+      // selection handles.
+      const indentDrag = { x: 0, y: 0, line: null, moved: false, axis: null, kind: null };
+      const INDENT_STEP = 20;
+      const INDENT_TRIGGER = 22;
+
+      const MARKER_ZONE = 30;
+
+      const onIndentStart = (evt) => {
+        indentDrag.line = null;
+        if (evt.touches.length !== 1) return;
+        const t = evt.touches[0];
+        const el = evt.target;
+        if (!el || !el.closest) return;
+
+        const box = el.closest('.task-checkbox');
+        const checkboxLine = box && box.closest('.checkbox-line');
+        if (checkboxLine) {
+          indentDrag.kind = 'checkbox';
+          indentDrag.line = checkboxLine;
+        } else {
+          // A bullet has no element to grab - its marker is a ::marker pseudo,
+          // which can't receive touches. The space the marker occupies works
+          // instead: a drag starting in the line's left inset is the handle,
+          // and starting there also keeps the gesture out of the text, where
+          // it would fight iOS's selection handles exactly as it would on a
+          // checkbox line.
+          const li = el.closest('li');
+          if (!li || !detailsArea.contains(li)) return;
+          const rect = li.getBoundingClientRect();
+          if (t.clientX - rect.left > MARKER_ZONE) return;
+          indentDrag.kind = 'bullet';
+          indentDrag.line = li;
+        }
+
+        indentDrag.x = t.clientX;
+        indentDrag.y = t.clientY;
+        indentDrag.moved = false;
+        indentDrag.axis = null;
+      };
+
+      const onIndentMove = (evt) => {
+        if (!indentDrag.line) return;
+        const t = evt.touches[0];
+        const dx = t.clientX - indentDrag.x;
+        const dy = t.clientY - indentDrag.y;
+
+        // Decide the axis once, on the first real movement, and hold it.
+        // Re-deciding every frame is what made this feel unreliable: a drag
+        // that wandered a few pixels vertically mid-gesture would abandon
+        // itself halfway through.
+        if (indentDrag.axis === null) {
+          if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+          indentDrag.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+        }
+        if (indentDrag.axis === 'y') { indentDrag.line = null; return; }
+
+        // Claimed from here on, every frame - not only when a step is crossed.
+        // Previously the page was free to pan during the 28px before the first
+        // step, which is the drift you could feel before anything happened.
+        evt.preventDefault();
+
+        if (Math.abs(dx) < INDENT_TRIGGER) return;
+
+        if (indentDrag.kind === 'bullet') {
+          // Nesting, not a margin: a bullet's depth is structural, and faking
+          // it with an indent would leave the markers all at the same level.
+          // execCommand needs the caret inside the item it is to act on.
+          const sel = window.getSelection();
+          const r = document.createRange();
+          r.selectNodeContents(indentDrag.line);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          document.execCommand(dx > 0 ? 'indent' : 'outdent', false, null);
+          indentDrag.moved = true;
+        } else {
+          const current = parseInt(indentDrag.line.style.marginLeft || '0') || 0;
+          const next = dx > 0
+            ? current + INDENT_STEP
+            : Math.max(0, current - INDENT_STEP);
+          if (next !== current) {
+            indentDrag.line.style.marginLeft = next + 'px';
+            refreshListMarkers(detailsArea);
+          }
+        }
+        // Re-anchor rather than end the gesture, so one continuous drag can
+        // step through several levels the way repeated Tabs would.
+        indentDrag.x = t.clientX;
+        indentDrag.moved = true;
+        evt.preventDefault();
+      };
+
+      const onIndentEnd = () => {
+        if (indentDrag.moved) {
+          // The tap that ends this drag would otherwise tick the box - the
+          // one thing the user certainly didn't mean by dragging it.
+          indentSuppressRef.current = true;
+          setTimeout(() => { indentSuppressRef.current = false; }, 400);
+          saveDetails(detailsArea);
+        }
+        indentDrag.line = null;
+        indentDrag.moved = false;
+        indentDrag.axis = null;
+        indentDrag.kind = null;
+      };
+
       if (detailsArea) {
+        detailsArea.addEventListener('touchstart', onIndentStart, { passive: true });
+        detailsArea.addEventListener('touchmove', onIndentMove, { passive: false });
+        detailsArea.addEventListener('touchend', onIndentEnd);
+        detailsArea.addEventListener('touchcancel', onIndentEnd);
+
         detailsArea.addEventListener('change', handleDelegatedChange);
         detailsArea.addEventListener('click', handleDelegatedClick);
         
@@ -4560,6 +4731,10 @@ function LittleFiresApp() {
         if (detailsArea) {
           detailsArea.removeEventListener('change', handleDelegatedChange);
           detailsArea.removeEventListener('click', handleDelegatedClick);
+          detailsArea.removeEventListener('touchstart', onIndentStart);
+          detailsArea.removeEventListener('touchmove', onIndentMove);
+          detailsArea.removeEventListener('touchend', onIndentEnd);
+          detailsArea.removeEventListener('touchcancel', onIndentEnd);
         }
       };
     }, [isExpanded, listName, task.id]);
@@ -5078,6 +5253,39 @@ function LittleFiresApp() {
                     }
                   }
 
+                  // An empty checkbox line at the caret is an intent, not
+                  // content: you made a checkbox, then chose a bullet instead.
+                  // The exact mirror of the empty-bullet case the Box button
+                  // handles. Without this, execCommand wraps the line and you
+                  // end up with a checkbox sitting inside a bullet.
+                  const caretNode = range.startContainer;
+                  const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
+                    ? caretNode : caretNode.parentElement;
+                  const emptyBox = caretEl && caretEl.closest
+                    ? caretEl.closest('.checkbox-line') : null;
+                  if (emptyBox && detailsArea.contains(emptyBox) &&
+                      (emptyBox.textContent || '').replace(/\u00A0/g, '').trim() === '') {
+                    const list = document.createElement('ul');
+                    const li = document.createElement('li');
+                    li.innerHTML = '<br>';
+                    list.appendChild(li);
+                    // Indent carries across so swapping the marker type doesn't
+                    // silently promote the line back to the top level.
+                    if (emptyBox.style && emptyBox.style.marginLeft) {
+                      list.style.marginLeft = emptyBox.style.marginLeft;
+                    }
+                    emptyBox.parentElement.replaceChild(list, emptyBox);
+
+                    const caret = document.createRange();
+                    caret.selectNodeContents(li);
+                    caret.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(caret);
+
+                    setTimeout(() => refreshListMarkers(detailsArea), 0);
+                    return;
+                  }
+
                   document.execCommand('insertUnorderedList', false, null);
                 }}
                 title="Bullet List"
@@ -5174,12 +5382,34 @@ function LittleFiresApp() {
               className="details-richtext"
               contentEditable
               suppressContentEditableWarning
-              onInput={(e) => { refreshListMarkers(e.currentTarget); }}
+              // A bare contenteditable is announced as an unnamed group. These
+              // make it a named, multi-line text field to a screen reader.
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Task details"
+              // Sentence case and autocorrect match every other text field on
+              // the device; without them a contenteditable silently opts out of
+              // both on iOS and typing here feels different from everywhere else.
+              autoCapitalize="sentences"
+              autoCorrect="on"
+              spellCheck="true"
+              onInput={(e) => {
+                refreshListMarkers(e.currentTarget);
+                syncPlaceholder(e.currentTarget);
+              }}
               onBlur={(e) => {
                 e.stopPropagation();
                 saveDetails(e.currentTarget);
               }}
               onClick={(e) => e.stopPropagation()}
+              onCopy={(e) => {
+                e.stopPropagation();
+                stashSelectionHtml();
+              }}
+              onCut={(e) => {
+                e.stopPropagation();
+                stashSelectionHtml();
+              }}
               onPaste={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -5189,7 +5419,16 @@ function LittleFiresApp() {
                 // A bare URL still wins over the HTML branch below, so copying
                 // a link out of a browser bar keeps producing a compact anchor
                 // rather than a page's worth of markup.
-                const html = (e.clipboardData?.getData('text/html') || '');
+                //
+                // Falls back to the internal stash when the clipboard offers no
+                // HTML, which is the common case on iOS. Matched on the plain
+                // text so a copy made elsewhere in between can't be mistaken
+                // for this one.
+                const clipboardHtml = (e.clipboardData?.getData('text/html') || '');
+                const html = clipboardHtml ||
+                  (internalClipboard.text && internalClipboard.text === text
+                    ? internalClipboard.html
+                    : '');
                 
                 const selection = window.getSelection();
                 if (!selection.rangeCount) return;
@@ -7444,7 +7683,11 @@ function LittleFiresApp() {
           box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
         }
 
-        .details-richtext:empty:before {
+        /* Driven by a class, not :empty. A contenteditable that has been typed
+           in and then cleared almost always retains a stray <br>, so it stops
+           matching :empty and the placeholder never returns - the field just
+           looks permanently blank with no prompt. */
+        .details-richtext.is-empty:before {
           content: 'Add details about this task...';
           color: var(--text-muted);
           opacity: 0.6;
@@ -7486,8 +7729,19 @@ function LittleFiresApp() {
           align-items: flex-start;
         }
 
+        /* Same reasoning as the checkbox below: horizontal drags on a list item
+           belong to indent, and a list never needs to pan sideways. */
+        .details-richtext li {
+          touch-action: pan-y;
+        }
+
         .details-richtext .task-checkbox {
           appearance: none;
+          /* Horizontal drags starting here belong to indent, not to the page.
+             Declaring that in CSS is what actually stops the scroll - a
+             preventDefault in JS arrives after the browser has already begun
+             deciding, so the first few pixels leak through without this. */
+          touch-action: pan-y;
           /* Not selectable: inside a contenteditable the box would otherwise be
              a caret position of its own, so a tap just left of it dropped the
              cursor between the line start and the box. */

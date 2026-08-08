@@ -4777,9 +4777,38 @@ function LittleFiresApp() {
         if (t === detailsArea) {
           setTimeout(() => {
             try {
+              const last = detailsArea.lastElementChild;
+              const isStructured = last && (
+                (last.classList && last.classList.contains('checkbox-line')) ||
+                last.tagName === 'UL' || last.tagName === 'OL'
+              );
+              const isBlankLine = last && last.tagName === 'DIV' &&
+                !isStructured &&
+                (last.textContent || '').replace(/\u00A0/g, '').trim() === '';
+
+              // Collapsing to the end of the content would land the caret
+              // inside the last checkbox line, so typing continued that item
+              // instead of starting something new. A fresh plain line below the
+              // structure is what "carry on underneath" actually means.
+              let target = null;
+              if (isBlankLine) {
+                // One already exists from a previous tap - reuse it rather than
+                // stacking up empty lines every time the space is touched.
+                target = last;
+              } else if (isStructured) {
+                target = document.createElement('div');
+                target.innerHTML = '<br>';
+                detailsArea.appendChild(target);
+              }
+
               const r = document.createRange();
-              r.selectNodeContents(detailsArea);
-              r.collapse(false);
+              if (target) {
+                r.setStart(target, 0);
+                r.collapse(true);
+              } else {
+                r.selectNodeContents(detailsArea);
+                r.collapse(false);
+              }
               const sel = window.getSelection();
               sel.removeAllRanges();
               sel.addRange(r);

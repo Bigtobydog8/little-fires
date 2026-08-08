@@ -4216,6 +4216,27 @@ function LittleFiresApp() {
     const collapseTimeoutRef = React.useRef(null);
     const completeTimeoutRef = React.useRef(null);
 
+    // Writes the captured HTML onto the clipboard itself, instead of leaving
+    // the browser to serialise the raw selection.
+    //
+    // The browser's version omits the checkbox - it is a contentEditable=false
+    // sibling that sits outside the selection range - so overriding it is what
+    // makes an ordinary paste carry the box. The internal stash stays as the
+    // fallback for platforms that won't hand back text/html on paste, and
+    // because we now also set text/plain ourselves, the two are guaranteed to
+    // match rather than differing by a stray newline.
+    const writeClipboard = (e) => {
+      const captured = stashSelectionHtml();
+      if (!captured || !captured.html || !e.clipboardData) return;
+      try {
+        e.preventDefault();
+        e.clipboardData.setData('text/plain', captured.text);
+        e.clipboardData.setData('text/html', captured.html);
+      } catch (err) {
+        // Blocked - let the browser write its own version rather than nothing.
+      }
+    };
+
     // A field holding only a stray <br> is empty to a reader but not to
     // :empty, so emptiness is decided here and published as a class. Checkboxes
     // and images count as content even with no text alongside them.
@@ -4232,11 +4253,47 @@ function LittleFiresApp() {
       try {
         const sel = window.getSelection();
         if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+        const range = sel.getRangeAt(0);
+        const area = detailsRef.current;
+
+        // The whole line, not just the text you dragged across.
+        //
+        // Selecting a checkbox line's text produces a range over the <span>
+        // alone - the checkbox is a contentEditable="false" sibling that
+        // browsers leave outside the selection, so cloning the range gave back
+        // the words with no box. Expanding to the enclosing block is what
+        // actually captures the structure.
+        const blockOf = (node) => {
+          const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+          if (!el || !el.closest || !area || !area.contains(el)) return null;
+          return el.closest('.checkbox-line, li');
+        };
+        const startBlock = blockOf(range.startContainer);
+        const endBlock = blockOf(range.endContainer);
+
+        // Only expand when the selection is really about whole lines: either it
+        // crosses more than one, or it covers all of the text in the one it's
+        // in. Selecting a single word inside a line still copies just that word
+        // rather than silently dragging a checkbox along with it.
+        const selected = sel.toString().replace(/\u00A0/g, ' ').trim();
+        const wholeLine = startBlock &&
+          selected === (startBlock.textContent || '').replace(/\u00A0/g, ' ').trim();
+        const spansBlocks = startBlock && endBlock && startBlock !== endBlock;
+
+        let cloneRange = range;
+        if (startBlock && (wholeLine || spansBlocks)) {
+          cloneRange = document.createRange();
+          cloneRange.setStartBefore(startBlock);
+          cloneRange.setEndAfter(endBlock || startBlock);
+        }
+
         const holder = document.createElement('div');
-        holder.appendChild(sel.getRangeAt(0).cloneContents());
+        holder.appendChild(cloneRange.cloneContents());
         internalClipboard = { text: sel.toString(), html: holder.innerHTML };
+        return internalClipboard;
       } catch (err) {
         internalClipboard = { text: '', html: '' };
+        return null;
       }
     };
 
@@ -4554,19 +4611,19 @@ function LittleFiresApp() {
             evt.target.checked = !evt.target.checked;
             return;
           }
-          // Ticking a box is a complete action on its own: sync parents, save,
-          // and hand focus back out. Handled here rather than per-checkbox so
-          // boxes created later in the session behave identically - a per-
-          // element handler only ever reached the ones present at load, which
-          // is why a freshly inserted box still stole focus.
+          // Ticking a box is a complete action on its own. Handled here rather
+          // than per-checkbox so boxes created later in the session behave
+          // identically - a per-element handler only ever reached the ones
+          // present at load.
+          //
+          // No blur any more: focus was already prevented from entering the
+          // editor at mousedown, so there is nothing to take back. Blurring
+          // here as well was actively harmful - if you were mid-sentence
+          // elsewhere in the notes and ticked a box, it threw your cursor away.
           // Deferred a tick so the browser has finished toggling `checked`.
           setTimeout(() => {
             runSync();
             saveDetails(detailsArea);
-            const active = document.activeElement;
-            if (active && (active === detailsArea || detailsArea.contains(active))) {
-              active.blur();
-            }
           }, 0);
         }
       };
@@ -4694,7 +4751,67 @@ function LittleFiresApp() {
         indentDrag.kind = null;
       };
 
+      // Focus moves on mousedown, not on click - so this is the only moment
+      // where it can be stopped from happening at all. Preventing the default
+      // here keeps the caret and the keyboard out of the editor entirely when
+      // you tap a checkbox; blurring afterwards, as it did before, meant the
+      // keyboard could still flash open and closed on the way through.
+      //
+      // The toggle is unaffected: a checkbox flips on click, which is a
+      // separate default action from the focus that happens on mousedown.
+      // On iOS the emulated mousedown fires after touchend, so this covers
+      // touch as well without needing a non-passive touch listener.
+      const onCheckboxMouseDown = (evt) => {
+        const t = evt.target;
+        if (!t || !t.closest) return;
+
+        // Tapping the empty space below the content is the way in to typing.
+        // The target being the editor itself - rather than any line inside it -
+        // is exactly what "below everything" means.
+        //
+        // The caret is moved to the very end rather than left where the browser
+        // put it. Clicking blank space below a checklist otherwise drops the
+        // cursor at whatever position happens to be nearest, which can be the
+        // middle of an earlier line - so the gesture has to be explicit about
+        // meaning "carry on from the end".
+        if (t === detailsArea) {
+          setTimeout(() => {
+            try {
+              const r = document.createRange();
+              r.selectNodeContents(detailsArea);
+              r.collapse(false);
+              const sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(r);
+            } catch (err) {
+              // Focus still landed; only the caret position is a nicety.
+            }
+          }, 0);
+          return;
+        }
+
+        // The checkbox itself never focuses anything.
+        if (t.closest('.task-checkbox')) { evt.preventDefault(); return; }
+
+        // Neither does the text of a checkbox line. A checklist you already
+        // filled in is something you tick, not something you happen to be
+        // typing in - and letting a tap anywhere near a box drop a caret is
+        // what made ticking feel unreliable, because every miss opened the
+        // keyboard and shifted the layout under your finger.
+        const line = t.closest('.checkbox-line');
+        if (!line) return;   // plain text, or the empty space below - editable
+
+        // The deliberate way in: tap past the end of the line's text. That is
+        // an unambiguous "put the cursor here" and it can't be hit by aiming
+        // for the box. Clicking below the content works the same way, since
+        // that isn't inside a checkbox line at all.
+        const label = line.querySelector('span') || line;
+        const rect = label.getBoundingClientRect();
+        if (evt.clientX <= rect.right) evt.preventDefault();
+      };
+
       if (detailsArea) {
+        detailsArea.addEventListener('mousedown', onCheckboxMouseDown);
         detailsArea.addEventListener('touchstart', onIndentStart, { passive: true });
         detailsArea.addEventListener('touchmove', onIndentMove, { passive: false });
         detailsArea.addEventListener('touchend', onIndentEnd);
@@ -4731,6 +4848,7 @@ function LittleFiresApp() {
         if (detailsArea) {
           detailsArea.removeEventListener('change', handleDelegatedChange);
           detailsArea.removeEventListener('click', handleDelegatedClick);
+          detailsArea.removeEventListener('mousedown', onCheckboxMouseDown);
           detailsArea.removeEventListener('touchstart', onIndentStart);
           detailsArea.removeEventListener('touchmove', onIndentMove);
           detailsArea.removeEventListener('touchend', onIndentEnd);
@@ -5404,11 +5522,13 @@ function LittleFiresApp() {
               onClick={(e) => e.stopPropagation()}
               onCopy={(e) => {
                 e.stopPropagation();
-                stashSelectionHtml();
+                writeClipboard(e);
               }}
               onCut={(e) => {
                 e.stopPropagation();
-                stashSelectionHtml();
+                // The browser still performs the deletion; only what it writes
+                // is replaced.
+                writeClipboard(e);
               }}
               onPaste={(e) => {
                 e.preventDefault();
@@ -5425,10 +5545,16 @@ function LittleFiresApp() {
                 // text so a copy made elsewhere in between can't be mistaken
                 // for this one.
                 const clipboardHtml = (e.clipboardData?.getData('text/html') || '');
-                const html = clipboardHtml ||
-                  (internalClipboard.text && internalClipboard.text === text
-                    ? internalClipboard.html
-                    : '');
+                // The stash takes precedence over the browser's own HTML when
+                // it matches. The browser serialises the raw selection, which
+                // has the same gap - a checkbox left outside the range - so
+                // preferring it would reintroduce exactly the bug the stash
+                // exists to fix. Matched on plain text, so a copy from anywhere
+                // else falls through to the clipboard as normal.
+                const stashed = internalClipboard.text && internalClipboard.text === text
+                  ? internalClipboard.html
+                  : '';
+                const html = stashed || clipboardHtml;
                 
                 const selection = window.getSelection();
                 if (!selection.rangeCount) return;
@@ -7645,7 +7771,10 @@ function LittleFiresApp() {
           font-size: 0.95rem;
           outline: none;
           resize: vertical;
-          min-height: 100px;
+          /* Room to tap below the content. Tapping the empty space is now the
+             main way into typing when a task is full of checkboxes, so there
+             has to be some of it even when the text is short. */
+          min-height: 120px;
           transition: all 0.3s ease;
           box-sizing: border-box;
           word-wrap: break-word;
@@ -9779,28 +9908,28 @@ function LittleFiresApp() {
            Not listed: .details-richtext .task-checkbox:hover, which is already
            wrapped in its own @media (hover: hover) guard. */
         @media (hover: none) {
-          .hamburger-icon:hover,
-          .tab:hover,
-          .fire-flag-icon.clickable:hover,
-          .section-btn:hover,
-          .priority-btn:hover,
-          button:hover,
-          .fire-flag-btn:hover,
-          /* Toolbar buttons latch too, and there it's worse than cosmetic:
-             the last button pressed stays lit, which reads as "this formatting
-             is switched on" when nothing is. Reset to the base values rather
-             than to none, or they'd lose their normal appearance entirely. */
+          /* Toolbar buttons only. This was previously merged into the
+             transform-reset selector list below, which handed the toolbar's own
+             background and border to every one of those 22 selectors - tabs and
+             all buttons included. A selected tab then got a pale green fill
+             while keeping .tab.active's white text, which is what made the
+             label vanish. Kept as its own rule so the values can't leak. */
           .toolbar-btn:hover {
             background: rgba(var(--accent-rgb), 0.2);
             border-color: rgba(var(--accent-rgb), 0.3);
           }
 
-          .tab:hover {
+          /* :not(.active) is essential. This block is last in the stylesheet
+             and .tab:hover carries the same specificity as .tab.active, so
+             without the exclusion it won this tie on source order - resetting
+             the selected tab's green background while .tab.active's white text
+             survived, leaving the label invisible on a pale tab. */
+          .tab:not(.active):hover {
             background: rgba(var(--surface-rgb), 0.8);
             border-color: rgba(var(--accent-rgb), 0.2);
           }
 
-          .tab.shared:hover {
+          .tab.shared:not(.active):hover {
             background: rgba(var(--partner-rgb), 0.12);
             border-color: rgba(var(--partner-rgb), 0.45);
           }
@@ -9815,6 +9944,14 @@ function LittleFiresApp() {
             box-shadow: none;
           }
 
+          .hamburger-icon:hover,
+          .tab:hover,
+          .fire-flag-icon.clickable:hover,
+          .section-btn:hover,
+          .priority-btn:hover,
+          button:hover,
+          .fire-flag-btn:hover,
+          .toolbar-btn:hover,
           .task:not(.expanded):hover,
           .delete-btn:hover,
           .edit-btn:hover,

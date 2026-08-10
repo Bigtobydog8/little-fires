@@ -76,7 +76,19 @@ function InlineDatePicker({ value, onChange, style }) {
   };
 
   return (
-    <span style={{ position: 'relative', display: 'inline-block', ...style }}
+    <span style={{
+      position: 'relative',
+      // inline-flex, not inline-block. The clear button is a sibling of the
+      // trigger, and as inline content it wrapped onto a second line once the
+      // field got narrow - which made a filled date field taller than an empty
+      // one and knocked Start and End out of alignment with each other.
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '2px',
+      whiteSpace: 'nowrap',
+      verticalAlign: 'middle',
+      ...style
+    }}
       onMouseDown={stop} onTouchStart={stop} onClick={stop}>
       <button type="button" style={field} onClick={(e) => { stop(e); setOpen(o => !o); }}>
         {selected ? selected.toLocaleDateString('en-US',
@@ -89,8 +101,11 @@ function InlineDatePicker({ value, onChange, style }) {
       {value && (
         <button type="button" title="Clear date" aria-label="Clear date"
           onClick={(e) => { stop(e); onChange(''); setOpen(false); }}
-          style={{ ...btnReset, background: 'transparent', border: 'none', color: '#8a8a9a',
-            cursor: 'pointer', fontSize: '1rem', ...tapTarget }}>×</button>
+          style={{ ...btnReset, background: 'transparent', border: 'none',
+            // Was a hardcoded grey - the last one in this component, so it
+            // stayed cool-toned against the warm light theme.
+            color: 'var(--text-muted)',
+            cursor: 'pointer', fontSize: '1rem', flexShrink: 0, ...tapTarget }}>×</button>
       )}
 
       {open && (
@@ -4179,6 +4194,29 @@ function LittleFiresApp() {
     // the button was pressed would go stale immediately and show "engaged"
     // when nothing is.
     const [formatOn, setFormatOn] = React.useState(false);
+    const [projectDropdownOpen, setProjectDropdownOpen] = React.useState(false);
+
+    // A native select closed itself on an outside tap; a div has to be told.
+    // Without this the list stays open until something else re-renders, and
+    // tapping elsewhere in the card leaves it hanging over the content.
+    React.useEffect(() => {
+      if (!projectDropdownOpen) return;
+      const close = (e) => {
+        if (taskRef.current && taskRef.current.contains(e.target)) {
+          // Inside the card: the dropdown's own handlers stopPropagation, so
+          // reaching here means the tap was somewhere else in the card.
+          setProjectDropdownOpen(false);
+          return;
+        }
+        setProjectDropdownOpen(false);
+      };
+      document.addEventListener('mousedown', close);
+      document.addEventListener('touchstart', close);
+      return () => {
+        document.removeEventListener('mousedown', close);
+        document.removeEventListener('touchstart', close);
+      };
+    }, [projectDropdownOpen]);
 
     React.useEffect(() => {
       if (!isExpanded) return;
@@ -5887,28 +5925,101 @@ function LittleFiresApp() {
 
               {/* Hidden when Projects is switched off. Any existing projectId
                   is preserved untouched, so re-enabling restores the link. */}
-              {isFeatureOn('projects') && (
-                <div className="due-date-display">
-                  <label className="details-label" style={{ margin: 0 }}>Project:</label>
-                  <select
-                    value={task.projectId || ''}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      const value = e.target.value;
-                      assignTaskToProject(listName, task.id, value || null);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    className="project-selector"
-                  >
-                    <option value=""></option>
-                    {getAllProjects().map(project => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              {isFeatureOn('projects') && (() => {
+                // Replaces a native <select>. Its popup is drawn by the browser
+                // as OS chrome - no rounded corners, no theming beyond the
+                // option colours - so it was the one control in the app that
+                // couldn't be made to match. This is the same div-based pattern
+                // the Goal, Timer and Report dropdowns already use.
+                const chosen = getAllProjects().find(
+                  pr => String(pr.id) === String(task.projectId)
+                );
+                const pick = (value) => {
+                  assignTaskToProject(listName, task.id, value);
+                  setProjectDropdownOpen(false);
+                };
+                const optionStyle = (selected) => ({
+                  padding: '10px 14px',
+                  color: 'var(--text)',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer',
+                  background: selected ? 'rgba(var(--accent-rgb), 0.25)' : 'transparent',
+                  borderBottom: '1px solid rgba(var(--accent-rgb), 0.15)',
+                  transition: 'background 0.2s ease'
+                });
+                return (
+                  <div className="due-date-display">
+                    <label className="details-label" style={{ margin: 0 }}>Project:</label>
+                    <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => {
+                          // Toggled on mousedown, and stopped there, so the
+                          // document-level close listener below never sees the
+                          // tap that opened it - otherwise it would open and
+                          // shut in the same gesture.
+                          e.stopPropagation();
+                          setProjectDropdownOpen(o => !o);
+                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        className="project-selector"
+                        style={{
+                          display: 'flex', alignItems: 'center',
+                          justifyContent: 'space-between', gap: '8px'
+                        }}
+                      >
+                        <span style={{
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          color: chosen ? 'var(--text)' : 'var(--text-muted)'
+                        }}>
+                          {chosen ? chosen.name : 'No project'}
+                        </span>
+                        <span style={{
+                          transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.2s ease',
+                          fontSize: '0.7rem', flexShrink: 0
+                        }}>▼</span>
+                      </div>
+
+                      {projectDropdownOpen && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onTouchStart={(e) => e.stopPropagation()}
+                          style={{
+                            position: 'absolute', top: '100%', left: 0, right: 0,
+                            marginTop: '4px',
+                            background: 'rgba(var(--surface-rgb), 1)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            borderRadius: '12px',
+                            overflow: 'hidden',
+                            // Long project lists shouldn't run off the card.
+                            maxHeight: '220px', overflowY: 'auto',
+                            zIndex: 1000,
+                            boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.35)'
+                          }}
+                        >
+                          <div
+                            onClick={() => pick(null)}
+                            style={{ ...optionStyle(!task.projectId), color: 'var(--text-muted)' }}
+                          >
+                            No project
+                          </div>
+                          {getAllProjects().map(pr => (
+                            <div
+                              key={pr.id}
+                              onClick={() => pick(pr.id)}
+                              style={optionStyle(String(pr.id) === String(task.projectId))}
+                            >
+                              {pr.name}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="fire-flag-selector">
@@ -7201,10 +7312,13 @@ function LittleFiresApp() {
 
         .project-selector {
           background: rgba(var(--surface-rgb), 0.8);
-          border: 2px solid rgba(var(--accent-rgb), 0.2);
+          border: 2px solid rgba(var(--accent-rgb), 0.3);
           border-radius: 20px;
-          padding: 12px 16px;
-          color: var(--accent);
+          padding: 10px 14px;
+          /* Body text colour, like every other field. Accent-coloured value
+             text made this read as a link rather than a control, and it was
+             the only input in the app doing that. */
+          color: var(--text);
           font-family: var(--font-body);
           font-size: 0.9rem;
           cursor: pointer;
@@ -7216,11 +7330,6 @@ function LittleFiresApp() {
         .project-selector:focus {
           border-color: var(--accent);
           box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
-        }
-
-        .project-selector option {
-          background: #2a2a3e;
-          color: var(--accent);
         }
 
         .task-options {
@@ -12220,12 +12329,16 @@ function LittleFiresApp() {
                           <div
                             onClick={() => setGoalDropdownOpen(!goalDropdownOpen)}
                             style={{
-                              padding: '10px',
+                              // Tighter in portrait. This is one field in a
+                              // stack of cards, and at the desktop size it read
+                              // as the main thing on the screen rather than a
+                              // setting on the project.
+                              padding: isMobile ? '8px 10px' : '10px',
                               background: 'rgba(var(--surface-rgb), 1)',
                               border: '2px solid rgba(var(--accent-rgb), 0.3)',
                               borderRadius: '10px',
                               color: 'var(--text)',
-                              fontSize: '0.95rem',
+                              fontSize: isMobile ? '0.85rem' : '0.95rem',
                               cursor: 'pointer',
                               flex: 1,
                               width: '100%',

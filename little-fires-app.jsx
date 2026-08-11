@@ -536,6 +536,2250 @@ const COMPLETE_HOLD_MS = 900;   // tick lit, nothing moving yet
 const COMPLETE_ANIM_MS = 400;   // fade and collapse, run together
 const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 
+// Self-contained SVG marks, so they belong at module scope alongside the other
+// icons. They were declared inside LittleFiresApp and referenced by Task, which
+// only breaks once Task is hoisted - and only on the expanded task, since that
+// is the one place they render.
+const UnlitFlame = () => (
+  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 1280.000000 1280.000000"
+    preserveAspectRatio="xMidYMid meet">
+    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+      fill="#000000" stroke="none">
+      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+      -1 -56z"/>
+      <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+      -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+      -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+      -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+      289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+      553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+      -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+      <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+      -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+      -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+      -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+      36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+      -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+      95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+    </g>
+  </svg>
+);
+
+const LitFlame = () => (
+  <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 1280.000000 1280.000000"
+    preserveAspectRatio="xMidYMid meet">
+    <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
+      fill="#FF4500" stroke="none">
+      <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
+      -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
+      -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
+      17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
+      -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
+      132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
+      680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
+      -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
+      -1 -56z"/>
+      <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
+      -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
+      -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
+      -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
+      289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
+      553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
+      -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+      <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
+      -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
+      -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
+      -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
+      36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
+      -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
+      95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+    </g>
+  </svg>
+);
+
+// Supplies Task with everything it needs from the app, so Task itself can live
+// at module scope and keep one stable identity for the life of the page.
+const TaskContext = React.createContext(null);
+
+const Task = ({ task, listName, showMoveButtons }) => {
+  // Everything Task needs from the app. Previously these were closure
+  // variables, which is what forced Task to live inside LittleFiresApp - and
+  // being redeclared there gave it a new function identity on every parent
+  // render, so React treated it as a different component type and remounted
+  // the entire task subtree. That remount is what discarded in-progress edits,
+  // reset the undo stack, cancelled drags, and caused the tick flash.
+  const {
+    allLists,
+    archiveTask,
+    assignTaskToProject,
+    canReorderTogether,
+    collapseGuardRef,
+    cycleAssignment,
+    deleteTask,
+    draggingTaskRef,
+    editingTaskName,
+    expandedTaskId,
+    findTask,
+    getAllProjects,
+    isFeatureOn,
+    isSharedList,
+    moveTaskToSection,
+    parseLocalDateTime,
+    partnerDisplayName,
+    renameTask,
+    reorderTask,
+    setEditingTaskName,
+    setExpandedTaskId,
+    settings,
+    toggleTask,
+    updateTaskDetails,
+    updateTaskDueDate,
+    updateTaskPriority
+  } = React.useContext(TaskContext);
+
+  // With a time set, overdue means past that moment. Without one, the task
+  // isn't late until the day itself has ended.
+  const dueDate = task.dueDate ? parseLocalDateTime(task.dueDate, task.dueTime) : null;
+  // '00:00' is the implicit stamp for a plain due date, so treat it the same
+  // as no time at all: the task isn't late until the day has ended.
+  const isAllDay = !task.dueTime || task.dueTime === '00:00';
+  const overdueThreshold = dueDate && isAllDay
+    ? new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate(), 23, 59, 59, 999)
+    : dueDate;
+  const isOverdue = overdueThreshold && overdueThreshold < new Date() && !task.completed;
+  const dueDateText = dueDate ? dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const createdDate = task.createdAt ? new Date(task.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const completedDate = task.completedAt ? new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+  // --- Shared-task attribution (Partner sync groundwork) -----------------
+  // Every task in the shared list gets this treatment automatically - there
+  // is no per-task opt-in, because being in that list IS what makes a task
+  // shared. Holds in All Tasks too, since the real listName is passed there.
+  const isSharedTask = isSharedList(listName);
+  // Tasks that predate sync carry no createdBy. They were all created on this
+  // device, so they are yours - without this fallback they'd read as nobody's
+  // and the delete button would vanish from tasks you created yourself.
+  const sharedCreatedBy = task.createdBy || 'me';
+  // `key` drives styling, `label` is what's shown - kept separate so the
+  // displayed text can change without the CSS class following it. That split
+  // is what lets the partner's name be user-set while .partner keeps styling
+  // it. Falls back to 'Partner' if the field is blanked out.
+  const partnerLabel = partnerDisplayName;
+  const badgeFor = (who) => {
+    if (who === 'me') return { key: 'you', label: 'You' };
+    if (who === 'partner') return { key: 'partner', label: partnerLabel };
+    return null;
+  };
+  // Incomplete: badge shows who it's assigned to (creator, if unassigned).
+  // Complete: badge shows who actually did it - the point of a shared list.
+  const sharedBadge = isSharedTask
+    ? (task.completed
+        ? badgeFor(task.completedBy || sharedCreatedBy)
+        : badgeFor(task.assignedTo || sharedCreatedBy))
+    : null;
+  // Delete is restricted to creator or assignee for shared tasks; unassigned
+  // shared tasks fall back to creator-only. Personal tasks are unaffected.
+  const canDeleteShared = !isSharedTask || sharedCreatedBy === 'me' || task.assignedTo === 'me';
+
+  const isExpanded = expandedTaskId === `${listName}-${task.id}`;
+  const taskRef = React.useRef(null);
+
+  // --- Swipe to complete (touch only) ---------------------------------
+  // The card is moved by writing transform straight to the DOM rather than
+  // through state. Two reasons: a state update per touchmove would re-render
+  // the whole task tree sixty times a second, and because Task is declared
+  // inside the parent, any re-render remounts it - which would drop the
+  // gesture halfway through. Only the final decision touches React.
+  const swipe = React.useRef({ x: 0, y: 0, dx: 0, axis: null, active: false });
+  const SWIPE_TRIGGER = 90;
+
+  const setSwipeVisual = (dx, animate) => {
+    const el = taskRef.current;
+    if (!el) return;
+    el.style.transition = animate ? 'transform 0.2s ease' : 'none';
+    el.style.transform = dx ? `translateX(${dx}px)` : '';
+    // The reveal layer is a pseudo-element of the card, so it would slide
+    // along with it and never be revealed. Publishing the offset lets the
+    // CSS cancel it out, holding the check still while the card moves off it.
+    el.style.setProperty('--swipe-dx', `${dx}px`);
+    // Fades in as you approach the threshold, so the point of no return is
+    // visible before you commit rather than a surprise on release.
+    el.style.setProperty('--swipe-progress', String(Math.min(1, Math.abs(dx) / SWIPE_TRIGGER)));
+  };
+
+  const onTouchStart = (e) => {
+    // Not while expanded: the details editor owns touch there, for selecting
+    // text and ticking checkboxes.
+    if (isExpanded || task.isArchived || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    swipe.current = { x: t.clientX, y: t.clientY, dx: 0, axis: null, active: true };
+  };
+
+  const onTouchMove = (e) => {
+    const g = swipe.current;
+    if (!g.active) return;
+    const t = e.touches[0];
+    const dx = t.clientX - g.x;
+    const dy = t.clientY - g.y;
+
+    // Lock to one axis on the first decisive movement and never re-decide.
+    // Without this a slightly diagonal scroll drags the card sideways, which
+    // makes the whole list feel unstable.
+    if (!g.axis) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      g.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    }
+    if (g.axis !== 'x') return;
+
+    // Only rightward. Leftward is left alone deliberately - it's where a
+    // delete gesture would live, and an accidental destructive swipe is a
+    // much worse failure than a missed one.
+    g.dx = Math.max(0, dx);
+    setSwipeVisual(g.dx, false);
+  };
+
+  const onTouchEnd = () => {
+    const g = swipe.current;
+    if (!g.active) return;
+    const passed = g.axis === 'x' && g.dx >= SWIPE_TRIGGER;
+    g.active = false;
+    if (passed && !task.completed) {
+      // Clear the styles written during the gesture so React's own style prop
+      // takes over cleanly. Direct DOM writes and React's transform were both
+      // targeting the same property, and React won on the next render - which
+      // is what replaced the slide-off with a shrink.
+      const el = taskRef.current;
+      if (el) {
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.removeProperty('--swipe-dx');
+        el.style.removeProperty('--swipe-progress');
+      }
+      setSwipedOut(true);
+    } else {
+      setSwipeVisual(0, true);
+    }
+    if (passed) {
+      // Suppress the click that follows the touch, or the card would also
+      // expand on the way past.
+      swipe.current.justSwiped = true;
+      setTimeout(() => { swipe.current.justSwiped = false; }, 400);
+      // The same path the checkbox takes - so a swipe and a tick produce
+      // exactly the same hold, fade and collapse rather than two different
+      // ideas of what completing a task looks like.
+      requestComplete();
+    }
+    g.dx = 0;
+    g.axis = null;
+  };
+  const detailsRef = React.useRef(null);
+  const hasSetInitialContent = React.useRef(false);
+  const saveTimeoutRef = React.useRef(null);
+  // Set while a drag-to-indent is finishing, so the click that follows it
+  // doesn't also toggle the checkbox that was used as the handle.
+  const indentSuppressRef = React.useRef(false);
+  const clickTimeoutRef = React.useRef(null);
+  // Holds the task in place briefly after checking it, so the checkmark is
+  // visible before the task leaves the list.
+  const [isCompleting, setIsCompleting] = React.useState(false);
+  // Set when completion came from a swipe. The card then leaves by sliding
+  // fully off to the right, uncovering the green panel, instead of shrinking
+  // in place - two different exits fighting each other was what made it look
+  // like the card was being sucked into the checkmark.
+  const [swipedOut, setSwipedOut] = React.useState(false);
+
+  // Whether bold+underline is active where the cursor is. Read from the
+  // document rather than tracked as an intent, because formatting can also
+  // change by moving the caret into or out of styled text - a flag set when
+  // the button was pressed would go stale immediately and show "engaged"
+  // when nothing is.
+  const [formatOn, setFormatOn] = React.useState(false);
+  const [projectDropdownOpen, setProjectDropdownOpen] = React.useState(false);
+
+  // A native select closed itself on an outside tap; a div has to be told.
+  // Without this the list stays open until something else re-renders, and
+  // tapping elsewhere in the card leaves it hanging over the content.
+  React.useEffect(() => {
+    if (!projectDropdownOpen) return;
+    const close = (e) => {
+      if (taskRef.current && taskRef.current.contains(e.target)) {
+        // Inside the card: the dropdown's own handlers stopPropagation, so
+        // reaching here means the tap was somewhere else in the card.
+        setProjectDropdownOpen(false);
+        return;
+      }
+      setProjectDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('touchstart', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('touchstart', close);
+    };
+  }, [projectDropdownOpen]);
+
+  React.useEffect(() => {
+    if (!isExpanded) return;
+    let raf = null;
+    const check = () => {
+      raf = null;
+      try {
+        const el = detailsRef.current;
+        const sel = window.getSelection();
+        if (!el || !sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
+          setFormatOn(false);
+          return;
+        }
+        setFormatOn(document.queryCommandState('bold') || document.queryCommandState('underline'));
+      } catch (err) {
+        setFormatOn(false);
+      }
+    };
+    // selectionchange fires on every caret move, so the work is coalesced to
+    // one check per frame. queryCommandState forces style resolution, which
+    // is not something to run per keystroke.
+    const onSel = () => { if (!raf) raf = requestAnimationFrame(check); };
+    document.addEventListener('selectionchange', onSel);
+    check();
+    return () => {
+      document.removeEventListener('selectionchange', onSel);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [isExpanded]);
+  // Collapsing the row's height while it fades makes the tasks below slide up
+  // instead of snapping. Height must animate from a real px value, not 'auto',
+  // so we measure the row before starting.
+  const [collapsing, setCollapsing] = React.useState(false);
+  const [measuredHeight, setMeasuredHeight] = React.useState(null);
+  const collapseTimeoutRef = React.useRef(null);
+  const completeTimeoutRef = React.useRef(null);
+
+  // Writes the captured HTML onto the clipboard itself, instead of leaving
+  // the browser to serialise the raw selection.
+  //
+  // The browser's version omits the checkbox - it is a contentEditable=false
+  // sibling that sits outside the selection range - so overriding it is what
+  // makes an ordinary paste carry the box. The internal stash stays as the
+  // fallback for platforms that won't hand back text/html on paste, and
+  // because we now also set text/plain ourselves, the two are guaranteed to
+  // match rather than differing by a stray newline.
+  const writeClipboard = (e) => {
+    const captured = stashSelectionHtml();
+    if (!captured || !captured.html || !e.clipboardData) return null;
+    try {
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', captured.text);
+      e.clipboardData.setData('text/html', captured.html);
+      return captured;
+    } catch (err) {
+      // Blocked - let the browser write its own version rather than nothing.
+      return null;
+    }
+  };
+
+  // A field holding only a stray <br> is empty to a reader but not to
+  // :empty, so emptiness is decided here and published as a class. Checkboxes
+  // and images count as content even with no text alongside them.
+  const syncPlaceholder = (area) => {
+    if (!area) return;
+    const hasText = (area.textContent || '').replace(/\u00A0/g, '').trim() !== '';
+    const hasWidgets = !!area.querySelector('input, img, li');
+    area.classList.toggle('is-empty', !hasText && !hasWidgets);
+  };
+
+  // Serialises whatever is selected, so a copy out of this editor keeps its
+  // structure even when the clipboard will only carry plain text.
+  const stashSelectionHtml = () => {
+    try {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+      const range = sel.getRangeAt(0);
+      const area = detailsRef.current;
+
+      // The whole line, not just the text you dragged across.
+      //
+      // Selecting a checkbox line's text produces a range over the <span>
+      // alone - the checkbox is a contentEditable="false" sibling that
+      // browsers leave outside the selection, so cloning the range gave back
+      // the words with no box. Expanding to the enclosing block is what
+      // actually captures the structure.
+      const blockOf = (node) => {
+        const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        if (!el || !el.closest || !area || !area.contains(el)) return null;
+        return el.closest('.checkbox-line, li');
+      };
+      const startBlock = blockOf(range.startContainer);
+      const endBlock = blockOf(range.endContainer);
+
+      // Only expand when the selection is really about whole lines: either it
+      // crosses more than one, or it covers all of the text in the one it's
+      // in. Selecting a single word inside a line still copies just that word
+      // rather than silently dragging a checkbox along with it.
+      const selected = sel.toString().replace(/\u00A0/g, ' ').trim();
+      const wholeLine = startBlock &&
+        selected === (startBlock.textContent || '').replace(/\u00A0/g, ' ').trim();
+      const spansBlocks = startBlock && endBlock && startBlock !== endBlock;
+
+      let cloneRange = range;
+      if (startBlock && (wholeLine || spansBlocks)) {
+        cloneRange = document.createRange();
+        cloneRange.setStartBefore(startBlock);
+        cloneRange.setEndAfter(endBlock || startBlock);
+      }
+
+      const holder = document.createElement('div');
+      holder.appendChild(cloneRange.cloneContents());
+      internalClipboard = { text: sel.toString(), html: holder.innerHTML };
+      // The range is handed back so a cut can remove exactly what was taken.
+      // It isn't always the user's literal selection - selecting a checkbox
+      // line's text captures the whole line, box included - so deleting the
+      // raw selection instead would leave an orphaned empty checkbox behind.
+      return { ...internalClipboard, range: cloneRange };
+    } catch (err) {
+      internalClipboard = { text: '', html: '' };
+      return null;
+    }
+  };
+
+  // The one way a task gets completed, whichever gesture asked for it.
+  // Completing pauses: the tick stays lit while the card fades, then the card
+  // collapses its own height so everything below slides up into the gap
+  // rather than jumping. Un-completing is immediate - there's nothing to
+  // celebrate and no reason to make it wait.
+  const requestComplete = () => {
+    if (task.isArchived) return;
+    if (task.completed) {
+      toggleTask(listName, task.id);
+      return;
+    }
+    if (isCompleting) return; // already on its way out
+    if (!settings.completionDelay) {
+      toggleTask(listName, task.id);
+      return;
+    }
+    // Measured before anything changes, because once the card starts fading
+    // its height is no longer the height the collapse needs to animate from.
+    if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
+    setIsCompleting(true);
+    collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), COMPLETE_HOLD_MS);
+    completeTimeoutRef.current = setTimeout(() => {
+      toggleTask(listName, task.id);
+    }, COMPLETE_TOTAL_MS);
+  };
+
+  // True while a native picker (date/select) is open. iOS presents these as a
+  // sheet and moves focus off the input, so focus can't be used to detect it.
+  const pickerActiveRef = React.useRef(false);
+  const pickerResetRef = React.useRef(null);
+  // What we last wrote to storage ourselves. The load effect below compares
+  // against this so it can tell its own echo from a genuine outside change -
+  // without that, saving while the task is open re-runs the effect and
+  // re-writes innerHTML, which throws away the container's scroll position.
+  const lastSavedHtmlRef = React.useRef(null);
+
+  // The single path from live editor DOM to saved value. A checkbox's ticked
+  // state lives on the DOM property, not in the markup, so it has to be
+  // written back to attributes before innerHTML will include it - that's why
+  // every save site did this dance. Now they all call this instead.
+  const saveDetails = (el, { force = false } = {}) => {
+    const area = el || detailsRef.current;
+    if (!area) return;
+    area.querySelectorAll('.task-checkbox').forEach(cb => {
+      if (cb.checked) cb.setAttribute('checked', 'checked');
+      else cb.removeAttribute('checked');
+    });
+    const content = area.innerHTML;
+    // Sanitize FIRST, then compare. task.details is always the sanitized
+    // form, while area.innerHTML is the live DOM - and the editor's own
+    // builders write things the sanitizer strips (inline style, the span's
+    // contenteditable). Comparing raw DOM against sanitized storage could
+    // therefore never match, so this fired a save on every blur and every
+    // tick whether anything had changed or not - and each of those saves
+    // re-rendered, remounted the subtree and reloaded the editor. Comparing
+    // like with like makes "unchanged" actually mean unchanged.
+    const cleaned = sanitizeRichText(content);
+    if (!force && cleaned === task.details) return;
+    lastSavedHtmlRef.current = cleaned;
+    updateTaskDetails(listName, task.id, content);
+  };
+
+  React.useEffect(() => {
+    return () => {
+      if (completeTimeoutRef.current) clearTimeout(completeTimeoutRef.current);
+      if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
+      if (pickerResetRef.current) clearTimeout(pickerResetRef.current);
+    };
+  }, []);
+
+  // Sync parent checkboxes based on their indented children.
+  // A parent is a line whose immediately-following lines are more indented.
+  // Its direct children are the more-indented lines up until the indent
+  // returns to the parent's level or shallower. This does NOT assume a fixed
+  // 20px step - it works with any indent values.
+  // Recompute list markers across the editor: which lines are parents
+  // (have indented children below them) and which top-level lines end a
+  // nested group. Runs on every content change so markers never go stale.
+  const refreshListMarkers = (area) => {
+    try {
+      if (!area) return;
+      const lines = Array.from(area.querySelectorAll('.checkbox-line'));
+      const getIndent = (l) => parseInt(l.style.marginLeft || '0') || 0;
+      // Clear existing markers first (both class and inline styles)
+      lines.forEach(l => {
+        l.classList.remove('has-children');
+        l.classList.remove('ends-list');
+        l.style.borderBottom = '';
+        l.style.borderTop = '';
+        // Only clear the spacing we control for markers
+        if (l.style.paddingBottom === '6px') l.style.paddingBottom = '';
+        if (l.style.paddingTop === '8px') l.style.paddingTop = '';
+      });
+      for (let i = 0; i < lines.length; i++) {
+        const indent = getIndent(lines[i]);
+        const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
+        const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
+        // Parent: a line immediately followed by a more-indented line, with text
+        if (nextIndent > indent) {
+          const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
+          if (txt) {
+            // Class only. These used to also set fontWeight, borderBottom and
+            // paddingBottom inline, with a comment claiming that was what made
+            // the styling survive a save - but the sanitizer strips the style
+            // attribute, so those three lines never once did anything. The
+            // .has-children CSS is what actually renders it.
+            lines[i].classList.add('has-children');
+          }
+        } else {
+          // Not a parent anymore - remove any leftover bold from inline styles
+          lines[i].style.fontWeight = '';
+          const sp = lines[i].querySelector('span');
+          if (sp) sp.style.fontWeight = '';
+        }
+        // End-of-list boundary: a top-level line that comes right after a
+        // more-indented (child) line - i.e. indentation stepped back to 0.
+        if (indent === 0 && prevIndent > 0) {
+          lines[i].classList.add('ends-list');
+          lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
+          lines[i].style.paddingTop = '8px';
+        }
+      }
+    } catch (err) {
+      console.error('refreshListMarkers error:', err);
+    }
+  };
+
+  const syncParentCheckboxes = (detailsArea) => {
+    try {
+      if (!detailsArea) return;
+      const lines = Array.from(detailsArea.querySelectorAll('.checkbox-line'));
+      if (lines.length < 2) return;
+      
+      const getIndent = (line) => parseInt(line.style.marginLeft || '0') || 0;
+      const items = lines.map((line) => ({
+        line,
+        indent: getIndent(line),
+        checkbox: line.querySelector('.task-checkbox')
+      }));
+      
+      // Determine, for each item, the set of DIRECT children.
+      // Direct children = the immediately-following run of lines that are
+      // more indented, where a "direct" child is at the shallowest indent
+      // within that run (deeper ones are grandchildren).
+      // Process parents from those deepest in the tree upward so nested
+      // chains resolve. We do multiple passes until stable.
+      let changed = true;
+      let guard = 0;
+      while (changed && guard < 20) {
+        changed = false;
+        guard++;
+        for (let i = 0; i < items.length; i++) {
+          const parent = items[i];
+          if (!parent.checkbox) continue;
+          
+          // Gather the run of following lines more indented than this one
+          const run = [];
+          for (let j = i + 1; j < items.length; j++) {
+            if (items[j].indent <= parent.indent) break;
+            run.push(items[j]);
+          }
+          if (run.length === 0) continue;
+          
+          // Direct children = lines in the run at the minimum indent of the run
+          const minChildIndent = Math.min(...run.map(r => r.indent));
+          const directChildren = run.filter(r => r.indent === minChildIndent && r.checkbox);
+          if (directChildren.length === 0) continue;
+          
+          const allChecked = directChildren.every(r => r.checkbox.checked);
+          if (parent.checkbox.checked !== allChecked) {
+            parent.checkbox.checked = allChecked;
+            changed = true;
+          }
+          if (allChecked) {
+            parent.checkbox.setAttribute('checked', 'checked');
+          } else {
+            parent.checkbox.removeAttribute('checked');
+          }
+        }
+      }
+      
+      // Persist all checkbox states as attributes for save/reload
+      items.forEach(it => {
+        if (!it.checkbox) return;
+        if (it.checkbox.checked) {
+          it.checkbox.setAttribute('checked', 'checked');
+        } else {
+          it.checkbox.removeAttribute('checked');
+        }
+      });
+    } catch (err) {
+      console.error('syncParentCheckboxes error:', err);
+    }
+  };
+
+  // Set initial content only when task first expands.
+  //
+  // Deliberately useEffect, NOT useLayoutEffect. Switching it to a layout
+  // effect to hide the remount flash crashed the app: this effect's cleanup
+  // saves, and a layout effect runs synchronously, so save -> task.details
+  // changes -> effect re-runs -> cleanup saves again, with no paint in
+  // between to break the cycle. React kills it as a runaway update.
+  React.useEffect(() => {
+    // Captured here, while the element is still mounted. React sets refs to
+    // null during unmount, and passive effect cleanups run AFTER that - so a
+    // cleanup reading detailsRef.current on collapse found null and saved
+    // nothing. Everything typed since the last blur was lost, and only on the
+    // collapse path, which is why clicking away without collapsing worked.
+    // A detached node still holds its innerHTML, so this stays readable.
+    const area = detailsRef.current;
+
+    if (isExpanded && area) {
+      // Only set content once when first expanded
+      if (!hasSetInitialContent.current) {
+        // The echo test has to include the DOM, not just the refs.
+        //
+        // lastSavedHtmlRef tracks what we last wrote to storage, and it used to
+        // be enough on its own: Task remounted constantly, so the ref was
+        // rebuilt empty every time and could never match a real saved value.
+        // Hoisting Task made these refs persist for the life of the page - so
+        // after collapse and re-expand, task.details and lastSavedHtmlRef still
+        // matched each other while the editor was a brand new, EMPTY div. That
+        // took the "already showing it" branch and skipped the load, leaving the
+        // editor blank - and the next collapse then saved that blank over the
+        // real content.
+        //
+        // Requiring the DOM to actually hold the content makes the guard mean
+        // what it says: skip the rewrite only when there is genuinely nothing
+        // to change.
+        const domNow = sanitizeRichText(area.innerHTML || '');
+        if (task.details === lastSavedHtmlRef.current && domNow === (task.details || '')) {
+          // A true echo of our own save: the DOM already shows exactly this, so
+          // rewriting it would only cost the caret and scroll position.
+          hasSetInitialContent.current = true;
+        } else {
+          // Sanitized here too, not just on write. A task's details can arrive
+          // from a restored backup - and later from a partner's device - so the
+          // stored value can't be assumed to have gone through this app's own
+          // editor. This assignment is into a live element, so anything unsafe
+          // would execute immediately.
+          area.innerHTML = sanitizeRichText(task.details || '');
+          hasSetInitialContent.current = true;
+          // After loading, reflect any already-complete child sets on their parents
+          setTimeout(() => syncParentCheckboxes(area), 0);
+          setTimeout(() => refreshListMarkers(area), 0);
+          syncPlaceholder(area);
+        }
+      }
+    }
+    
+    // Cleanup: save details when the task is about to collapse.
+    //
+    // Gated only on the node existing. It used to also require isExpanded and
+    // hasSetInitialContent, and those could only ever *prevent* a save - never
+    // enable one. That was survivable while Task remounted on every parent
+    // render, because the constant unmount/remount cycle was saving the editor
+    // by accident many times a second. With Task hoisted it no longer remounts,
+    // so this cleanup became the only reliable save on collapse and the extra
+    // conditions turned into a way to lose work.
+    //
+    // `area` is non-null only while the editor is mounted, and saveDetails
+    // no-ops when nothing changed, so an unnecessary call costs nothing.
+    return () => {
+      if (area) saveDetails(area);
+      hasSetInitialContent.current = false;
+    };
+  }, [isExpanded, listName, task.id, task.details]);
+
+  React.useEffect(() => {
+    if (!isExpanded) return;
+
+    const handleClickOutside = (e) => {
+      if (!taskRef.current) return;
+
+      // A native picker is open. Its sheet/overlay lives outside this DOM
+      // subtree, so any interaction with it reads as an outside click and
+      // would collapse the task - destroying the input the picker belongs to.
+      if (pickerActiveRef.current) return;
+
+      // Fallback for desktop, where focus does stay on the input.
+      const active = document.activeElement;
+      if (active && taskRef.current.contains(active)) {
+        const tag = active.tagName;
+        const type = (active.getAttribute && active.getAttribute('type')) || '';
+        if (tag === 'SELECT' || tag === 'INPUT' && ['date', 'time', 'month', 'week'].includes(type)) {
+          return;
+        }
+      }
+
+      if (!taskRef.current.contains(e.target)) {
+        // Save details before collapsing when clicking outside
+        const detailsArea = taskRef.current.querySelector('.details-richtext');
+        if (detailsArea) {
+          const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
+          allCheckboxes.forEach(cb => {
+            if (cb.checked) {
+              cb.setAttribute('checked', 'checked');
+            } else {
+              cb.removeAttribute('checked');
+            }
+          });
+          const content = detailsArea.innerHTML;
+          updateTaskDetails(listName, task.id, content);
+        }
+        setExpandedTaskId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    // touchend as well. On a phone the collapse is driven by touchend, and the
+    // emulated mousedown only arrives afterwards - by which point the editor
+    // has already been unmounted and there is nothing left to read.
+    document.addEventListener('touchend', handleClickOutside);
+    
+    // Attach onChange handlers to existing checkboxes
+    const detailsArea = taskRef.current?.querySelector('.details-richtext');
+    
+    // Delegated listener - use BOTH click and change for reliability inside
+    // contentEditable (change doesn't always fire for checkboxes there).
+    // After a click, the checked state is updated synchronously, but we defer
+    // with a microtask/timeout to be safe, then sync parents.
+    const runSync = () => {
+      syncParentCheckboxes(detailsArea);
+    };
+    const handleDelegatedClick = (evt) => {
+      // Open pasted links in a new tab. Inside contentEditable a click would
+      // otherwise just place the cursor instead of following the link.
+      const link = evt.target && evt.target.closest && evt.target.closest('a.task-link');
+      if (link) {
+        evt.preventDefault();
+        const href = link.getAttribute('href');
+        if (href) window.open(href, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
+        if (indentSuppressRef.current) {
+          // The box was a drag handle, not a target. Undo the toggle the
+          // browser already applied before this handler saw the event.
+          evt.target.checked = !evt.target.checked;
+          return;
+        }
+        // Ticking a box is a complete action on its own. Handled here rather
+        // than per-checkbox so boxes created later in the session behave
+        // identically - a per-element handler only ever reached the ones
+        // present at load.
+        //
+        // No blur any more: focus was already prevented from entering the
+        // editor at mousedown, so there is nothing to take back. Blurring
+        // here as well was actively harmful - if you were mid-sentence
+        // elsewhere in the notes and ticked a box, it threw your cursor away.
+        // Deferred a tick so the browser has finished toggling `checked`.
+        setTimeout(() => {
+          runSync();
+          saveDetails(detailsArea);
+        }, 0);
+      }
+    };
+    const handleDelegatedChange = (evt) => {
+      if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
+        runSync();
+      }
+    };
+    // Declared in the effect's own scope, not inside the `if` below.
+    // These are referenced by the cleanup, which lives outside that block -
+    // declaring them inside it meant every cleanup threw a ReferenceError,
+    // so collapsing, rotating, or anything that re-ran the effect crashed.
+    // --- Indent by dragging a checkbox sideways ------------------------
+    // iOS has no Tab key, so the keyboard route to nesting doesn't exist on
+    // a phone. This uses the gesture that's free here: swipe-to-complete is
+    // disabled while a task is expanded, so horizontal drags inside the
+    // editor are unclaimed.
+    //
+    // The drag must START on the checkbox. That element is
+    // contentEditable="false", so dragging from it can't begin a text
+    // selection - starting anywhere in the text would fight iOS's own
+    // selection handles.
+    const indentDrag = { x: 0, y: 0, line: null, moved: false, axis: null, kind: null };
+    const INDENT_STEP = 20;
+    const INDENT_TRIGGER = 22;
+
+    const MARKER_ZONE = 30;
+
+    const onIndentStart = (evt) => {
+      indentDrag.line = null;
+      if (evt.touches.length !== 1) return;
+      const t = evt.touches[0];
+      const el = evt.target;
+      if (!el || !el.closest) return;
+
+      const box = el.closest('.task-checkbox');
+      const checkboxLine = box && box.closest('.checkbox-line');
+      if (checkboxLine) {
+        indentDrag.kind = 'checkbox';
+        indentDrag.line = checkboxLine;
+      } else {
+        // A bullet has no element to grab - its marker is a ::marker pseudo,
+        // which can't receive touches. The space the marker occupies works
+        // instead: a drag starting in the line's left inset is the handle,
+        // and starting there also keeps the gesture out of the text, where
+        // it would fight iOS's selection handles exactly as it would on a
+        // checkbox line.
+        const li = el.closest('li');
+        if (!li || !detailsArea.contains(li)) return;
+        const rect = li.getBoundingClientRect();
+        if (t.clientX - rect.left > MARKER_ZONE) return;
+        indentDrag.kind = 'bullet';
+        indentDrag.line = li;
+      }
+
+      indentDrag.x = t.clientX;
+      indentDrag.y = t.clientY;
+      indentDrag.moved = false;
+      indentDrag.axis = null;
+    };
+
+    const onIndentMove = (evt) => {
+      if (!indentDrag.line) return;
+      const t = evt.touches[0];
+      const dx = t.clientX - indentDrag.x;
+      const dy = t.clientY - indentDrag.y;
+
+      // Decide the axis once, on the first real movement, and hold it.
+      // Re-deciding every frame is what made this feel unreliable: a drag
+      // that wandered a few pixels vertically mid-gesture would abandon
+      // itself halfway through.
+      if (indentDrag.axis === null) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        indentDrag.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      }
+      if (indentDrag.axis === 'y') { indentDrag.line = null; return; }
+
+      // Claimed from here on, every frame - not only when a step is crossed.
+      // Previously the page was free to pan during the 28px before the first
+      // step, which is the drift you could feel before anything happened.
+      evt.preventDefault();
+
+      if (Math.abs(dx) < INDENT_TRIGGER) return;
+
+      if (indentDrag.kind === 'bullet') {
+        // Nesting, not a margin: a bullet's depth is structural, and faking
+        // it with an indent would leave the markers all at the same level.
+        // execCommand needs the caret inside the item it is to act on.
+        const sel = window.getSelection();
+        const r = document.createRange();
+        r.selectNodeContents(indentDrag.line);
+        r.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(r);
+        document.execCommand(dx > 0 ? 'indent' : 'outdent', false, null);
+        indentDrag.moved = true;
+      } else {
+        const current = parseInt(indentDrag.line.style.marginLeft || '0') || 0;
+        const next = dx > 0
+          ? current + INDENT_STEP
+          : Math.max(0, current - INDENT_STEP);
+        if (next !== current) {
+          indentDrag.line.style.marginLeft = next + 'px';
+          refreshListMarkers(detailsArea);
+        }
+      }
+      // Re-anchor rather than end the gesture, so one continuous drag can
+      // step through several levels the way repeated Tabs would.
+      indentDrag.x = t.clientX;
+      indentDrag.moved = true;
+      evt.preventDefault();
+    };
+
+    const onIndentEnd = () => {
+      if (indentDrag.moved) {
+        // The tap that ends this drag would otherwise tick the box - the
+        // one thing the user certainly didn't mean by dragging it.
+        indentSuppressRef.current = true;
+        setTimeout(() => { indentSuppressRef.current = false; }, 400);
+        saveDetails(detailsArea);
+      }
+      indentDrag.line = null;
+      indentDrag.moved = false;
+      indentDrag.axis = null;
+      indentDrag.kind = null;
+    };
+
+    // Focus moves on mousedown, not on click - so this is the only moment
+    // where it can be stopped from happening at all. Preventing the default
+    // here keeps the caret and the keyboard out of the editor entirely when
+    // you tap a checkbox; blurring afterwards, as it did before, meant the
+    // keyboard could still flash open and closed on the way through.
+    //
+    // The toggle is unaffected: a checkbox flips on click, which is a
+    // separate default action from the focus that happens on mousedown.
+    // On iOS the emulated mousedown fires after touchend, so this covers
+    // touch as well without needing a non-passive touch listener.
+    const onCheckboxMouseDown = (evt) => {
+      const t = evt.target;
+      if (!t || !t.closest) return;
+
+      // Tapping the empty space below the content is the way in to typing.
+      // The target being the editor itself - rather than any line inside it -
+      // is exactly what "below everything" means.
+      //
+      // The caret is moved to the very end rather than left where the browser
+      // put it. Clicking blank space below a checklist otherwise drops the
+      // cursor at whatever position happens to be nearest, which can be the
+      // middle of an earlier line - so the gesture has to be explicit about
+      // meaning "carry on from the end".
+      if (t === detailsArea) {
+        setTimeout(() => {
+          try {
+            const last = detailsArea.lastElementChild;
+            const isStructured = last && (
+              (last.classList && last.classList.contains('checkbox-line')) ||
+              last.tagName === 'UL' || last.tagName === 'OL'
+            );
+            const isBlankLine = last && last.tagName === 'DIV' &&
+              !isStructured &&
+              (last.textContent || '').replace(/\u00A0/g, '').trim() === '';
+
+            // Collapsing to the end of the content would land the caret
+            // inside the last checkbox line, so typing continued that item
+            // instead of starting something new. A fresh plain line below the
+            // structure is what "carry on underneath" actually means.
+            let target = null;
+            if (isBlankLine) {
+              // One already exists from a previous tap - reuse it rather than
+              // stacking up empty lines every time the space is touched.
+              target = last;
+            } else if (isStructured) {
+              target = document.createElement('div');
+              target.innerHTML = '<br>';
+              detailsArea.appendChild(target);
+            }
+
+            const r = document.createRange();
+            if (target) {
+              r.setStart(target, 0);
+              r.collapse(true);
+            } else {
+              r.selectNodeContents(detailsArea);
+              r.collapse(false);
+            }
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+          } catch (err) {
+            // Focus still landed; only the caret position is a nicety.
+          }
+        }, 0);
+        return;
+      }
+
+      // The checkbox itself never focuses anything.
+      if (t.closest('.task-checkbox')) { evt.preventDefault(); return; }
+
+      // Touch only, from here down. The restriction exists because a finger
+      // aiming for a checkbox often lands on the words beside it, and every
+      // miss used to open the keyboard and shift the layout mid-tap. A mouse
+      // doesn't miss, so on desktop clicking the text means exactly what it
+      // says and should place a cursor.
+      if (!IS_TOUCH_DEVICE) return;
+
+      const line = t.closest('.checkbox-line');
+      if (!line) return;   // plain text, or the empty space below - editable
+
+      // The deliberate way in on touch: tap past the end of the line's text.
+      // That is an unambiguous "put the cursor here" and it can't be hit by
+      // aiming for the box. Clicking below the content works the same way,
+      // since that isn't inside a checkbox line at all.
+      const label = line.querySelector('span') || line;
+      const rect = label.getBoundingClientRect();
+      if (evt.clientX <= rect.right) evt.preventDefault();
+    };
+
+    if (detailsArea) {
+      detailsArea.addEventListener('mousedown', onCheckboxMouseDown);
+      detailsArea.addEventListener('touchstart', onIndentStart, { passive: true });
+      detailsArea.addEventListener('touchmove', onIndentMove, { passive: false });
+      detailsArea.addEventListener('touchend', onIndentEnd);
+      detailsArea.addEventListener('touchcancel', onIndentEnd);
+
+      detailsArea.addEventListener('change', handleDelegatedChange);
+      detailsArea.addEventListener('click', handleDelegatedClick);
+      
+      const checkboxes = detailsArea.querySelectorAll('.task-checkbox');
+      checkboxes.forEach(checkbox => {
+        // Clicking is handled by the delegated listener above, not here.
+        // What this does need is to make the box a non-editable island: the
+        // caret could otherwise be placed to its left - inside the line but
+        // before the box - where typing put text ahead of the checkbox.
+        // Set on the live DOM rather than in the markup because the sanitizer
+        // strips contenteditable, and it doesn't need to persist since this
+        // runs on every load.
+        checkbox.contentEditable = 'false';
+        checkbox.onclick = null;
+        checkbox.onchange = null;
+      });
+
+      // Links get the same treatment. The paste handler marks them
+      // non-editable so the "Link" label can't be typed into, but the
+      // sanitizer strips contenteditable - so it has to be reapplied
+      // whenever stored content is loaded back in.
+      detailsArea.querySelectorAll('a.task-link').forEach(a => {
+        a.contentEditable = 'false';
+      });
+    }
+    
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchend', handleClickOutside);
+      if (detailsArea) {
+        detailsArea.removeEventListener('change', handleDelegatedChange);
+        detailsArea.removeEventListener('click', handleDelegatedClick);
+        detailsArea.removeEventListener('mousedown', onCheckboxMouseDown);
+        detailsArea.removeEventListener('touchstart', onIndentStart);
+        detailsArea.removeEventListener('touchmove', onIndentMove);
+        detailsArea.removeEventListener('touchend', onIndentEnd);
+        detailsArea.removeEventListener('touchcancel', onIndentEnd);
+      }
+    };
+  }, [isExpanded, listName, task.id]);
+
+  return (
+    <div 
+      ref={taskRef}
+      className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${collapsing ? 'collapsing' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
+      // Not while expanded: the details editor needs normal text selection,
+      // and a draggable ancestor breaks it.
+      draggable={!isExpanded && !task.isArchived && !isCompleting}
+      onDragStart={(e) => {
+        draggingTaskRef.current = { id: task.id, listName };
+        e.dataTransfer.effectAllowed = 'move';
+        // Firefox refuses to start a drag without data set.
+        try { e.dataTransfer.setData('text/plain', String(task.id)); } catch (err) {}
+        if (taskRef.current) taskRef.current.style.opacity = '0.4';
+      }}
+      onDragEnd={() => {
+        draggingTaskRef.current = null;
+        if (taskRef.current) {
+          taskRef.current.style.opacity = '';
+          taskRef.current.style.boxShadow = '';
+        }
+      }}
+      onDragOver={(e) => {
+        const g = draggingTaskRef.current;
+        if (!g || g.listName !== listName || g.id === task.id) return;
+        if (!canReorderTogether(findTask(allLists[listName], g.id), task)) return;
+        e.preventDefault();
+        // Highlight written straight to the node. Doing this through state
+        // would re-render, and because Task is declared inside the parent
+        // that remounts the card and cancels the drag mid-gesture.
+        if (taskRef.current) {
+          taskRef.current.style.boxShadow = 'inset 0 3px 0 0 var(--accent)';
+        }
+      }}
+      onDragLeave={() => {
+        if (taskRef.current) taskRef.current.style.boxShadow = '';
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const g = draggingTaskRef.current;
+        if (taskRef.current) taskRef.current.style.boxShadow = '';
+        if (g && g.listName === listName) reorderTask(listName, g.id, task.id);
+        draggingTaskRef.current = null;
+      }}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+      onClick={() => {
+        if (task.isArchived) return;
+        // A completed swipe is followed by a click; ignore it so the card
+        // doesn't expand as a side effect of being completed.
+        if (swipe.current.justSwiped) return;
+        // This tap already did a job - it closed a different task. Checked
+        // and cleared here so the tap after it behaves normally.
+        if (collapseGuardRef.current) {
+          collapseGuardRef.current = false;
+          return;
+        }
+        
+        // Save details before collapsing
+        if (isExpanded && detailsRef.current) {
+          const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
+          allCheckboxes.forEach(cb => {
+            if (cb.checked) {
+              cb.setAttribute('checked', 'checked');
+            } else {
+              cb.removeAttribute('checked');
+            }
+          });
+          const content = detailsRef.current.innerHTML;
+          // Always save when collapsing, even if content looks the same
+          // This ensures text is persisted
+          updateTaskDetails(listName, task.id, content);
+        }
+        
+        setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
+      }}
+      style={{
+        pointerEvents: task.isArchived ? 'none' : 'auto',
+        // Swiped out: the card stays opaque and slides clear, so what you're
+        // left looking at is the full green panel and its checkmark. Ticked:
+        // it fades in place as before.
+        ...(swipedOut ? { '--swipe-progress': 1, '--swipe-dx': '110%' } : {}),
+        opacity: task.isArchived ? 0.7 : (isCompleting && !swipedOut ? 0 : 1),
+        transform: swipedOut
+          ? 'translateX(110%)'
+          : (isCompleting ? 'translateX(14px) scale(0.97)' : 'none'),
+        // Height collapse: pinned to the measured value first, then driven to 0
+        // once `collapsing` flips, which pulls the rows below up smoothly.
+        ...(isCompleting && measuredHeight != null ? {
+          maxHeight: collapsing ? '0px' : `${measuredHeight}px`,
+          marginBottom: collapsing ? '0px' : undefined,
+          paddingTop: collapsing ? '0px' : undefined,
+          paddingBottom: collapsing ? '0px' : undefined,
+          // Not while swiped out. The green panel is a pseudo-element that
+          // counter-translates to stay put while the card slides away, which
+          // puts it outside the card's own box - overflow:hidden would clip
+          // away the very thing the gesture is meant to reveal. The card is
+          // off-screen by then, so there is nothing left to spill.
+          ...(swipedOut ? {} : { overflow: 'hidden' })
+        } : {}),
+        // Opacity/transform wait for the hold; the collapse is already
+        // delayed by its own timer, so it gets no extra delay here.
+        // Built from the same constants as the timers above. Opacity and
+        // transform wait out the hold; the collapse needs no delay here
+        // because its own timer already fires at that moment.
+        transition: isCompleting
+          ? (swipedOut ? [
+              // The slide-off happens immediately - it's the tail of the
+              // gesture, not something to wait for. Only the collapse waits
+              // out the hold, and its own timer already handles that.
+              'transform 260ms ease',
+              `max-height ${COMPLETE_ANIM_MS}ms ease`,
+              `margin ${COMPLETE_ANIM_MS}ms ease`,
+              `padding ${COMPLETE_ANIM_MS}ms ease`
+            ].join(', ') : [
+              `opacity ${COMPLETE_ANIM_MS}ms ease ${COMPLETE_HOLD_MS}ms`,
+              `transform ${COMPLETE_ANIM_MS}ms ease ${COMPLETE_HOLD_MS}ms`,
+              `max-height ${COMPLETE_ANIM_MS}ms ease`,
+              `margin ${COMPLETE_ANIM_MS}ms ease`,
+              `padding ${COMPLETE_ANIM_MS}ms ease`
+            ].join(', '))
+          : 'none'
+      }}
+    >
+      {task.priority && task.priority !== 'low' && (
+        <div className={`priority-indicator ${task.priority}`}></div>
+      )}
+      
+      <div className="task-main">
+        <div className="checkbox-wrapper">
+          <input
+            type="checkbox"
+            checked={task.completed || isCompleting}
+            onChange={(e) => {
+              e.stopPropagation();
+              requestComplete();
+            }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={task.isArchived}
+          />
+        </div>
+        <div className="task-content">
+          {isExpanded && editingTaskName === `${listName}-${task.id}` ? (
+            <input
+              type="text"
+              value={task.text}
+              onChange={(e) => {
+                e.stopPropagation();
+                renameTask(listName, task.id, e.target.value);
+              }}
+              onBlur={() => setEditingTaskName(null)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  setEditingTaskName(null);
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                background: 'rgba(var(--surface-rgb), 0.8)',
+                border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                borderRadius: '8px',
+                color: 'var(--text)',
+                fontSize: '1rem',
+                fontFamily: 'var(--font-ui)',
+                fontWeight: '600'
+              }}
+            />
+          ) : (
+            <div 
+              className="task-text"
+              onClick={(e) => {
+                e.stopPropagation();
+                // Renaming needs the click to land on the words. Clicking the
+                // space beside them is a click on the row, and falls through
+                // to the same expand/collapse everything else does.
+                const onLabel = e.target && e.target.closest
+                  && e.target.closest('.task-text-label');
+                if (isExpanded && !task.isArchived && onLabel) {
+                  setEditingTaskName(`${listName}-${task.id}`);
+                } else {
+                  // If collapsed, single click expands
+                  // Delay single-click action to allow double-click to cancel it
+                  clickTimeoutRef.current = setTimeout(() => {
+                    // Save details before toggling if expanded
+                    if (isExpanded && detailsRef.current) {
+                      const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
+                      allCheckboxes.forEach(cb => {
+                        if (cb.checked) {
+                          cb.setAttribute('checked', 'checked');
+                        } else {
+                          cb.removeAttribute('checked');
+                        }
+                      });
+                      const content = detailsRef.current.innerHTML;
+                      // Always save when collapsing, even if content looks the same
+                      // This ensures text is persisted
+                      updateTaskDetails(listName, task.id, content);
+                    }
+                    
+                    // Single click toggles task expanded/collapsed
+                    if (!task.isArchived) {
+                      setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
+                    }
+                  }, 250); // 250ms delay
+                }
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                // Cancel the pending single-click
+                if (clickTimeoutRef.current) {
+                  clearTimeout(clickTimeoutRef.current);
+                }
+                // Double-click enters edit mode (works whether expanded or not)
+                if (!task.isArchived) {
+                  if (!isExpanded) {
+                    setExpandedTaskId(`${listName}-${task.id}`);
+                  }
+                  setEditingTaskName(`${listName}-${task.id}`);
+                }
+              }}
+              style={{cursor: isExpanded ? 'text' : 'pointer'}}
+            >
+              {/* Inline span, so its box ends where the text ends. The div
+                  around it is a flex child that fills the row, so hanging the
+                  rename off the div meant the whole empty area beside a short
+                  title opened the editor. */}
+              <span className="task-text-label">{task.text}</span>
+            </div>
+          )}
+
+          {/* Only rendered when there's something to show. As an
+              unconditional div it still contributed its margin and line
+              box, padding out every task that had no due date. */}
+          {dueDate && !task.completed && (
+            <div className="task-meta">
+              <span className={`task-due-date ${isOverdue ? 'overdue' : ''}`}><CalendarIcon /> {dueDateText}</span>
+            </div>
+          )}
+        </div>
+        {/* A direct child of .task-main rather than of .task-content, so it
+            isn't stacked under the title. align-self:flex-start (in the CSS)
+            pins it to the task's first line; margin-left:auto pushes it to
+            the right edge. */}
+        {sharedBadge && (
+          <span
+            className={`shared-badge ${sharedBadge.key}`}
+            title={task.completed ? `Completed by ${sharedBadge.label}` : `Assigned to ${sharedBadge.label}`}
+          >
+            {sharedBadge.label}
+          </span>
+        )}
+        {task.priority === 'high' && (
+          <span className="pinned-flame-right">
+            <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" style={{width: '20px', height: '20px', display: 'inline-block'}}>
+              <path d="M 32 8 Q 26 14 22 24 Q 18 35 20 46 Q 23 54 32 58 Q 41 54 44 46 Q 46 35 42 24 Q 38 14 32 8 Z" fill="#FF6B35" opacity="0.8"/>
+              <path d="M 32 8 Q 36 14 40 24 Q 44 35 42 46 Q 39 52 32 56 Q 25 52 22 46 Q 20 35 24 24 Q 28 14 32 8 Z" fill="#FF8C42" opacity="0.9"/>
+              <path d="M 32 12 Q 28 18 26 28 Q 24 38 27 46 Q 29 50 32 52 Q 35 50 37 46 Q 40 38 38 28 Q 36 18 32 12 Z" fill="#FFD93D"/>
+              <path d="M 32 18 Q 30 24 29 32 Q 28 40 30 46 Q 31 48 32 49 Q 33 48 34 46 Q 36 40 35 32 Q 34 24 32 18 Z" fill="#FFF4CC"/>
+            </svg>
+          </span>
+        )}
+      </div>
+
+      {isExpanded && (
+        <div className="task-details-section">
+          {/* First field in the expanded view: on a shared list, who owns
+              this task is the thing you want to see before the notes. */}
+          {isSharedTask && (
+            <div className="assign-field">
+              <label className="details-label" style={{ margin: 0 }}>Assigned:</label>
+              <button
+                type="button"
+                className={`assign-pill ${task.assignedTo || 'unassigned'}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  cycleAssignment(listName, task.id);
+                }}
+                title="Tap to reassign"
+              >
+                {task.assignedTo === 'me' ? 'You'
+                  : task.assignedTo === 'partner' ? partnerLabel
+                  : 'Unassigned'}
+              </button>
+            </div>
+          )}
+
+          <label className="details-label">Details</label>
+          <div className="richtext-toolbar" onClick={(e) => e.stopPropagation()}>
+            <button 
+              className="toolbar-btn"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Find and focus the details richtext area
+                const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                detailsArea.focus();
+                
+                // Ensure cursor is positioned
+                const selection = window.getSelection();
+                if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+                  const range = document.createRange();
+                  range.selectNodeContents(detailsArea);
+                  range.collapse(false);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                } else {
+                  const range = selection.getRangeAt(0);
+                  
+                  // Helper to build a fresh checkbox line
+                  const buildCheckboxLine = () => {
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = 'task-checkbox';
+                    // No click handler: the delegated listener on the details
+                    // area covers this box too. contentEditable=false keeps
+                    // the caret from landing to its left.
+                    checkbox.contentEditable = 'false';
+                    // No inline onchange - the delegated change listener on the
+                    // details area handles parent auto-check for all checkboxes.
+                    const line = document.createElement('div');
+                    line.className = 'checkbox-line';
+                    const span = document.createElement('span');
+                    span.contentEditable = 'true';
+                    span.innerHTML = '&nbsp;';
+                    line.appendChild(checkbox);
+                    line.appendChild(span);
+                    return { line, span };
+                  };
+                  
+                  // A selection spanning several lines converts each of them,
+                  // rather than the single line the caret happens to sit in.
+                  // Everything below this point assumes one line - it walks up
+                  // from range.startContainer and never looks at where the
+                  // selection ends - so multi-line is handled here and returns.
+                  if (!range.collapsed) {
+                    const blocks = Array.from(detailsArea.children).filter(
+                      el => range.intersectsNode(el)
+                    );
+                    if (blocks.length > 1) {
+                      blocks.forEach(block => {
+                        // Already a real checkbox line - leave it alone rather
+                        // than nesting a second box inside it.
+                        if (block.classList.contains('checkbox-line') &&
+                            block.querySelector('.task-checkbox')) return;
+
+                        const { line, span } = buildCheckboxLine();
+                        // Text is moved, not copied: this converts the line in
+                        // place, so anything already on it has to come across
+                        // including its formatting.
+                        span.innerHTML = '';
+                        while (block.firstChild) span.appendChild(block.firstChild);
+                        if (!span.textContent.trim()) span.innerHTML = '&nbsp;';
+                        // Indent carries over so converting a nested bullet
+                        // doesn't silently flatten the hierarchy.
+                        if (block.style && block.style.marginLeft) {
+                          line.style.marginLeft = block.style.marginLeft;
+                        }
+                        block.parentElement.replaceChild(line, block);
+                      });
+                      setTimeout(() => {
+                        syncParentCheckboxes(detailsArea);
+                        refreshListMarkers(detailsArea);
+                      }, 0);
+                      return;
+                    }
+                  }
+
+                  // Find the current line/block the cursor is on
+                  let currentNode = range.startContainer;
+                  let currentLine = currentNode.nodeType === Node.ELEMENT_NODE ?
+                    currentNode : currentNode.parentElement;
+                  
+                  // Walk up to find the direct child of detailsArea (the line container)
+                  while (currentLine && currentLine.parentElement !== detailsArea && currentLine !== detailsArea) {
+                    currentLine = currentLine.parentElement;
+                  }
+                  
+                  // If it's a checkbox line that still has a live checkbox, don't double-add.
+                  // But if it's a leftover empty checkbox-line (checkbox was deleted),
+                  // fall through and treat it as a normal empty line.
+                  if (currentLine && currentLine.classList && currentLine.classList.contains('checkbox-line')) {
+                    const hasCheckbox = currentLine.querySelector('.task-checkbox');
+                    const lineText = (currentLine.textContent || '').replace(/\u00A0/g, '').trim();
+                    if (hasCheckbox && lineText !== '') {
+                      // A real, populated checkbox line - don't add another
+                      return;
+                    }
+                    if (hasCheckbox && lineText === '') {
+                      // Empty checkbox line that still has its box - nothing to do
+                      return;
+                    }
+                    // else: leftover markup with no checkbox - fall through to convert it
+                  }
+                  
+                  // An empty bullet at the caret is an intent, not content:
+                  // you started a bullet and then chose a checkbox instead.
+                  // It has to be handled separately because currentLine walks
+                  // up to the direct child of the details area, which for a
+                  // bullet is the whole <ul> - so an empty <li> inside a list
+                  // that still has other items was invisible to the checks
+                  // below, and the checkbox landed under a stray dot.
+                  let explicitAnchor = null;
+                  const caretEl = currentNode.nodeType === Node.ELEMENT_NODE
+                    ? currentNode : currentNode.parentElement;
+                  const emptyLi = caretEl && caretEl.closest ? caretEl.closest('li') : null;
+                  if (emptyLi && detailsArea.contains(emptyLi) &&
+                      (emptyLi.textContent || '').replace(/\u00A0/g, '').trim() === '') {
+                    const list = emptyLi.parentElement;
+                    const wasOnlyItem = list && list.querySelectorAll('li').length === 1;
+                    // Anchor captured before removing anything, or the
+                    // reference point disappears along with the node.
+                    explicitAnchor = { parent: list.parentElement, before: list.nextSibling };
+                    emptyLi.remove();
+                    // A list with no items left is empty scaffolding, not a
+                    // list - drop it rather than leaving invisible markup
+                    // that still takes vertical space.
+                    if (wasOnlyItem || !list.querySelector('li')) list.remove();
+                  }
+
+                  const { line: checkboxLine, span: textSpan } = buildCheckboxLine();
+                  
+                  // Determine if the current line has text
+                  const isProperLine = currentLine && currentLine !== detailsArea && currentLine.parentElement === detailsArea;
+                  const currentLineText = isProperLine ? (currentLine.textContent || '').replace(/\u00A0/g, '').trim() : '';
+                  
+                  if (explicitAnchor) {
+                    explicitAnchor.parent.insertBefore(checkboxLine, explicitAnchor.before);
+                  } else if (isProperLine && currentLineText === '') {
+                    // Empty line (including leftover empty checkbox-line) - replace with checkbox line
+                    currentLine.parentElement.replaceChild(checkboxLine, currentLine);
+                  } else if (isProperLine && currentLineText !== '') {
+                    // Line has text - add checkbox on the NEXT line
+                    currentLine.parentElement.insertBefore(checkboxLine, currentLine.nextSibling);
+                  } else {
+                    // Cursor is directly in detailsArea (no wrapping line div)
+                    // Check if there's any text content at the cursor position on this "line"
+                    const areaText = (detailsArea.textContent || '').replace(/\u00A0/g, '').trim();
+                    if (areaText === '') {
+                      // Empty details area - just add the checkbox at the start
+                      detailsArea.appendChild(checkboxLine);
+                    } else {
+                      // There's text - insert checkbox line after current position
+                      range.collapse(false);
+                      range.insertNode(checkboxLine);
+                    }
+                  }
+                  
+                  // Move cursor into the checkbox's text span
+                  const newRange = document.createRange();
+                  newRange.setStart(textSpan, 0);
+                  newRange.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(newRange);
+                }
+              }}
+              title="Insert Checkbox"
+            >
+              <CheckboxIcon />Box
+            </button>
+            <button 
+              className="toolbar-btn"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Find and focus the details richtext area
+                const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                detailsArea.focus();
+                
+                // Ensure cursor is positioned
+                const selection = window.getSelection();
+                if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+                  const range = document.createRange();
+                  range.selectNodeContents(detailsArea);
+                  range.collapse(false);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                }
+                
+                // execCommand handles ordinary block elements, but the editor's
+                // lines are custom checkbox-line divs containing an <input> -
+                // it either skips those or nests the box inside the new <li>.
+                // A multi-line selection is converted explicitly instead, and
+                // only genuinely plain lines fall through to the native path.
+                const range = selection.getRangeAt(0);
+                if (!range.collapsed) {
+                  const blocks = Array.from(detailsArea.children).filter(
+                    el => range.intersectsNode(el)
+                  );
+                  if (blocks.length > 1) {
+                    const list = document.createElement('ul');
+                    blocks[0].parentElement.insertBefore(list, blocks[0]);
+                    blocks.forEach(block => {
+                      const li = document.createElement('li');
+                      // The checkbox itself is dropped: a line is either a
+                      // checkbox or a bullet, and keeping both would leave a
+                      // dead box sitting inside the bullet.
+                      const box = block.querySelector('.task-checkbox');
+                      if (box) box.remove();
+                      while (block.firstChild) li.appendChild(block.firstChild);
+                      if (!li.textContent.trim()) li.innerHTML = '<br>';
+                      list.appendChild(li);
+                      block.remove();
+                    });
+                    setTimeout(() => refreshListMarkers(detailsArea), 0);
+                    return;
+                  }
+                }
+
+                // An empty checkbox line at the caret is an intent, not
+                // content: you made a checkbox, then chose a bullet instead.
+                // The exact mirror of the empty-bullet case the Box button
+                // handles. Without this, execCommand wraps the line and you
+                // end up with a checkbox sitting inside a bullet.
+                const caretNode = range.startContainer;
+                const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
+                  ? caretNode : caretNode.parentElement;
+                const emptyBox = caretEl && caretEl.closest
+                  ? caretEl.closest('.checkbox-line') : null;
+                if (emptyBox && detailsArea.contains(emptyBox) &&
+                    (emptyBox.textContent || '').replace(/\u00A0/g, '').trim() === '') {
+                  const list = document.createElement('ul');
+                  const li = document.createElement('li');
+                  li.innerHTML = '<br>';
+                  list.appendChild(li);
+                  // Indent carries across so swapping the marker type doesn't
+                  // silently promote the line back to the top level.
+                  if (emptyBox.style && emptyBox.style.marginLeft) {
+                    list.style.marginLeft = emptyBox.style.marginLeft;
+                  }
+                  emptyBox.parentElement.replaceChild(list, emptyBox);
+
+                  const caret = document.createRange();
+                  caret.selectNodeContents(li);
+                  caret.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(caret);
+
+                  setTimeout(() => refreshListMarkers(detailsArea), 0);
+                  return;
+                }
+
+                document.execCommand('insertUnorderedList', false, null);
+              }}
+              title="Bullet List"
+            >
+              • Bullets
+            </button>
+            <button
+              className={`toolbar-btn ${formatOn ? 'format-on' : ''}`}
+              onMouseDown={(e) => {
+                // onMouseDown with preventDefault, like its neighbours: the
+                // selection has to survive the press, and a plain click would
+                // have already moved focus out of the editor by then.
+                e.preventDefault();
+                e.stopPropagation();
+                const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                detailsArea.focus();
+                const selection = window.getSelection();
+                if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+                  const range = document.createRange();
+                  range.selectNodeContents(detailsArea);
+                  range.collapse(false);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                }
+                // Both at once, so the button is one state rather than two
+                // that can drift apart. With a selection it styles it; with a
+                // bare cursor it arms the styling for what you type next.
+                document.execCommand('bold', false, null);
+                document.execCommand('underline', false, null);
+              }}
+              title="Bold + underline"
+            >
+              {/* A span, not <strong>: the underline is the only cue this
+                  button needs, and <strong> was overriding the toolbar's own
+                  font weight so it sat heavier than its neighbours. */}
+              <span style={{ textDecoration: 'underline' }}>Bold</span>
+            </button>
+            <button 
+              className="toolbar-btn"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                // One Follow Up section per task. The heading is tagged with
+                // its own class and that survives into the saved HTML, so its
+                // presence is the check - and it holds for a task reopened
+                // later, not just within this editing session. Bailing before
+                // focus() keeps a repeat press a true no-op: no cursor jump,
+                // no scroll, nothing.
+                if (!detailsArea || detailsArea.querySelector('.follow-up-heading')) return;
+                detailsArea.focus();
+
+                // Build a "Follow Up" heading line with the matcha underline
+                // Styled by .follow-up-heading rather than inline: the
+                // sanitiser strips style attributes, so anything set here
+                // would be discarded on the next save.
+                const heading = document.createElement('div');
+                heading.className = 'follow-up-heading';
+                const headingSpan = document.createElement('span');
+                headingSpan.textContent = 'Follow Up';
+                heading.appendChild(headingSpan);
+                
+                // Build a bullet list with one empty bullet beneath the heading
+                const list = document.createElement('ul');
+                const item = document.createElement('li');
+                item.innerHTML = '<br>';
+                list.appendChild(item);
+                
+                // Append a spacer + the section a few lines below existing content
+                const spacer = document.createElement('div');
+                spacer.innerHTML = '<br>';
+                detailsArea.appendChild(spacer);
+                detailsArea.appendChild(heading);
+                detailsArea.appendChild(list);
+                
+                // Place the cursor in the new bullet
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.setStart(item, 0);
+                range.collapse(true);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                
+                // Refresh markers so everything stays consistent
+                setTimeout(() => refreshListMarkers(detailsArea), 0);
+              }}
+              title="Add Follow Up section"
+            >
+              Follow Up
+            </button>
+          </div>
+          <div 
+            className="details-richtext"
+            contentEditable
+            suppressContentEditableWarning
+            // A bare contenteditable is announced as an unnamed group. These
+            // make it a named, multi-line text field to a screen reader.
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Task details"
+            // Sentence case and autocorrect match every other text field on
+            // the device; without them a contenteditable silently opts out of
+            // both on iOS and typing here feels different from everywhere else.
+            autoCapitalize="sentences"
+            autoCorrect="on"
+            spellCheck="true"
+            onInput={(e) => {
+              refreshListMarkers(e.currentTarget);
+              syncPlaceholder(e.currentTarget);
+            }}
+            onBlur={(e) => {
+              e.stopPropagation();
+              saveDetails(e.currentTarget);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onCopy={(e) => {
+              e.stopPropagation();
+              writeClipboard(e);
+            }}
+            onCut={(e) => {
+              e.stopPropagation();
+              // preventDefault on a cut cancels the deletion as well as the
+              // clipboard write - the two are one default action, not two.
+              // That is why cut was behaving like copy. Since we override the
+              // write, we have to do the removal ourselves.
+              const captured = writeClipboard(e);
+              if (!captured) return;
+              try {
+                if (captured.range) {
+                  const sel = window.getSelection();
+                  sel.removeAllRanges();
+                  sel.addRange(captured.range);
+                }
+                // execCommand rather than range.deleteContents(): this one
+                // registers with the browser's own undo stack, so Cmd-Z can
+                // still reverse the cut.
+                document.execCommand('delete', false, null);
+                saveDetails(e.currentTarget);
+              } catch (err) {
+                // Nothing removed - the clipboard still holds the content,
+                // so no data is lost either way.
+              }
+            }}
+            onPaste={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              
+              const text = (e.clipboardData?.getData('text/plain') || '');
+              const trimmed = text.trim();
+              // A bare URL still wins over the HTML branch below, so copying
+              // a link out of a browser bar keeps producing a compact anchor
+              // rather than a page's worth of markup.
+              //
+              // Falls back to the internal stash when the clipboard offers no
+              // HTML, which is the common case on iOS. Matched on the plain
+              // text so a copy made elsewhere in between can't be mistaken
+              // for this one.
+              const clipboardHtml = (e.clipboardData?.getData('text/html') || '');
+              // The stash takes precedence over the browser's own HTML when
+              // it matches. The browser serialises the raw selection, which
+              // has the same gap - a checkbox left outside the range - so
+              // preferring it would reintroduce exactly the bug the stash
+              // exists to fix. Matched on plain text, so a copy from anywhere
+              // else falls through to the clipboard as normal.
+              const stashed = internalClipboard.text && internalClipboard.text === text
+                ? internalClipboard.html
+                : '';
+              const html = stashed || clipboardHtml;
+              
+              const selection = window.getSelection();
+              if (!selection.rangeCount) return;
+              const range = selection.getRangeAt(0);
+              range.deleteContents();
+              
+              // If the pasted content is a single URL, insert a compact "Link"
+              // anchor instead of the full URL text.
+              const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);
+              if (isUrl) {
+                const href = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed;
+                const a = document.createElement('a');
+                a.href = href;
+                a.textContent = 'Link';
+                a.className = 'task-link';
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                a.title = href;
+                // Atomic unit so the label isn't editable and clicks register
+                a.contentEditable = 'false';
+                range.insertNode(a);
+                // Trailing space so typing can continue after the link
+                const after = document.createTextNode('\u00A0');
+                a.parentNode.insertBefore(after, a.nextSibling);
+                const newRange = document.createRange();
+                newRange.setStart(after, 1);
+                newRange.collapse(true);
+                selection.removeAllRanges();
+                selection.addRange(newRange);
+              } else if (html) {
+                // Structure survives a copy/paste: checkboxes, bullets,
+                // indent and formatting all come through.
+                //
+                // Pasting HTML from an arbitrary source is only safe because
+                // sanitizeRichText is an allowlist, and it happens to permit
+                // exactly what this editor creates - so content copied from
+                // within a task arrives intact, while anything from a web page
+                // is reduced to the same small set of tags or to plain text.
+                // This is the sanitizer doing the job it exists for, not a
+                // relaxation of it.
+                const clean = sanitizeRichText(html);
+
+                // insertHTML rather than range.insertNode. Both put the same
+                // nodes in the same place, but only execCommand registers
+                // with the browser's undo stack - a directly inserted node is
+                // invisible to it, which is why Cmd-Z after a paste did
+                // nothing. It also places the caret after the insertion for
+                // us, so the manual range juggling goes away.
+                let inserted = false;
+                try {
+                  inserted = document.execCommand('insertHTML', false, clean);
+                } catch (err) {
+                  inserted = false;
+                }
+
+                if (!inserted) {
+                  // Fallback for anywhere execCommand is unavailable: correct
+                  // content, no undo.
+                  const holder = document.createElement('div');
+                  holder.innerHTML = clean;
+                  const fragment = document.createDocumentFragment();
+                  while (holder.firstChild) fragment.appendChild(holder.firstChild);
+                  const lastNode = fragment.lastChild;
+                  range.insertNode(fragment);
+                  if (lastNode) {
+                    const after = document.createRange();
+                    after.setStartAfter(lastNode);
+                    after.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(after);
+                  }
+                }
+
+                // Pasted nodes need the same treatment as freshly loaded ones:
+                // contentEditable is stripped by the sanitizer by design, so
+                // without this a pasted checkbox's label would be typeable and
+                // a pasted link would take a caret instead of opening.
+                const area = e.currentTarget;
+                area.querySelectorAll('.task-checkbox').forEach(cb => {
+                  cb.contentEditable = 'false';
+                });
+                area.querySelectorAll('a.task-link').forEach(a => {
+                  a.contentEditable = 'false';
+                });
+                // Parent/boundary marks are recomputed rather than trusted
+                // from the pasted markup, which may have been copied from the
+                // middle of a list and describe a hierarchy that no longer
+                // holds where it landed.
+                setTimeout(() => {
+                  syncParentCheckboxes(area);
+                  refreshListMarkers(area);
+                }, 0);
+              } else {
+                // Insert plain text without formatting
+                const textNode = document.createTextNode(text);
+                range.insertNode(textNode);
+                selection.collapseToEnd();
+              }
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+
+              // A bold+underline run ends at the line it was written on.
+              // contentEditable carries active formatting across a newline,
+              // so without this a heading would quietly turn the rest of the
+              // note bold - and turning it off by hand means finding the
+              // button again. Deferred a tick: the new line has to exist
+              // before the commands apply to it.
+              if (e.key === 'Enter') {
+                const wasBold = document.queryCommandState('bold');
+                const wasUnderline = document.queryCommandState('underline');
+                if (wasBold || wasUnderline) {
+                  setTimeout(() => {
+                    if (document.queryCommandState('bold')) document.execCommand('bold', false, null);
+                    if (document.queryCommandState('underline')) document.execCommand('underline', false, null);
+                  }, 0);
+                }
+              }
+
+              const selection = window.getSelection();
+              if (!selection.rangeCount) return;
+              
+              const range = selection.getRangeAt(0);
+              const currentNode = range.startContainer;
+              
+              // Check if we're in a checkbox-line
+              let checkboxLine = currentNode.nodeType === Node.ELEMENT_NODE ? 
+                currentNode.closest('.checkbox-line') : 
+                currentNode.parentElement?.closest('.checkbox-line');
+              
+              // Handle Tab key - indent checkbox
+              if (e.key === 'Tab' && checkboxLine) {
+                e.preventDefault();
+                const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                // Shift+Tab outdents. The handler used to ignore the modifier
+                // entirely, so Shift+Tab indented like a plain Tab and there
+                // was no way back out of a nesting level except backspacing
+                // from the start of the line.
+                const newIndent = e.shiftKey
+                  ? Math.max(0, currentIndent - 20)
+                  : currentIndent + 20;
+                if (newIndent === currentIndent) return;
+                checkboxLine.style.marginLeft = newIndent + 'px';
+
+                // Parent and boundary marks are recomputed for the whole list
+                // rather than patched for this one line. Outdenting can orphan
+                // a parent that no longer has children, which hand-patching
+                // the line you just moved could never notice - and this is
+                // the same function that runs on load, so the two can't
+                // disagree about what the list looks like.
+                refreshListMarkers(checkboxLine.closest('.details-richtext'));
+              }
+              
+              // Handle Backspace at the start of a checkbox line - remove the checkbox.
+              // contentEditable's default backspace is unreliable at the boundary
+              // right after a checkbox input, so we handle it explicitly.
+              else if (e.key === 'Backspace' && checkboxLine && selection.isCollapsed) {
+                const textSpan = checkboxLine.querySelector('span');
+                // Determine if the caret is at the very start of the line's text.
+                let atStart = false;
+                const container = range.startContainer;
+                const offset = range.startOffset;
+                if (textSpan) {
+                  if (offset === 0 && (container === textSpan || container === textSpan.firstChild || (textSpan.firstChild && container === textSpan.firstChild))) {
+                    atStart = true;
+                  }
+                  // Also treat "&nbsp;-only" placeholder spans with caret at 0/1 as start
+                  const spanText = (textSpan.textContent || '').replace(/\u00A0/g, '');
+                  if (spanText === '' && offset <= 1) atStart = true;
+                } else if (container === checkboxLine && offset === 0) {
+                  atStart = true;
+                }
+                // If caret is somewhere inside actual text (not at start), let default run
+                if (atStart) {
+                  e.preventDefault();
+                  const indent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                  const lineHasText = (checkboxLine.textContent || '').replace(/\u00A0/g, '').trim() !== '';
+                  
+                  if (indent > 0) {
+                    // Indented: first backspace outdents rather than deleting
+                    checkboxLine.style.marginLeft = Math.max(0, indent - 20) + 'px';
+                    const r = document.createRange();
+                    r.setStart(textSpan || checkboxLine, 0);
+                    r.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(r);
+                  } else {
+                    // Convert checkbox line into a plain text line, preserving any text
+                    const newLine = document.createElement('div');
+                    newLine.style.display = 'block';
+                    const newSpan = document.createElement('span');
+                    newSpan.contentEditable = 'true';
+                    newSpan.innerHTML = (textSpan && textSpan.innerHTML) ? textSpan.innerHTML : '&nbsp;';
+                    newLine.appendChild(newSpan);
+                    checkboxLine.parentNode.replaceChild(newLine, checkboxLine);
+                    // Place caret at the start of the converted line
+                    const r = document.createRange();
+                    r.setStart(newSpan.firstChild || newSpan, 0);
+                    r.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(r);
+                  }
+                }
+              }
+              
+              // Handle Enter key
+              else if (e.key === 'Enter' && checkboxLine) {
+                const checkbox = checkboxLine.querySelector('.task-checkbox');
+                // Read text from the entire line, excluding the checkbox input.
+                // textContent of the line naturally excludes the input's value,
+                // so this reliably captures any typed text regardless of span structure.
+                const lineText = (checkboxLine.textContent || '').replace(/\u00A0/g, ' ').trim();
+                const isEmpty = lineText === '';
+                const currentIndent = parseInt(checkboxLine.style.marginLeft || '0');
+                // Find the text span to reposition cursor (fallback to line itself)
+                const textSpan = checkboxLine.querySelector('span') || checkboxLine;
+                
+                // Case 1: Empty checkbox with no indent - delete checkbox, create normal text line
+                if (isEmpty && currentIndent === 0) {
+                  e.preventDefault();
+                  
+                  // Create normal text line
+                  const newLine = document.createElement('div');
+                  newLine.style.display = 'block';
+                  const newTextSpan = document.createElement('span');
+                  newTextSpan.innerHTML = '&nbsp;';
+                  newTextSpan.contentEditable = 'true';
+                  newLine.appendChild(newTextSpan);
+                  
+                  // Insert after current line and remove checkbox line
+                  checkboxLine.parentNode.insertBefore(newLine, checkboxLine.nextSibling);
+                  checkboxLine.remove();
+                  
+                  // Move cursor to new line
+                  const newRange = document.createRange();
+                  newRange.setStart(newTextSpan, 0);
+                  newRange.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(newRange);
+                }
+                
+                // Case 2: Empty indented checkbox - outdent (reduce indent)
+                else if (isEmpty && currentIndent > 0) {
+                  e.preventDefault();
+                  checkboxLine.style.marginLeft = Math.max(0, currentIndent - 20) + 'px';
+                  // Keep focus in the text span
+                  const newRange = document.createRange();
+                  newRange.setStart(textSpan, 0);
+                  newRange.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(newRange);
+                }
+                
+                // Case 3: Checkbox with text - create new checkbox at same indent
+                else {
+                  e.preventDefault();
+                  
+                  // Create new checkbox line with same indent
+                  const newCheckboxLine = document.createElement('div');
+                  newCheckboxLine.className = 'checkbox-line';
+                  newCheckboxLine.style.marginLeft = currentIndent + 'px';
+                  
+                  const newCheckbox = document.createElement('input');
+                  newCheckbox.type = 'checkbox';
+                  newCheckbox.className = 'task-checkbox';
+                  // Delegated listener handles the click; see buildCheckboxLine.
+                  newCheckbox.contentEditable = 'false';
+                  // No inline onchange - delegated change listener handles sync
+                  
+                  const newTextSpan = document.createElement('span');
+                  newTextSpan.innerHTML = '&nbsp;';
+                  newTextSpan.contentEditable = 'true';
+                  
+                  newCheckboxLine.appendChild(newCheckbox);
+                  newCheckboxLine.appendChild(newTextSpan);
+                  
+                  // Insert after current checkbox line
+                  checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
+                  
+                  // Move cursor to new checkbox line
+                  const newRange = document.createRange();
+                  newRange.setStart(newTextSpan, 0);
+                  newRange.collapse(true);
+                  selection.removeAllRanges();
+                  selection.addRange(newRange);
+                }
+              }
+              
+              // After any structural key (Tab/Enter/Backspace), refresh markers
+              if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'Backspace') {
+                setTimeout(() => refreshListMarkers(e.target.closest('.details-richtext')), 0);
+              }
+            }}
+            ref={detailsRef}
+          />
+
+          <div className="date-project-row">
+            <div className="due-date-display">
+              <label className="details-label" style={{ margin: 0 }}>Due Date:</label>
+              {/* Was a native <input type="date">. On iOS the picker is a
+                  browser overlay bound to a DOM node, and this app re-creates
+                  task rows on parent renders - when the node is swapped
+                  mid-interaction iOS commits the highlighted value (today)
+                  and tears the sheet down, which is the "sets today and
+                  closes on first tap" bug. InlineDatePicker is React-rendered,
+                  so there is no overlay to lose and it can only ever write a
+                  date that was actually tapped. It also carries its own clear
+                  button, which the native field had no reliable equivalent
+                  for. */}
+              <InlineDatePicker
+                value={task.dueDate || ''}
+                onChange={(v) => updateTaskDueDate(listName, task.id, v)}
+              />
+            </div>
+
+            {/* Hidden when Projects is switched off. Any existing projectId
+                is preserved untouched, so re-enabling restores the link. */}
+            {isFeatureOn('projects') && (() => {
+              // Replaces a native <select>. Its popup is drawn by the browser
+              // as OS chrome - no rounded corners, no theming beyond the
+              // option colours - so it was the one control in the app that
+              // couldn't be made to match. This is the same div-based pattern
+              // the Goal, Timer and Report dropdowns already use.
+              const chosen = getAllProjects().find(
+                pr => String(pr.id) === String(task.projectId)
+              );
+              const pick = (value) => {
+                assignTaskToProject(listName, task.id, value);
+                setProjectDropdownOpen(false);
+              };
+              const optionStyle = (selected) => ({
+                padding: '10px 14px',
+                color: 'var(--text)',
+                fontSize: '0.9rem',
+                cursor: 'pointer',
+                background: selected ? 'rgba(var(--accent-rgb), 0.25)' : 'transparent',
+                borderBottom: '1px solid rgba(var(--accent-rgb), 0.15)',
+                transition: 'background 0.2s ease'
+              });
+              return (
+                <div className="due-date-display">
+                  <label className="details-label" style={{ margin: 0 }}>Project:</label>
+                  <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => {
+                        // Toggled on mousedown, and stopped there, so the
+                        // document-level close listener below never sees the
+                        // tap that opened it - otherwise it would open and
+                        // shut in the same gesture.
+                        e.stopPropagation();
+                        setProjectDropdownOpen(o => !o);
+                      }}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className="project-selector"
+                      style={{
+                        display: 'flex', alignItems: 'center',
+                        justifyContent: 'space-between', gap: '8px'
+                      }}
+                    >
+                      <span style={{
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        color: chosen ? 'var(--text)' : 'var(--text-muted)'
+                      }}>
+                        {chosen ? chosen.name : 'No project'}
+                      </span>
+                      <span style={{
+                        transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.2s ease',
+                        fontSize: '0.7rem', flexShrink: 0
+                      }}>▼</span>
+                    </div>
+
+                    {projectDropdownOpen && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, right: 0,
+                          marginTop: '4px',
+                          background: 'rgba(var(--surface-rgb), 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                          borderRadius: '12px',
+                          overflow: 'hidden',
+                          // Long project lists shouldn't run off the card.
+                          maxHeight: '220px', overflowY: 'auto',
+                          zIndex: 1000,
+                          boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.35)'
+                        }}
+                      >
+                        <div
+                          onClick={() => pick(null)}
+                          style={{ ...optionStyle(!task.projectId), color: 'var(--text-muted)' }}
+                        >
+                          No project
+                        </div>
+                        {getAllProjects().map(pr => (
+                          <div
+                            key={pr.id}
+                            onClick={() => pick(pr.id)}
+                            style={optionStyle(String(pr.id) === String(task.projectId))}
+                          >
+                            {pr.name}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="fire-flag-selector">
+            <span 
+              className={`fire-flag-icon clickable ${task.priority === 'high' ? 'active' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                updateTaskPriority(listName, task.id, task.priority === 'high' ? 'low' : 'high');
+              }}
+              title="Pin to top"
+            >
+              {task.priority === 'high' ? <LitFlame /> : <UnlitFlame />}
+            </span>
+          </div>
+
+          <div className="date-field">
+            <label className="details-label" style={{ margin: 0 }}>Created:</label>
+            <span className="date-field-value">{createdDate}</span>
+          </div>
+
+          {task.completed && (
+            <div className="date-field">
+              <label className="details-label" style={{ margin: 0 }}>Completed:</label>
+              <span className="date-field-value">{completedDate}</span>
+            </div>
+          )}
+
+          <div className="task-actions">
+            {showMoveButtons && !task.completed && (
+              <>
+                {task.section === 'todo' && (
+                  <button 
+                    className="edit-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      moveTaskToSection(listName, task.id, 'backlog');
+                    }}
+                  >
+                    → Backlog
+                  </button>
+                )}
+                {task.section === 'backlog' && (
+                  <button 
+                    className="edit-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      moveTaskToSection(listName, task.id, 'todo');
+                    }}
+                  >
+                    → To Do
+                  </button>
+                )}
+              </>
+            )}
+            {task.completed && (
+              <button
+                className="edit-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  archiveTask(listName, task.id);
+                }}
+              >
+                Archive
+              </button>
+            )}
+            {canDeleteShared && (
+              <button
+                className="delete-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteTask(listName, task.id);
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 function LittleFiresApp() {
   // ---- Guarded storage ----------------------------------------------------
   // localStorage.setItem throws when the quota is exceeded, and in Safari
@@ -4054,2112 +6298,7 @@ function LittleFiresApp() {
     updateTask(listName, taskId, { projectId: canonical });
   };
 
-  const Task = ({ task, listName, showMoveButtons }) => {
-    // With a time set, overdue means past that moment. Without one, the task
-    // isn't late until the day itself has ended.
-    const dueDate = task.dueDate ? parseLocalDateTime(task.dueDate, task.dueTime) : null;
-    // '00:00' is the implicit stamp for a plain due date, so treat it the same
-    // as no time at all: the task isn't late until the day has ended.
-    const isAllDay = !task.dueTime || task.dueTime === '00:00';
-    const overdueThreshold = dueDate && isAllDay
-      ? new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate(), 23, 59, 59, 999)
-      : dueDate;
-    const isOverdue = overdueThreshold && overdueThreshold < new Date() && !task.completed;
-    const dueDateText = dueDate ? dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    const createdDate = task.createdAt ? new Date(task.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    const completedDate = task.completedAt ? new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-
-    // --- Shared-task attribution (Partner sync groundwork) -----------------
-    // Every task in the shared list gets this treatment automatically - there
-    // is no per-task opt-in, because being in that list IS what makes a task
-    // shared. Holds in All Tasks too, since the real listName is passed there.
-    const isSharedTask = isSharedList(listName);
-    // Tasks that predate sync carry no createdBy. They were all created on this
-    // device, so they are yours - without this fallback they'd read as nobody's
-    // and the delete button would vanish from tasks you created yourself.
-    const sharedCreatedBy = task.createdBy || 'me';
-    // `key` drives styling, `label` is what's shown - kept separate so the
-    // displayed text can change without the CSS class following it. That split
-    // is what lets the partner's name be user-set while .partner keeps styling
-    // it. Falls back to 'Partner' if the field is blanked out.
-    const partnerLabel = partnerDisplayName;
-    const badgeFor = (who) => {
-      if (who === 'me') return { key: 'you', label: 'You' };
-      if (who === 'partner') return { key: 'partner', label: partnerLabel };
-      return null;
-    };
-    // Incomplete: badge shows who it's assigned to (creator, if unassigned).
-    // Complete: badge shows who actually did it - the point of a shared list.
-    const sharedBadge = isSharedTask
-      ? (task.completed
-          ? badgeFor(task.completedBy || sharedCreatedBy)
-          : badgeFor(task.assignedTo || sharedCreatedBy))
-      : null;
-    // Delete is restricted to creator or assignee for shared tasks; unassigned
-    // shared tasks fall back to creator-only. Personal tasks are unaffected.
-    const canDeleteShared = !isSharedTask || sharedCreatedBy === 'me' || task.assignedTo === 'me';
-
-    const isExpanded = expandedTaskId === `${listName}-${task.id}`;
-    const taskRef = React.useRef(null);
-
-    // --- Swipe to complete (touch only) ---------------------------------
-    // The card is moved by writing transform straight to the DOM rather than
-    // through state. Two reasons: a state update per touchmove would re-render
-    // the whole task tree sixty times a second, and because Task is declared
-    // inside the parent, any re-render remounts it - which would drop the
-    // gesture halfway through. Only the final decision touches React.
-    const swipe = React.useRef({ x: 0, y: 0, dx: 0, axis: null, active: false });
-    const SWIPE_TRIGGER = 90;
-
-    const setSwipeVisual = (dx, animate) => {
-      const el = taskRef.current;
-      if (!el) return;
-      el.style.transition = animate ? 'transform 0.2s ease' : 'none';
-      el.style.transform = dx ? `translateX(${dx}px)` : '';
-      // The reveal layer is a pseudo-element of the card, so it would slide
-      // along with it and never be revealed. Publishing the offset lets the
-      // CSS cancel it out, holding the check still while the card moves off it.
-      el.style.setProperty('--swipe-dx', `${dx}px`);
-      // Fades in as you approach the threshold, so the point of no return is
-      // visible before you commit rather than a surprise on release.
-      el.style.setProperty('--swipe-progress', String(Math.min(1, Math.abs(dx) / SWIPE_TRIGGER)));
-    };
-
-    const onTouchStart = (e) => {
-      // Not while expanded: the details editor owns touch there, for selecting
-      // text and ticking checkboxes.
-      if (isExpanded || task.isArchived || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      swipe.current = { x: t.clientX, y: t.clientY, dx: 0, axis: null, active: true };
-    };
-
-    const onTouchMove = (e) => {
-      const g = swipe.current;
-      if (!g.active) return;
-      const t = e.touches[0];
-      const dx = t.clientX - g.x;
-      const dy = t.clientY - g.y;
-
-      // Lock to one axis on the first decisive movement and never re-decide.
-      // Without this a slightly diagonal scroll drags the card sideways, which
-      // makes the whole list feel unstable.
-      if (!g.axis) {
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-        g.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-      }
-      if (g.axis !== 'x') return;
-
-      // Only rightward. Leftward is left alone deliberately - it's where a
-      // delete gesture would live, and an accidental destructive swipe is a
-      // much worse failure than a missed one.
-      g.dx = Math.max(0, dx);
-      setSwipeVisual(g.dx, false);
-    };
-
-    const onTouchEnd = () => {
-      const g = swipe.current;
-      if (!g.active) return;
-      const passed = g.axis === 'x' && g.dx >= SWIPE_TRIGGER;
-      g.active = false;
-      if (passed && !task.completed) {
-        // Clear the styles written during the gesture so React's own style prop
-        // takes over cleanly. Direct DOM writes and React's transform were both
-        // targeting the same property, and React won on the next render - which
-        // is what replaced the slide-off with a shrink.
-        const el = taskRef.current;
-        if (el) {
-          el.style.transition = '';
-          el.style.transform = '';
-          el.style.removeProperty('--swipe-dx');
-          el.style.removeProperty('--swipe-progress');
-        }
-        setSwipedOut(true);
-      } else {
-        setSwipeVisual(0, true);
-      }
-      if (passed) {
-        // Suppress the click that follows the touch, or the card would also
-        // expand on the way past.
-        swipe.current.justSwiped = true;
-        setTimeout(() => { swipe.current.justSwiped = false; }, 400);
-        // The same path the checkbox takes - so a swipe and a tick produce
-        // exactly the same hold, fade and collapse rather than two different
-        // ideas of what completing a task looks like.
-        requestComplete();
-      }
-      g.dx = 0;
-      g.axis = null;
-    };
-    const detailsRef = React.useRef(null);
-    const hasSetInitialContent = React.useRef(false);
-    const saveTimeoutRef = React.useRef(null);
-    // Set while a drag-to-indent is finishing, so the click that follows it
-    // doesn't also toggle the checkbox that was used as the handle.
-    const indentSuppressRef = React.useRef(false);
-    const clickTimeoutRef = React.useRef(null);
-    // Holds the task in place briefly after checking it, so the checkmark is
-    // visible before the task leaves the list.
-    const [isCompleting, setIsCompleting] = React.useState(false);
-    // Set when completion came from a swipe. The card then leaves by sliding
-    // fully off to the right, uncovering the green panel, instead of shrinking
-    // in place - two different exits fighting each other was what made it look
-    // like the card was being sucked into the checkmark.
-    const [swipedOut, setSwipedOut] = React.useState(false);
-
-    // Whether bold+underline is active where the cursor is. Read from the
-    // document rather than tracked as an intent, because formatting can also
-    // change by moving the caret into or out of styled text - a flag set when
-    // the button was pressed would go stale immediately and show "engaged"
-    // when nothing is.
-    const [formatOn, setFormatOn] = React.useState(false);
-    const [projectDropdownOpen, setProjectDropdownOpen] = React.useState(false);
-
-    // A native select closed itself on an outside tap; a div has to be told.
-    // Without this the list stays open until something else re-renders, and
-    // tapping elsewhere in the card leaves it hanging over the content.
-    React.useEffect(() => {
-      if (!projectDropdownOpen) return;
-      const close = (e) => {
-        if (taskRef.current && taskRef.current.contains(e.target)) {
-          // Inside the card: the dropdown's own handlers stopPropagation, so
-          // reaching here means the tap was somewhere else in the card.
-          setProjectDropdownOpen(false);
-          return;
-        }
-        setProjectDropdownOpen(false);
-      };
-      document.addEventListener('mousedown', close);
-      document.addEventListener('touchstart', close);
-      return () => {
-        document.removeEventListener('mousedown', close);
-        document.removeEventListener('touchstart', close);
-      };
-    }, [projectDropdownOpen]);
-
-    React.useEffect(() => {
-      if (!isExpanded) return;
-      let raf = null;
-      const check = () => {
-        raf = null;
-        try {
-          const el = detailsRef.current;
-          const sel = window.getSelection();
-          if (!el || !sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
-            setFormatOn(false);
-            return;
-          }
-          setFormatOn(document.queryCommandState('bold') || document.queryCommandState('underline'));
-        } catch (err) {
-          setFormatOn(false);
-        }
-      };
-      // selectionchange fires on every caret move, so the work is coalesced to
-      // one check per frame. queryCommandState forces style resolution, which
-      // is not something to run per keystroke.
-      const onSel = () => { if (!raf) raf = requestAnimationFrame(check); };
-      document.addEventListener('selectionchange', onSel);
-      check();
-      return () => {
-        document.removeEventListener('selectionchange', onSel);
-        if (raf) cancelAnimationFrame(raf);
-      };
-    }, [isExpanded]);
-    // Collapsing the row's height while it fades makes the tasks below slide up
-    // instead of snapping. Height must animate from a real px value, not 'auto',
-    // so we measure the row before starting.
-    const [collapsing, setCollapsing] = React.useState(false);
-    const [measuredHeight, setMeasuredHeight] = React.useState(null);
-    const collapseTimeoutRef = React.useRef(null);
-    const completeTimeoutRef = React.useRef(null);
-
-    // Writes the captured HTML onto the clipboard itself, instead of leaving
-    // the browser to serialise the raw selection.
-    //
-    // The browser's version omits the checkbox - it is a contentEditable=false
-    // sibling that sits outside the selection range - so overriding it is what
-    // makes an ordinary paste carry the box. The internal stash stays as the
-    // fallback for platforms that won't hand back text/html on paste, and
-    // because we now also set text/plain ourselves, the two are guaranteed to
-    // match rather than differing by a stray newline.
-    const writeClipboard = (e) => {
-      const captured = stashSelectionHtml();
-      if (!captured || !captured.html || !e.clipboardData) return null;
-      try {
-        e.preventDefault();
-        e.clipboardData.setData('text/plain', captured.text);
-        e.clipboardData.setData('text/html', captured.html);
-        return captured;
-      } catch (err) {
-        // Blocked - let the browser write its own version rather than nothing.
-        return null;
-      }
-    };
-
-    // A field holding only a stray <br> is empty to a reader but not to
-    // :empty, so emptiness is decided here and published as a class. Checkboxes
-    // and images count as content even with no text alongside them.
-    const syncPlaceholder = (area) => {
-      if (!area) return;
-      const hasText = (area.textContent || '').replace(/\u00A0/g, '').trim() !== '';
-      const hasWidgets = !!area.querySelector('input, img, li');
-      area.classList.toggle('is-empty', !hasText && !hasWidgets);
-    };
-
-    // Serialises whatever is selected, so a copy out of this editor keeps its
-    // structure even when the clipboard will only carry plain text.
-    const stashSelectionHtml = () => {
-      try {
-        const sel = window.getSelection();
-        if (!sel || !sel.rangeCount || sel.isCollapsed) return;
-        const range = sel.getRangeAt(0);
-        const area = detailsRef.current;
-
-        // The whole line, not just the text you dragged across.
-        //
-        // Selecting a checkbox line's text produces a range over the <span>
-        // alone - the checkbox is a contentEditable="false" sibling that
-        // browsers leave outside the selection, so cloning the range gave back
-        // the words with no box. Expanding to the enclosing block is what
-        // actually captures the structure.
-        const blockOf = (node) => {
-          const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-          if (!el || !el.closest || !area || !area.contains(el)) return null;
-          return el.closest('.checkbox-line, li');
-        };
-        const startBlock = blockOf(range.startContainer);
-        const endBlock = blockOf(range.endContainer);
-
-        // Only expand when the selection is really about whole lines: either it
-        // crosses more than one, or it covers all of the text in the one it's
-        // in. Selecting a single word inside a line still copies just that word
-        // rather than silently dragging a checkbox along with it.
-        const selected = sel.toString().replace(/\u00A0/g, ' ').trim();
-        const wholeLine = startBlock &&
-          selected === (startBlock.textContent || '').replace(/\u00A0/g, ' ').trim();
-        const spansBlocks = startBlock && endBlock && startBlock !== endBlock;
-
-        let cloneRange = range;
-        if (startBlock && (wholeLine || spansBlocks)) {
-          cloneRange = document.createRange();
-          cloneRange.setStartBefore(startBlock);
-          cloneRange.setEndAfter(endBlock || startBlock);
-        }
-
-        const holder = document.createElement('div');
-        holder.appendChild(cloneRange.cloneContents());
-        internalClipboard = { text: sel.toString(), html: holder.innerHTML };
-        // The range is handed back so a cut can remove exactly what was taken.
-        // It isn't always the user's literal selection - selecting a checkbox
-        // line's text captures the whole line, box included - so deleting the
-        // raw selection instead would leave an orphaned empty checkbox behind.
-        return { ...internalClipboard, range: cloneRange };
-      } catch (err) {
-        internalClipboard = { text: '', html: '' };
-        return null;
-      }
-    };
-
-    // The one way a task gets completed, whichever gesture asked for it.
-    // Completing pauses: the tick stays lit while the card fades, then the card
-    // collapses its own height so everything below slides up into the gap
-    // rather than jumping. Un-completing is immediate - there's nothing to
-    // celebrate and no reason to make it wait.
-    const requestComplete = () => {
-      if (task.isArchived) return;
-      if (task.completed) {
-        toggleTask(listName, task.id);
-        return;
-      }
-      if (isCompleting) return; // already on its way out
-      if (!settings.completionDelay) {
-        toggleTask(listName, task.id);
-        return;
-      }
-      // Measured before anything changes, because once the card starts fading
-      // its height is no longer the height the collapse needs to animate from.
-      if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
-      setIsCompleting(true);
-      collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), COMPLETE_HOLD_MS);
-      completeTimeoutRef.current = setTimeout(() => {
-        toggleTask(listName, task.id);
-      }, COMPLETE_TOTAL_MS);
-    };
-
-    // True while a native picker (date/select) is open. iOS presents these as a
-    // sheet and moves focus off the input, so focus can't be used to detect it.
-    const pickerActiveRef = React.useRef(false);
-    const pickerResetRef = React.useRef(null);
-    // What we last wrote to storage ourselves. The load effect below compares
-    // against this so it can tell its own echo from a genuine outside change -
-    // without that, saving while the task is open re-runs the effect and
-    // re-writes innerHTML, which throws away the container's scroll position.
-    const lastSavedHtmlRef = React.useRef(null);
-
-    // The single path from live editor DOM to saved value. A checkbox's ticked
-    // state lives on the DOM property, not in the markup, so it has to be
-    // written back to attributes before innerHTML will include it - that's why
-    // every save site did this dance. Now they all call this instead.
-    const saveDetails = (el, { force = false } = {}) => {
-      const area = el || detailsRef.current;
-      if (!area) return;
-      area.querySelectorAll('.task-checkbox').forEach(cb => {
-        if (cb.checked) cb.setAttribute('checked', 'checked');
-        else cb.removeAttribute('checked');
-      });
-      const content = area.innerHTML;
-      // Sanitize FIRST, then compare. task.details is always the sanitized
-      // form, while area.innerHTML is the live DOM - and the editor's own
-      // builders write things the sanitizer strips (inline style, the span's
-      // contenteditable). Comparing raw DOM against sanitized storage could
-      // therefore never match, so this fired a save on every blur and every
-      // tick whether anything had changed or not - and each of those saves
-      // re-rendered, remounted the subtree and reloaded the editor. Comparing
-      // like with like makes "unchanged" actually mean unchanged.
-      const cleaned = sanitizeRichText(content);
-      if (!force && cleaned === task.details) return;
-      lastSavedHtmlRef.current = cleaned;
-      updateTaskDetails(listName, task.id, content);
-    };
-
-    React.useEffect(() => {
-      return () => {
-        if (completeTimeoutRef.current) clearTimeout(completeTimeoutRef.current);
-        if (collapseTimeoutRef.current) clearTimeout(collapseTimeoutRef.current);
-        if (pickerResetRef.current) clearTimeout(pickerResetRef.current);
-      };
-    }, []);
-
-    // Sync parent checkboxes based on their indented children.
-    // A parent is a line whose immediately-following lines are more indented.
-    // Its direct children are the more-indented lines up until the indent
-    // returns to the parent's level or shallower. This does NOT assume a fixed
-    // 20px step - it works with any indent values.
-    // Recompute list markers across the editor: which lines are parents
-    // (have indented children below them) and which top-level lines end a
-    // nested group. Runs on every content change so markers never go stale.
-    const refreshListMarkers = (area) => {
-      try {
-        if (!area) return;
-        const lines = Array.from(area.querySelectorAll('.checkbox-line'));
-        const getIndent = (l) => parseInt(l.style.marginLeft || '0') || 0;
-        // Clear existing markers first (both class and inline styles)
-        lines.forEach(l => {
-          l.classList.remove('has-children');
-          l.classList.remove('ends-list');
-          l.style.borderBottom = '';
-          l.style.borderTop = '';
-          // Only clear the spacing we control for markers
-          if (l.style.paddingBottom === '6px') l.style.paddingBottom = '';
-          if (l.style.paddingTop === '8px') l.style.paddingTop = '';
-        });
-        for (let i = 0; i < lines.length; i++) {
-          const indent = getIndent(lines[i]);
-          const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
-          const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
-          // Parent: a line immediately followed by a more-indented line, with text
-          if (nextIndent > indent) {
-            const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
-            if (txt) {
-              // Class only. These used to also set fontWeight, borderBottom and
-              // paddingBottom inline, with a comment claiming that was what made
-              // the styling survive a save - but the sanitizer strips the style
-              // attribute, so those three lines never once did anything. The
-              // .has-children CSS is what actually renders it.
-              lines[i].classList.add('has-children');
-            }
-          } else {
-            // Not a parent anymore - remove any leftover bold from inline styles
-            lines[i].style.fontWeight = '';
-            const sp = lines[i].querySelector('span');
-            if (sp) sp.style.fontWeight = '';
-          }
-          // End-of-list boundary: a top-level line that comes right after a
-          // more-indented (child) line - i.e. indentation stepped back to 0.
-          if (indent === 0 && prevIndent > 0) {
-            lines[i].classList.add('ends-list');
-            lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
-            lines[i].style.paddingTop = '8px';
-          }
-        }
-      } catch (err) {
-        console.error('refreshListMarkers error:', err);
-      }
-    };
-
-    const syncParentCheckboxes = (detailsArea) => {
-      try {
-        if (!detailsArea) return;
-        const lines = Array.from(detailsArea.querySelectorAll('.checkbox-line'));
-        if (lines.length < 2) return;
-        
-        const getIndent = (line) => parseInt(line.style.marginLeft || '0') || 0;
-        const items = lines.map((line) => ({
-          line,
-          indent: getIndent(line),
-          checkbox: line.querySelector('.task-checkbox')
-        }));
-        
-        // Determine, for each item, the set of DIRECT children.
-        // Direct children = the immediately-following run of lines that are
-        // more indented, where a "direct" child is at the shallowest indent
-        // within that run (deeper ones are grandchildren).
-        // Process parents from those deepest in the tree upward so nested
-        // chains resolve. We do multiple passes until stable.
-        let changed = true;
-        let guard = 0;
-        while (changed && guard < 20) {
-          changed = false;
-          guard++;
-          for (let i = 0; i < items.length; i++) {
-            const parent = items[i];
-            if (!parent.checkbox) continue;
-            
-            // Gather the run of following lines more indented than this one
-            const run = [];
-            for (let j = i + 1; j < items.length; j++) {
-              if (items[j].indent <= parent.indent) break;
-              run.push(items[j]);
-            }
-            if (run.length === 0) continue;
-            
-            // Direct children = lines in the run at the minimum indent of the run
-            const minChildIndent = Math.min(...run.map(r => r.indent));
-            const directChildren = run.filter(r => r.indent === minChildIndent && r.checkbox);
-            if (directChildren.length === 0) continue;
-            
-            const allChecked = directChildren.every(r => r.checkbox.checked);
-            if (parent.checkbox.checked !== allChecked) {
-              parent.checkbox.checked = allChecked;
-              changed = true;
-            }
-            if (allChecked) {
-              parent.checkbox.setAttribute('checked', 'checked');
-            } else {
-              parent.checkbox.removeAttribute('checked');
-            }
-          }
-        }
-        
-        // Persist all checkbox states as attributes for save/reload
-        items.forEach(it => {
-          if (!it.checkbox) return;
-          if (it.checkbox.checked) {
-            it.checkbox.setAttribute('checked', 'checked');
-          } else {
-            it.checkbox.removeAttribute('checked');
-          }
-        });
-      } catch (err) {
-        console.error('syncParentCheckboxes error:', err);
-      }
-    };
-
-    // Set initial content only when task first expands.
-    //
-    // Deliberately useEffect, NOT useLayoutEffect. Switching it to a layout
-    // effect to hide the remount flash crashed the app: this effect's cleanup
-    // saves, and a layout effect runs synchronously, so save -> task.details
-    // changes -> effect re-runs -> cleanup saves again, with no paint in
-    // between to break the cycle. React kills it as a runaway update.
-    React.useEffect(() => {
-      // Captured here, while the element is still mounted. React sets refs to
-      // null during unmount, and passive effect cleanups run AFTER that - so a
-      // cleanup reading detailsRef.current on collapse found null and saved
-      // nothing. Everything typed since the last blur was lost, and only on the
-      // collapse path, which is why clicking away without collapsing worked.
-      // A detached node still holds its innerHTML, so this stays readable.
-      const area = detailsRef.current;
-
-      if (isExpanded && area) {
-        // Only set content once when first expanded
-        if (!hasSetInitialContent.current) {
-          if (task.details === lastSavedHtmlRef.current) {
-            // This run is the echo of our own save. The DOM already shows
-            // exactly this, so re-writing it would only lose the scroll
-            // position and any selection - adopt it and leave the DOM alone.
-            hasSetInitialContent.current = true;
-          } else {
-            // Sanitized here too, not just on write. A task's details can arrive
-            // from a restored backup - and later from a partner's device - so the
-            // stored value can't be assumed to have gone through this app's own
-            // editor. This assignment is into a live element, so anything unsafe
-            // would execute immediately.
-            area.innerHTML = sanitizeRichText(task.details || '');
-            hasSetInitialContent.current = true;
-            // After loading, reflect any already-complete child sets on their parents
-            setTimeout(() => syncParentCheckboxes(area), 0);
-            setTimeout(() => refreshListMarkers(area), 0);
-            syncPlaceholder(area);
-          }
-        }
-      }
-      
-      // Cleanup: save details when task is about to collapse
-      return () => {
-        if (isExpanded && area && hasSetInitialContent.current) {
-          saveDetails(area);
-        }
-        // Reset flag when collapsed so it will load fresh next time
-        hasSetInitialContent.current = false;
-      };
-    }, [isExpanded, listName, task.id, task.details]);
-
-    React.useEffect(() => {
-      if (!isExpanded) return;
-
-      const handleClickOutside = (e) => {
-        if (!taskRef.current) return;
-
-        // A native picker is open. Its sheet/overlay lives outside this DOM
-        // subtree, so any interaction with it reads as an outside click and
-        // would collapse the task - destroying the input the picker belongs to.
-        if (pickerActiveRef.current) return;
-
-        // Fallback for desktop, where focus does stay on the input.
-        const active = document.activeElement;
-        if (active && taskRef.current.contains(active)) {
-          const tag = active.tagName;
-          const type = (active.getAttribute && active.getAttribute('type')) || '';
-          if (tag === 'SELECT' || tag === 'INPUT' && ['date', 'time', 'month', 'week'].includes(type)) {
-            return;
-          }
-        }
-
-        if (!taskRef.current.contains(e.target)) {
-          // Save details before collapsing when clicking outside
-          const detailsArea = taskRef.current.querySelector('.details-richtext');
-          if (detailsArea) {
-            const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
-            allCheckboxes.forEach(cb => {
-              if (cb.checked) {
-                cb.setAttribute('checked', 'checked');
-              } else {
-                cb.removeAttribute('checked');
-              }
-            });
-            const content = detailsArea.innerHTML;
-            updateTaskDetails(listName, task.id, content);
-          }
-          setExpandedTaskId(null);
-        }
-      };
-
-      document.addEventListener('mousedown', handleClickOutside);
-      
-      // Attach onChange handlers to existing checkboxes
-      const detailsArea = taskRef.current?.querySelector('.details-richtext');
-      
-      // Delegated listener - use BOTH click and change for reliability inside
-      // contentEditable (change doesn't always fire for checkboxes there).
-      // After a click, the checked state is updated synchronously, but we defer
-      // with a microtask/timeout to be safe, then sync parents.
-      const runSync = () => {
-        syncParentCheckboxes(detailsArea);
-      };
-      const handleDelegatedClick = (evt) => {
-        // Open pasted links in a new tab. Inside contentEditable a click would
-        // otherwise just place the cursor instead of following the link.
-        const link = evt.target && evt.target.closest && evt.target.closest('a.task-link');
-        if (link) {
-          evt.preventDefault();
-          const href = link.getAttribute('href');
-          if (href) window.open(href, '_blank', 'noopener,noreferrer');
-          return;
-        }
-        if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
-          if (indentSuppressRef.current) {
-            // The box was a drag handle, not a target. Undo the toggle the
-            // browser already applied before this handler saw the event.
-            evt.target.checked = !evt.target.checked;
-            return;
-          }
-          // Ticking a box is a complete action on its own. Handled here rather
-          // than per-checkbox so boxes created later in the session behave
-          // identically - a per-element handler only ever reached the ones
-          // present at load.
-          //
-          // No blur any more: focus was already prevented from entering the
-          // editor at mousedown, so there is nothing to take back. Blurring
-          // here as well was actively harmful - if you were mid-sentence
-          // elsewhere in the notes and ticked a box, it threw your cursor away.
-          // Deferred a tick so the browser has finished toggling `checked`.
-          setTimeout(() => {
-            runSync();
-            saveDetails(detailsArea);
-          }, 0);
-        }
-      };
-      const handleDelegatedChange = (evt) => {
-        if (evt.target && evt.target.classList && evt.target.classList.contains('task-checkbox')) {
-          runSync();
-        }
-      };
-      // Declared in the effect's own scope, not inside the `if` below.
-      // These are referenced by the cleanup, which lives outside that block -
-      // declaring them inside it meant every cleanup threw a ReferenceError,
-      // so collapsing, rotating, or anything that re-ran the effect crashed.
-      // --- Indent by dragging a checkbox sideways ------------------------
-      // iOS has no Tab key, so the keyboard route to nesting doesn't exist on
-      // a phone. This uses the gesture that's free here: swipe-to-complete is
-      // disabled while a task is expanded, so horizontal drags inside the
-      // editor are unclaimed.
-      //
-      // The drag must START on the checkbox. That element is
-      // contentEditable="false", so dragging from it can't begin a text
-      // selection - starting anywhere in the text would fight iOS's own
-      // selection handles.
-      const indentDrag = { x: 0, y: 0, line: null, moved: false, axis: null, kind: null };
-      const INDENT_STEP = 20;
-      const INDENT_TRIGGER = 22;
-
-      const MARKER_ZONE = 30;
-
-      const onIndentStart = (evt) => {
-        indentDrag.line = null;
-        if (evt.touches.length !== 1) return;
-        const t = evt.touches[0];
-        const el = evt.target;
-        if (!el || !el.closest) return;
-
-        const box = el.closest('.task-checkbox');
-        const checkboxLine = box && box.closest('.checkbox-line');
-        if (checkboxLine) {
-          indentDrag.kind = 'checkbox';
-          indentDrag.line = checkboxLine;
-        } else {
-          // A bullet has no element to grab - its marker is a ::marker pseudo,
-          // which can't receive touches. The space the marker occupies works
-          // instead: a drag starting in the line's left inset is the handle,
-          // and starting there also keeps the gesture out of the text, where
-          // it would fight iOS's selection handles exactly as it would on a
-          // checkbox line.
-          const li = el.closest('li');
-          if (!li || !detailsArea.contains(li)) return;
-          const rect = li.getBoundingClientRect();
-          if (t.clientX - rect.left > MARKER_ZONE) return;
-          indentDrag.kind = 'bullet';
-          indentDrag.line = li;
-        }
-
-        indentDrag.x = t.clientX;
-        indentDrag.y = t.clientY;
-        indentDrag.moved = false;
-        indentDrag.axis = null;
-      };
-
-      const onIndentMove = (evt) => {
-        if (!indentDrag.line) return;
-        const t = evt.touches[0];
-        const dx = t.clientX - indentDrag.x;
-        const dy = t.clientY - indentDrag.y;
-
-        // Decide the axis once, on the first real movement, and hold it.
-        // Re-deciding every frame is what made this feel unreliable: a drag
-        // that wandered a few pixels vertically mid-gesture would abandon
-        // itself halfway through.
-        if (indentDrag.axis === null) {
-          if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
-          indentDrag.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-        }
-        if (indentDrag.axis === 'y') { indentDrag.line = null; return; }
-
-        // Claimed from here on, every frame - not only when a step is crossed.
-        // Previously the page was free to pan during the 28px before the first
-        // step, which is the drift you could feel before anything happened.
-        evt.preventDefault();
-
-        if (Math.abs(dx) < INDENT_TRIGGER) return;
-
-        if (indentDrag.kind === 'bullet') {
-          // Nesting, not a margin: a bullet's depth is structural, and faking
-          // it with an indent would leave the markers all at the same level.
-          // execCommand needs the caret inside the item it is to act on.
-          const sel = window.getSelection();
-          const r = document.createRange();
-          r.selectNodeContents(indentDrag.line);
-          r.collapse(true);
-          sel.removeAllRanges();
-          sel.addRange(r);
-          document.execCommand(dx > 0 ? 'indent' : 'outdent', false, null);
-          indentDrag.moved = true;
-        } else {
-          const current = parseInt(indentDrag.line.style.marginLeft || '0') || 0;
-          const next = dx > 0
-            ? current + INDENT_STEP
-            : Math.max(0, current - INDENT_STEP);
-          if (next !== current) {
-            indentDrag.line.style.marginLeft = next + 'px';
-            refreshListMarkers(detailsArea);
-          }
-        }
-        // Re-anchor rather than end the gesture, so one continuous drag can
-        // step through several levels the way repeated Tabs would.
-        indentDrag.x = t.clientX;
-        indentDrag.moved = true;
-        evt.preventDefault();
-      };
-
-      const onIndentEnd = () => {
-        if (indentDrag.moved) {
-          // The tap that ends this drag would otherwise tick the box - the
-          // one thing the user certainly didn't mean by dragging it.
-          indentSuppressRef.current = true;
-          setTimeout(() => { indentSuppressRef.current = false; }, 400);
-          saveDetails(detailsArea);
-        }
-        indentDrag.line = null;
-        indentDrag.moved = false;
-        indentDrag.axis = null;
-        indentDrag.kind = null;
-      };
-
-      // Focus moves on mousedown, not on click - so this is the only moment
-      // where it can be stopped from happening at all. Preventing the default
-      // here keeps the caret and the keyboard out of the editor entirely when
-      // you tap a checkbox; blurring afterwards, as it did before, meant the
-      // keyboard could still flash open and closed on the way through.
-      //
-      // The toggle is unaffected: a checkbox flips on click, which is a
-      // separate default action from the focus that happens on mousedown.
-      // On iOS the emulated mousedown fires after touchend, so this covers
-      // touch as well without needing a non-passive touch listener.
-      const onCheckboxMouseDown = (evt) => {
-        const t = evt.target;
-        if (!t || !t.closest) return;
-
-        // Tapping the empty space below the content is the way in to typing.
-        // The target being the editor itself - rather than any line inside it -
-        // is exactly what "below everything" means.
-        //
-        // The caret is moved to the very end rather than left where the browser
-        // put it. Clicking blank space below a checklist otherwise drops the
-        // cursor at whatever position happens to be nearest, which can be the
-        // middle of an earlier line - so the gesture has to be explicit about
-        // meaning "carry on from the end".
-        if (t === detailsArea) {
-          setTimeout(() => {
-            try {
-              const last = detailsArea.lastElementChild;
-              const isStructured = last && (
-                (last.classList && last.classList.contains('checkbox-line')) ||
-                last.tagName === 'UL' || last.tagName === 'OL'
-              );
-              const isBlankLine = last && last.tagName === 'DIV' &&
-                !isStructured &&
-                (last.textContent || '').replace(/\u00A0/g, '').trim() === '';
-
-              // Collapsing to the end of the content would land the caret
-              // inside the last checkbox line, so typing continued that item
-              // instead of starting something new. A fresh plain line below the
-              // structure is what "carry on underneath" actually means.
-              let target = null;
-              if (isBlankLine) {
-                // One already exists from a previous tap - reuse it rather than
-                // stacking up empty lines every time the space is touched.
-                target = last;
-              } else if (isStructured) {
-                target = document.createElement('div');
-                target.innerHTML = '<br>';
-                detailsArea.appendChild(target);
-              }
-
-              const r = document.createRange();
-              if (target) {
-                r.setStart(target, 0);
-                r.collapse(true);
-              } else {
-                r.selectNodeContents(detailsArea);
-                r.collapse(false);
-              }
-              const sel = window.getSelection();
-              sel.removeAllRanges();
-              sel.addRange(r);
-            } catch (err) {
-              // Focus still landed; only the caret position is a nicety.
-            }
-          }, 0);
-          return;
-        }
-
-        // The checkbox itself never focuses anything.
-        if (t.closest('.task-checkbox')) { evt.preventDefault(); return; }
-
-        // Touch only, from here down. The restriction exists because a finger
-        // aiming for a checkbox often lands on the words beside it, and every
-        // miss used to open the keyboard and shift the layout mid-tap. A mouse
-        // doesn't miss, so on desktop clicking the text means exactly what it
-        // says and should place a cursor.
-        if (!IS_TOUCH_DEVICE) return;
-
-        const line = t.closest('.checkbox-line');
-        if (!line) return;   // plain text, or the empty space below - editable
-
-        // The deliberate way in on touch: tap past the end of the line's text.
-        // That is an unambiguous "put the cursor here" and it can't be hit by
-        // aiming for the box. Clicking below the content works the same way,
-        // since that isn't inside a checkbox line at all.
-        const label = line.querySelector('span') || line;
-        const rect = label.getBoundingClientRect();
-        if (evt.clientX <= rect.right) evt.preventDefault();
-      };
-
-      if (detailsArea) {
-        detailsArea.addEventListener('mousedown', onCheckboxMouseDown);
-        detailsArea.addEventListener('touchstart', onIndentStart, { passive: true });
-        detailsArea.addEventListener('touchmove', onIndentMove, { passive: false });
-        detailsArea.addEventListener('touchend', onIndentEnd);
-        detailsArea.addEventListener('touchcancel', onIndentEnd);
-
-        detailsArea.addEventListener('change', handleDelegatedChange);
-        detailsArea.addEventListener('click', handleDelegatedClick);
-        
-        const checkboxes = detailsArea.querySelectorAll('.task-checkbox');
-        checkboxes.forEach(checkbox => {
-          // Clicking is handled by the delegated listener above, not here.
-          // What this does need is to make the box a non-editable island: the
-          // caret could otherwise be placed to its left - inside the line but
-          // before the box - where typing put text ahead of the checkbox.
-          // Set on the live DOM rather than in the markup because the sanitizer
-          // strips contenteditable, and it doesn't need to persist since this
-          // runs on every load.
-          checkbox.contentEditable = 'false';
-          checkbox.onclick = null;
-          checkbox.onchange = null;
-        });
-
-        // Links get the same treatment. The paste handler marks them
-        // non-editable so the "Link" label can't be typed into, but the
-        // sanitizer strips contenteditable - so it has to be reapplied
-        // whenever stored content is loaded back in.
-        detailsArea.querySelectorAll('a.task-link').forEach(a => {
-          a.contentEditable = 'false';
-        });
-      }
-      
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-        if (detailsArea) {
-          detailsArea.removeEventListener('change', handleDelegatedChange);
-          detailsArea.removeEventListener('click', handleDelegatedClick);
-          detailsArea.removeEventListener('mousedown', onCheckboxMouseDown);
-          detailsArea.removeEventListener('touchstart', onIndentStart);
-          detailsArea.removeEventListener('touchmove', onIndentMove);
-          detailsArea.removeEventListener('touchend', onIndentEnd);
-          detailsArea.removeEventListener('touchcancel', onIndentEnd);
-        }
-      };
-    }, [isExpanded, listName, task.id]);
-
-    return (
-      <div 
-        ref={taskRef}
-        className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${collapsing ? 'collapsing' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
-        // Not while expanded: the details editor needs normal text selection,
-        // and a draggable ancestor breaks it.
-        draggable={!isExpanded && !task.isArchived && !isCompleting}
-        onDragStart={(e) => {
-          draggingTaskRef.current = { id: task.id, listName };
-          e.dataTransfer.effectAllowed = 'move';
-          // Firefox refuses to start a drag without data set.
-          try { e.dataTransfer.setData('text/plain', String(task.id)); } catch (err) {}
-          if (taskRef.current) taskRef.current.style.opacity = '0.4';
-        }}
-        onDragEnd={() => {
-          draggingTaskRef.current = null;
-          if (taskRef.current) {
-            taskRef.current.style.opacity = '';
-            taskRef.current.style.boxShadow = '';
-          }
-        }}
-        onDragOver={(e) => {
-          const g = draggingTaskRef.current;
-          if (!g || g.listName !== listName || g.id === task.id) return;
-          if (!canReorderTogether(findTask(allLists[listName], g.id), task)) return;
-          e.preventDefault();
-          // Highlight written straight to the node. Doing this through state
-          // would re-render, and because Task is declared inside the parent
-          // that remounts the card and cancels the drag mid-gesture.
-          if (taskRef.current) {
-            taskRef.current.style.boxShadow = 'inset 0 3px 0 0 var(--accent)';
-          }
-        }}
-        onDragLeave={() => {
-          if (taskRef.current) taskRef.current.style.boxShadow = '';
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          const g = draggingTaskRef.current;
-          if (taskRef.current) taskRef.current.style.boxShadow = '';
-          if (g && g.listName === listName) reorderTask(listName, g.id, task.id);
-          draggingTaskRef.current = null;
-        }}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-        onTouchCancel={onTouchEnd}
-        onClick={() => {
-          if (task.isArchived) return;
-          // A completed swipe is followed by a click; ignore it so the card
-          // doesn't expand as a side effect of being completed.
-          if (swipe.current.justSwiped) return;
-          // This tap already did a job - it closed a different task. Checked
-          // and cleared here so the tap after it behaves normally.
-          if (collapseGuardRef.current) {
-            collapseGuardRef.current = false;
-            return;
-          }
-          
-          // Save details before collapsing
-          if (isExpanded && detailsRef.current) {
-            const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-            allCheckboxes.forEach(cb => {
-              if (cb.checked) {
-                cb.setAttribute('checked', 'checked');
-              } else {
-                cb.removeAttribute('checked');
-              }
-            });
-            const content = detailsRef.current.innerHTML;
-            // Always save when collapsing, even if content looks the same
-            // This ensures text is persisted
-            updateTaskDetails(listName, task.id, content);
-          }
-          
-          setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
-        }}
-        style={{
-          pointerEvents: task.isArchived ? 'none' : 'auto',
-          // Swiped out: the card stays opaque and slides clear, so what you're
-          // left looking at is the full green panel and its checkmark. Ticked:
-          // it fades in place as before.
-          ...(swipedOut ? { '--swipe-progress': 1, '--swipe-dx': '110%' } : {}),
-          opacity: task.isArchived ? 0.7 : (isCompleting && !swipedOut ? 0 : 1),
-          transform: swipedOut
-            ? 'translateX(110%)'
-            : (isCompleting ? 'translateX(14px) scale(0.97)' : 'none'),
-          // Height collapse: pinned to the measured value first, then driven to 0
-          // once `collapsing` flips, which pulls the rows below up smoothly.
-          ...(isCompleting && measuredHeight != null ? {
-            maxHeight: collapsing ? '0px' : `${measuredHeight}px`,
-            marginBottom: collapsing ? '0px' : undefined,
-            paddingTop: collapsing ? '0px' : undefined,
-            paddingBottom: collapsing ? '0px' : undefined,
-            // Not while swiped out. The green panel is a pseudo-element that
-            // counter-translates to stay put while the card slides away, which
-            // puts it outside the card's own box - overflow:hidden would clip
-            // away the very thing the gesture is meant to reveal. The card is
-            // off-screen by then, so there is nothing left to spill.
-            ...(swipedOut ? {} : { overflow: 'hidden' })
-          } : {}),
-          // Opacity/transform wait for the hold; the collapse is already
-          // delayed by its own timer, so it gets no extra delay here.
-          // Built from the same constants as the timers above. Opacity and
-          // transform wait out the hold; the collapse needs no delay here
-          // because its own timer already fires at that moment.
-          transition: isCompleting
-            ? (swipedOut ? [
-                // The slide-off happens immediately - it's the tail of the
-                // gesture, not something to wait for. Only the collapse waits
-                // out the hold, and its own timer already handles that.
-                'transform 260ms ease',
-                `max-height ${COMPLETE_ANIM_MS}ms ease`,
-                `margin ${COMPLETE_ANIM_MS}ms ease`,
-                `padding ${COMPLETE_ANIM_MS}ms ease`
-              ].join(', ') : [
-                `opacity ${COMPLETE_ANIM_MS}ms ease ${COMPLETE_HOLD_MS}ms`,
-                `transform ${COMPLETE_ANIM_MS}ms ease ${COMPLETE_HOLD_MS}ms`,
-                `max-height ${COMPLETE_ANIM_MS}ms ease`,
-                `margin ${COMPLETE_ANIM_MS}ms ease`,
-                `padding ${COMPLETE_ANIM_MS}ms ease`
-              ].join(', '))
-            : 'none'
-        }}
-      >
-        {task.priority && task.priority !== 'low' && (
-          <div className={`priority-indicator ${task.priority}`}></div>
-        )}
-        
-        <div className="task-main">
-          <div className="checkbox-wrapper">
-            <input
-              type="checkbox"
-              checked={task.completed || isCompleting}
-              onChange={(e) => {
-                e.stopPropagation();
-                requestComplete();
-              }}
-              onClick={(e) => e.stopPropagation()}
-              disabled={task.isArchived}
-            />
-          </div>
-          <div className="task-content">
-            {isExpanded && editingTaskName === `${listName}-${task.id}` ? (
-              <input
-                type="text"
-                value={task.text}
-                onChange={(e) => {
-                  e.stopPropagation();
-                  renameTask(listName, task.id, e.target.value);
-                }}
-                onBlur={() => setEditingTaskName(null)}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter') {
-                    setEditingTaskName(null);
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                autoFocus
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  background: 'rgba(var(--surface-rgb), 0.8)',
-                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                  borderRadius: '8px',
-                  color: 'var(--text)',
-                  fontSize: '1rem',
-                  fontFamily: 'var(--font-ui)',
-                  fontWeight: '600'
-                }}
-              />
-            ) : (
-              <div 
-                className="task-text"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  // Renaming needs the click to land on the words. Clicking the
-                  // space beside them is a click on the row, and falls through
-                  // to the same expand/collapse everything else does.
-                  const onLabel = e.target && e.target.closest
-                    && e.target.closest('.task-text-label');
-                  if (isExpanded && !task.isArchived && onLabel) {
-                    setEditingTaskName(`${listName}-${task.id}`);
-                  } else {
-                    // If collapsed, single click expands
-                    // Delay single-click action to allow double-click to cancel it
-                    clickTimeoutRef.current = setTimeout(() => {
-                      // Save details before toggling if expanded
-                      if (isExpanded && detailsRef.current) {
-                        const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-                        allCheckboxes.forEach(cb => {
-                          if (cb.checked) {
-                            cb.setAttribute('checked', 'checked');
-                          } else {
-                            cb.removeAttribute('checked');
-                          }
-                        });
-                        const content = detailsRef.current.innerHTML;
-                        // Always save when collapsing, even if content looks the same
-                        // This ensures text is persisted
-                        updateTaskDetails(listName, task.id, content);
-                      }
-                      
-                      // Single click toggles task expanded/collapsed
-                      if (!task.isArchived) {
-                        setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
-                      }
-                    }, 250); // 250ms delay
-                  }
-                }}
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
-                  // Cancel the pending single-click
-                  if (clickTimeoutRef.current) {
-                    clearTimeout(clickTimeoutRef.current);
-                  }
-                  // Double-click enters edit mode (works whether expanded or not)
-                  if (!task.isArchived) {
-                    if (!isExpanded) {
-                      setExpandedTaskId(`${listName}-${task.id}`);
-                    }
-                    setEditingTaskName(`${listName}-${task.id}`);
-                  }
-                }}
-                style={{cursor: isExpanded ? 'text' : 'pointer'}}
-              >
-                {/* Inline span, so its box ends where the text ends. The div
-                    around it is a flex child that fills the row, so hanging the
-                    rename off the div meant the whole empty area beside a short
-                    title opened the editor. */}
-                <span className="task-text-label">{task.text}</span>
-              </div>
-            )}
-
-            {/* Only rendered when there's something to show. As an
-                unconditional div it still contributed its margin and line
-                box, padding out every task that had no due date. */}
-            {dueDate && !task.completed && (
-              <div className="task-meta">
-                <span className={`task-due-date ${isOverdue ? 'overdue' : ''}`}><CalendarIcon /> {dueDateText}</span>
-              </div>
-            )}
-          </div>
-          {/* A direct child of .task-main rather than of .task-content, so it
-              isn't stacked under the title. align-self:flex-start (in the CSS)
-              pins it to the task's first line; margin-left:auto pushes it to
-              the right edge. */}
-          {sharedBadge && (
-            <span
-              className={`shared-badge ${sharedBadge.key}`}
-              title={task.completed ? `Completed by ${sharedBadge.label}` : `Assigned to ${sharedBadge.label}`}
-            >
-              {sharedBadge.label}
-            </span>
-          )}
-          {task.priority === 'high' && (
-            <span className="pinned-flame-right">
-              <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" style={{width: '20px', height: '20px', display: 'inline-block'}}>
-                <path d="M 32 8 Q 26 14 22 24 Q 18 35 20 46 Q 23 54 32 58 Q 41 54 44 46 Q 46 35 42 24 Q 38 14 32 8 Z" fill="#FF6B35" opacity="0.8"/>
-                <path d="M 32 8 Q 36 14 40 24 Q 44 35 42 46 Q 39 52 32 56 Q 25 52 22 46 Q 20 35 24 24 Q 28 14 32 8 Z" fill="#FF8C42" opacity="0.9"/>
-                <path d="M 32 12 Q 28 18 26 28 Q 24 38 27 46 Q 29 50 32 52 Q 35 50 37 46 Q 40 38 38 28 Q 36 18 32 12 Z" fill="#FFD93D"/>
-                <path d="M 32 18 Q 30 24 29 32 Q 28 40 30 46 Q 31 48 32 49 Q 33 48 34 46 Q 36 40 35 32 Q 34 24 32 18 Z" fill="#FFF4CC"/>
-              </svg>
-            </span>
-          )}
-        </div>
-
-        {isExpanded && (
-          <div className="task-details-section">
-            {/* First field in the expanded view: on a shared list, who owns
-                this task is the thing you want to see before the notes. */}
-            {isSharedTask && (
-              <div className="assign-field">
-                <label className="details-label" style={{ margin: 0 }}>Assigned:</label>
-                <button
-                  type="button"
-                  className={`assign-pill ${task.assignedTo || 'unassigned'}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    cycleAssignment(listName, task.id);
-                  }}
-                  title="Tap to reassign"
-                >
-                  {task.assignedTo === 'me' ? 'You'
-                    : task.assignedTo === 'partner' ? partnerLabel
-                    : 'Unassigned'}
-                </button>
-              </div>
-            )}
-
-            <label className="details-label">Details</label>
-            <div className="richtext-toolbar" onClick={(e) => e.stopPropagation()}>
-              <button 
-                className="toolbar-btn"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  
-                  // Find and focus the details richtext area
-                  const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
-                  detailsArea.focus();
-                  
-                  // Ensure cursor is positioned
-                  const selection = window.getSelection();
-                  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
-                    const range = document.createRange();
-                    range.selectNodeContents(detailsArea);
-                    range.collapse(false);
-                    selection.removeAllRanges();
-                    selection.addRange(range);
-                  } else {
-                    const range = selection.getRangeAt(0);
-                    
-                    // Helper to build a fresh checkbox line
-                    const buildCheckboxLine = () => {
-                      const checkbox = document.createElement('input');
-                      checkbox.type = 'checkbox';
-                      checkbox.className = 'task-checkbox';
-                      // No click handler: the delegated listener on the details
-                      // area covers this box too. contentEditable=false keeps
-                      // the caret from landing to its left.
-                      checkbox.contentEditable = 'false';
-                      // No inline onchange - the delegated change listener on the
-                      // details area handles parent auto-check for all checkboxes.
-                      const line = document.createElement('div');
-                      line.className = 'checkbox-line';
-                      const span = document.createElement('span');
-                      span.contentEditable = 'true';
-                      span.innerHTML = '&nbsp;';
-                      line.appendChild(checkbox);
-                      line.appendChild(span);
-                      return { line, span };
-                    };
-                    
-                    // A selection spanning several lines converts each of them,
-                    // rather than the single line the caret happens to sit in.
-                    // Everything below this point assumes one line - it walks up
-                    // from range.startContainer and never looks at where the
-                    // selection ends - so multi-line is handled here and returns.
-                    if (!range.collapsed) {
-                      const blocks = Array.from(detailsArea.children).filter(
-                        el => range.intersectsNode(el)
-                      );
-                      if (blocks.length > 1) {
-                        blocks.forEach(block => {
-                          // Already a real checkbox line - leave it alone rather
-                          // than nesting a second box inside it.
-                          if (block.classList.contains('checkbox-line') &&
-                              block.querySelector('.task-checkbox')) return;
-
-                          const { line, span } = buildCheckboxLine();
-                          // Text is moved, not copied: this converts the line in
-                          // place, so anything already on it has to come across
-                          // including its formatting.
-                          span.innerHTML = '';
-                          while (block.firstChild) span.appendChild(block.firstChild);
-                          if (!span.textContent.trim()) span.innerHTML = '&nbsp;';
-                          // Indent carries over so converting a nested bullet
-                          // doesn't silently flatten the hierarchy.
-                          if (block.style && block.style.marginLeft) {
-                            line.style.marginLeft = block.style.marginLeft;
-                          }
-                          block.parentElement.replaceChild(line, block);
-                        });
-                        setTimeout(() => {
-                          syncParentCheckboxes(detailsArea);
-                          refreshListMarkers(detailsArea);
-                        }, 0);
-                        return;
-                      }
-                    }
-
-                    // Find the current line/block the cursor is on
-                    let currentNode = range.startContainer;
-                    let currentLine = currentNode.nodeType === Node.ELEMENT_NODE ?
-                      currentNode : currentNode.parentElement;
-                    
-                    // Walk up to find the direct child of detailsArea (the line container)
-                    while (currentLine && currentLine.parentElement !== detailsArea && currentLine !== detailsArea) {
-                      currentLine = currentLine.parentElement;
-                    }
-                    
-                    // If it's a checkbox line that still has a live checkbox, don't double-add.
-                    // But if it's a leftover empty checkbox-line (checkbox was deleted),
-                    // fall through and treat it as a normal empty line.
-                    if (currentLine && currentLine.classList && currentLine.classList.contains('checkbox-line')) {
-                      const hasCheckbox = currentLine.querySelector('.task-checkbox');
-                      const lineText = (currentLine.textContent || '').replace(/\u00A0/g, '').trim();
-                      if (hasCheckbox && lineText !== '') {
-                        // A real, populated checkbox line - don't add another
-                        return;
-                      }
-                      if (hasCheckbox && lineText === '') {
-                        // Empty checkbox line that still has its box - nothing to do
-                        return;
-                      }
-                      // else: leftover markup with no checkbox - fall through to convert it
-                    }
-                    
-                    // An empty bullet at the caret is an intent, not content:
-                    // you started a bullet and then chose a checkbox instead.
-                    // It has to be handled separately because currentLine walks
-                    // up to the direct child of the details area, which for a
-                    // bullet is the whole <ul> - so an empty <li> inside a list
-                    // that still has other items was invisible to the checks
-                    // below, and the checkbox landed under a stray dot.
-                    let explicitAnchor = null;
-                    const caretEl = currentNode.nodeType === Node.ELEMENT_NODE
-                      ? currentNode : currentNode.parentElement;
-                    const emptyLi = caretEl && caretEl.closest ? caretEl.closest('li') : null;
-                    if (emptyLi && detailsArea.contains(emptyLi) &&
-                        (emptyLi.textContent || '').replace(/\u00A0/g, '').trim() === '') {
-                      const list = emptyLi.parentElement;
-                      const wasOnlyItem = list && list.querySelectorAll('li').length === 1;
-                      // Anchor captured before removing anything, or the
-                      // reference point disappears along with the node.
-                      explicitAnchor = { parent: list.parentElement, before: list.nextSibling };
-                      emptyLi.remove();
-                      // A list with no items left is empty scaffolding, not a
-                      // list - drop it rather than leaving invisible markup
-                      // that still takes vertical space.
-                      if (wasOnlyItem || !list.querySelector('li')) list.remove();
-                    }
-
-                    const { line: checkboxLine, span: textSpan } = buildCheckboxLine();
-                    
-                    // Determine if the current line has text
-                    const isProperLine = currentLine && currentLine !== detailsArea && currentLine.parentElement === detailsArea;
-                    const currentLineText = isProperLine ? (currentLine.textContent || '').replace(/\u00A0/g, '').trim() : '';
-                    
-                    if (explicitAnchor) {
-                      explicitAnchor.parent.insertBefore(checkboxLine, explicitAnchor.before);
-                    } else if (isProperLine && currentLineText === '') {
-                      // Empty line (including leftover empty checkbox-line) - replace with checkbox line
-                      currentLine.parentElement.replaceChild(checkboxLine, currentLine);
-                    } else if (isProperLine && currentLineText !== '') {
-                      // Line has text - add checkbox on the NEXT line
-                      currentLine.parentElement.insertBefore(checkboxLine, currentLine.nextSibling);
-                    } else {
-                      // Cursor is directly in detailsArea (no wrapping line div)
-                      // Check if there's any text content at the cursor position on this "line"
-                      const areaText = (detailsArea.textContent || '').replace(/\u00A0/g, '').trim();
-                      if (areaText === '') {
-                        // Empty details area - just add the checkbox at the start
-                        detailsArea.appendChild(checkboxLine);
-                      } else {
-                        // There's text - insert checkbox line after current position
-                        range.collapse(false);
-                        range.insertNode(checkboxLine);
-                      }
-                    }
-                    
-                    // Move cursor into the checkbox's text span
-                    const newRange = document.createRange();
-                    newRange.setStart(textSpan, 0);
-                    newRange.collapse(true);
-                    selection.removeAllRanges();
-                    selection.addRange(newRange);
-                  }
-                }}
-                title="Insert Checkbox"
-              >
-                <CheckboxIcon />Box
-              </button>
-              <button 
-                className="toolbar-btn"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  
-                  // Find and focus the details richtext area
-                  const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
-                  detailsArea.focus();
-                  
-                  // Ensure cursor is positioned
-                  const selection = window.getSelection();
-                  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
-                    const range = document.createRange();
-                    range.selectNodeContents(detailsArea);
-                    range.collapse(false);
-                    selection.removeAllRanges();
-                    selection.addRange(range);
-                  }
-                  
-                  // execCommand handles ordinary block elements, but the editor's
-                  // lines are custom checkbox-line divs containing an <input> -
-                  // it either skips those or nests the box inside the new <li>.
-                  // A multi-line selection is converted explicitly instead, and
-                  // only genuinely plain lines fall through to the native path.
-                  const range = selection.getRangeAt(0);
-                  if (!range.collapsed) {
-                    const blocks = Array.from(detailsArea.children).filter(
-                      el => range.intersectsNode(el)
-                    );
-                    if (blocks.length > 1) {
-                      const list = document.createElement('ul');
-                      blocks[0].parentElement.insertBefore(list, blocks[0]);
-                      blocks.forEach(block => {
-                        const li = document.createElement('li');
-                        // The checkbox itself is dropped: a line is either a
-                        // checkbox or a bullet, and keeping both would leave a
-                        // dead box sitting inside the bullet.
-                        const box = block.querySelector('.task-checkbox');
-                        if (box) box.remove();
-                        while (block.firstChild) li.appendChild(block.firstChild);
-                        if (!li.textContent.trim()) li.innerHTML = '<br>';
-                        list.appendChild(li);
-                        block.remove();
-                      });
-                      setTimeout(() => refreshListMarkers(detailsArea), 0);
-                      return;
-                    }
-                  }
-
-                  // An empty checkbox line at the caret is an intent, not
-                  // content: you made a checkbox, then chose a bullet instead.
-                  // The exact mirror of the empty-bullet case the Box button
-                  // handles. Without this, execCommand wraps the line and you
-                  // end up with a checkbox sitting inside a bullet.
-                  const caretNode = range.startContainer;
-                  const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
-                    ? caretNode : caretNode.parentElement;
-                  const emptyBox = caretEl && caretEl.closest
-                    ? caretEl.closest('.checkbox-line') : null;
-                  if (emptyBox && detailsArea.contains(emptyBox) &&
-                      (emptyBox.textContent || '').replace(/\u00A0/g, '').trim() === '') {
-                    const list = document.createElement('ul');
-                    const li = document.createElement('li');
-                    li.innerHTML = '<br>';
-                    list.appendChild(li);
-                    // Indent carries across so swapping the marker type doesn't
-                    // silently promote the line back to the top level.
-                    if (emptyBox.style && emptyBox.style.marginLeft) {
-                      list.style.marginLeft = emptyBox.style.marginLeft;
-                    }
-                    emptyBox.parentElement.replaceChild(list, emptyBox);
-
-                    const caret = document.createRange();
-                    caret.selectNodeContents(li);
-                    caret.collapse(true);
-                    selection.removeAllRanges();
-                    selection.addRange(caret);
-
-                    setTimeout(() => refreshListMarkers(detailsArea), 0);
-                    return;
-                  }
-
-                  document.execCommand('insertUnorderedList', false, null);
-                }}
-                title="Bullet List"
-              >
-                • Bullets
-              </button>
-              <button
-                className={`toolbar-btn ${formatOn ? 'format-on' : ''}`}
-                onMouseDown={(e) => {
-                  // onMouseDown with preventDefault, like its neighbours: the
-                  // selection has to survive the press, and a plain click would
-                  // have already moved focus out of the editor by then.
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
-                  detailsArea.focus();
-                  const selection = window.getSelection();
-                  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
-                    const range = document.createRange();
-                    range.selectNodeContents(detailsArea);
-                    range.collapse(false);
-                    selection.removeAllRanges();
-                    selection.addRange(range);
-                  }
-                  // Both at once, so the button is one state rather than two
-                  // that can drift apart. With a selection it styles it; with a
-                  // bare cursor it arms the styling for what you type next.
-                  document.execCommand('bold', false, null);
-                  document.execCommand('underline', false, null);
-                }}
-                title="Bold + underline"
-              >
-                {/* A span, not <strong>: the underline is the only cue this
-                    button needs, and <strong> was overriding the toolbar's own
-                    font weight so it sat heavier than its neighbours. */}
-                <span style={{ textDecoration: 'underline' }}>Bold</span>
-              </button>
-              <button 
-                className="toolbar-btn"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  
-                  const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
-                  // One Follow Up section per task. The heading is tagged with
-                  // its own class and that survives into the saved HTML, so its
-                  // presence is the check - and it holds for a task reopened
-                  // later, not just within this editing session. Bailing before
-                  // focus() keeps a repeat press a true no-op: no cursor jump,
-                  // no scroll, nothing.
-                  if (!detailsArea || detailsArea.querySelector('.follow-up-heading')) return;
-                  detailsArea.focus();
-
-                  // Build a "Follow Up" heading line with the matcha underline
-                  // Styled by .follow-up-heading rather than inline: the
-                  // sanitiser strips style attributes, so anything set here
-                  // would be discarded on the next save.
-                  const heading = document.createElement('div');
-                  heading.className = 'follow-up-heading';
-                  const headingSpan = document.createElement('span');
-                  headingSpan.textContent = 'Follow Up';
-                  heading.appendChild(headingSpan);
-                  
-                  // Build a bullet list with one empty bullet beneath the heading
-                  const list = document.createElement('ul');
-                  const item = document.createElement('li');
-                  item.innerHTML = '<br>';
-                  list.appendChild(item);
-                  
-                  // Append a spacer + the section a few lines below existing content
-                  const spacer = document.createElement('div');
-                  spacer.innerHTML = '<br>';
-                  detailsArea.appendChild(spacer);
-                  detailsArea.appendChild(heading);
-                  detailsArea.appendChild(list);
-                  
-                  // Place the cursor in the new bullet
-                  const selection = window.getSelection();
-                  const range = document.createRange();
-                  range.setStart(item, 0);
-                  range.collapse(true);
-                  selection.removeAllRanges();
-                  selection.addRange(range);
-                  
-                  // Refresh markers so everything stays consistent
-                  setTimeout(() => refreshListMarkers(detailsArea), 0);
-                }}
-                title="Add Follow Up section"
-              >
-                Follow Up
-              </button>
-            </div>
-            <div 
-              className="details-richtext"
-              contentEditable
-              suppressContentEditableWarning
-              // A bare contenteditable is announced as an unnamed group. These
-              // make it a named, multi-line text field to a screen reader.
-              role="textbox"
-              aria-multiline="true"
-              aria-label="Task details"
-              // Sentence case and autocorrect match every other text field on
-              // the device; without them a contenteditable silently opts out of
-              // both on iOS and typing here feels different from everywhere else.
-              autoCapitalize="sentences"
-              autoCorrect="on"
-              spellCheck="true"
-              onInput={(e) => {
-                refreshListMarkers(e.currentTarget);
-                syncPlaceholder(e.currentTarget);
-              }}
-              onBlur={(e) => {
-                e.stopPropagation();
-                saveDetails(e.currentTarget);
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onCopy={(e) => {
-                e.stopPropagation();
-                writeClipboard(e);
-              }}
-              onCut={(e) => {
-                e.stopPropagation();
-                // preventDefault on a cut cancels the deletion as well as the
-                // clipboard write - the two are one default action, not two.
-                // That is why cut was behaving like copy. Since we override the
-                // write, we have to do the removal ourselves.
-                const captured = writeClipboard(e);
-                if (!captured) return;
-                try {
-                  if (captured.range) {
-                    const sel = window.getSelection();
-                    sel.removeAllRanges();
-                    sel.addRange(captured.range);
-                  }
-                  // execCommand rather than range.deleteContents(): this one
-                  // registers with the browser's own undo stack, so Cmd-Z can
-                  // still reverse the cut.
-                  document.execCommand('delete', false, null);
-                  saveDetails(e.currentTarget);
-                } catch (err) {
-                  // Nothing removed - the clipboard still holds the content,
-                  // so no data is lost either way.
-                }
-              }}
-              onPaste={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                
-                const text = (e.clipboardData?.getData('text/plain') || '');
-                const trimmed = text.trim();
-                // A bare URL still wins over the HTML branch below, so copying
-                // a link out of a browser bar keeps producing a compact anchor
-                // rather than a page's worth of markup.
-                //
-                // Falls back to the internal stash when the clipboard offers no
-                // HTML, which is the common case on iOS. Matched on the plain
-                // text so a copy made elsewhere in between can't be mistaken
-                // for this one.
-                const clipboardHtml = (e.clipboardData?.getData('text/html') || '');
-                // The stash takes precedence over the browser's own HTML when
-                // it matches. The browser serialises the raw selection, which
-                // has the same gap - a checkbox left outside the range - so
-                // preferring it would reintroduce exactly the bug the stash
-                // exists to fix. Matched on plain text, so a copy from anywhere
-                // else falls through to the clipboard as normal.
-                const stashed = internalClipboard.text && internalClipboard.text === text
-                  ? internalClipboard.html
-                  : '';
-                const html = stashed || clipboardHtml;
-                
-                const selection = window.getSelection();
-                if (!selection.rangeCount) return;
-                const range = selection.getRangeAt(0);
-                range.deleteContents();
-                
-                // If the pasted content is a single URL, insert a compact "Link"
-                // anchor instead of the full URL text.
-                const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);
-                if (isUrl) {
-                  const href = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed;
-                  const a = document.createElement('a');
-                  a.href = href;
-                  a.textContent = 'Link';
-                  a.className = 'task-link';
-                  a.target = '_blank';
-                  a.rel = 'noopener noreferrer';
-                  a.title = href;
-                  // Atomic unit so the label isn't editable and clicks register
-                  a.contentEditable = 'false';
-                  range.insertNode(a);
-                  // Trailing space so typing can continue after the link
-                  const after = document.createTextNode('\u00A0');
-                  a.parentNode.insertBefore(after, a.nextSibling);
-                  const newRange = document.createRange();
-                  newRange.setStart(after, 1);
-                  newRange.collapse(true);
-                  selection.removeAllRanges();
-                  selection.addRange(newRange);
-                } else if (html) {
-                  // Structure survives a copy/paste: checkboxes, bullets,
-                  // indent and formatting all come through.
-                  //
-                  // Pasting HTML from an arbitrary source is only safe because
-                  // sanitizeRichText is an allowlist, and it happens to permit
-                  // exactly what this editor creates - so content copied from
-                  // within a task arrives intact, while anything from a web page
-                  // is reduced to the same small set of tags or to plain text.
-                  // This is the sanitizer doing the job it exists for, not a
-                  // relaxation of it.
-                  const clean = sanitizeRichText(html);
-
-                  // insertHTML rather than range.insertNode. Both put the same
-                  // nodes in the same place, but only execCommand registers
-                  // with the browser's undo stack - a directly inserted node is
-                  // invisible to it, which is why Cmd-Z after a paste did
-                  // nothing. It also places the caret after the insertion for
-                  // us, so the manual range juggling goes away.
-                  let inserted = false;
-                  try {
-                    inserted = document.execCommand('insertHTML', false, clean);
-                  } catch (err) {
-                    inserted = false;
-                  }
-
-                  if (!inserted) {
-                    // Fallback for anywhere execCommand is unavailable: correct
-                    // content, no undo.
-                    const holder = document.createElement('div');
-                    holder.innerHTML = clean;
-                    const fragment = document.createDocumentFragment();
-                    while (holder.firstChild) fragment.appendChild(holder.firstChild);
-                    const lastNode = fragment.lastChild;
-                    range.insertNode(fragment);
-                    if (lastNode) {
-                      const after = document.createRange();
-                      after.setStartAfter(lastNode);
-                      after.collapse(true);
-                      selection.removeAllRanges();
-                      selection.addRange(after);
-                    }
-                  }
-
-                  // Pasted nodes need the same treatment as freshly loaded ones:
-                  // contentEditable is stripped by the sanitizer by design, so
-                  // without this a pasted checkbox's label would be typeable and
-                  // a pasted link would take a caret instead of opening.
-                  const area = e.currentTarget;
-                  area.querySelectorAll('.task-checkbox').forEach(cb => {
-                    cb.contentEditable = 'false';
-                  });
-                  area.querySelectorAll('a.task-link').forEach(a => {
-                    a.contentEditable = 'false';
-                  });
-                  // Parent/boundary marks are recomputed rather than trusted
-                  // from the pasted markup, which may have been copied from the
-                  // middle of a list and describe a hierarchy that no longer
-                  // holds where it landed.
-                  setTimeout(() => {
-                    syncParentCheckboxes(area);
-                    refreshListMarkers(area);
-                  }, 0);
-                } else {
-                  // Insert plain text without formatting
-                  const textNode = document.createTextNode(text);
-                  range.insertNode(textNode);
-                  selection.collapseToEnd();
-                }
-              }}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-
-                // A bold+underline run ends at the line it was written on.
-                // contentEditable carries active formatting across a newline,
-                // so without this a heading would quietly turn the rest of the
-                // note bold - and turning it off by hand means finding the
-                // button again. Deferred a tick: the new line has to exist
-                // before the commands apply to it.
-                if (e.key === 'Enter') {
-                  const wasBold = document.queryCommandState('bold');
-                  const wasUnderline = document.queryCommandState('underline');
-                  if (wasBold || wasUnderline) {
-                    setTimeout(() => {
-                      if (document.queryCommandState('bold')) document.execCommand('bold', false, null);
-                      if (document.queryCommandState('underline')) document.execCommand('underline', false, null);
-                    }, 0);
-                  }
-                }
-
-                const selection = window.getSelection();
-                if (!selection.rangeCount) return;
-                
-                const range = selection.getRangeAt(0);
-                const currentNode = range.startContainer;
-                
-                // Check if we're in a checkbox-line
-                let checkboxLine = currentNode.nodeType === Node.ELEMENT_NODE ? 
-                  currentNode.closest('.checkbox-line') : 
-                  currentNode.parentElement?.closest('.checkbox-line');
-                
-                // Handle Tab key - indent checkbox
-                if (e.key === 'Tab' && checkboxLine) {
-                  e.preventDefault();
-                  const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
-                  // Shift+Tab outdents. The handler used to ignore the modifier
-                  // entirely, so Shift+Tab indented like a plain Tab and there
-                  // was no way back out of a nesting level except backspacing
-                  // from the start of the line.
-                  const newIndent = e.shiftKey
-                    ? Math.max(0, currentIndent - 20)
-                    : currentIndent + 20;
-                  if (newIndent === currentIndent) return;
-                  checkboxLine.style.marginLeft = newIndent + 'px';
-
-                  // Parent and boundary marks are recomputed for the whole list
-                  // rather than patched for this one line. Outdenting can orphan
-                  // a parent that no longer has children, which hand-patching
-                  // the line you just moved could never notice - and this is
-                  // the same function that runs on load, so the two can't
-                  // disagree about what the list looks like.
-                  refreshListMarkers(checkboxLine.closest('.details-richtext'));
-                }
-                
-                // Handle Backspace at the start of a checkbox line - remove the checkbox.
-                // contentEditable's default backspace is unreliable at the boundary
-                // right after a checkbox input, so we handle it explicitly.
-                else if (e.key === 'Backspace' && checkboxLine && selection.isCollapsed) {
-                  const textSpan = checkboxLine.querySelector('span');
-                  // Determine if the caret is at the very start of the line's text.
-                  let atStart = false;
-                  const container = range.startContainer;
-                  const offset = range.startOffset;
-                  if (textSpan) {
-                    if (offset === 0 && (container === textSpan || container === textSpan.firstChild || (textSpan.firstChild && container === textSpan.firstChild))) {
-                      atStart = true;
-                    }
-                    // Also treat "&nbsp;-only" placeholder spans with caret at 0/1 as start
-                    const spanText = (textSpan.textContent || '').replace(/\u00A0/g, '');
-                    if (spanText === '' && offset <= 1) atStart = true;
-                  } else if (container === checkboxLine && offset === 0) {
-                    atStart = true;
-                  }
-                  // If caret is somewhere inside actual text (not at start), let default run
-                  if (atStart) {
-                    e.preventDefault();
-                    const indent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
-                    const lineHasText = (checkboxLine.textContent || '').replace(/\u00A0/g, '').trim() !== '';
-                    
-                    if (indent > 0) {
-                      // Indented: first backspace outdents rather than deleting
-                      checkboxLine.style.marginLeft = Math.max(0, indent - 20) + 'px';
-                      const r = document.createRange();
-                      r.setStart(textSpan || checkboxLine, 0);
-                      r.collapse(true);
-                      selection.removeAllRanges();
-                      selection.addRange(r);
-                    } else {
-                      // Convert checkbox line into a plain text line, preserving any text
-                      const newLine = document.createElement('div');
-                      newLine.style.display = 'block';
-                      const newSpan = document.createElement('span');
-                      newSpan.contentEditable = 'true';
-                      newSpan.innerHTML = (textSpan && textSpan.innerHTML) ? textSpan.innerHTML : '&nbsp;';
-                      newLine.appendChild(newSpan);
-                      checkboxLine.parentNode.replaceChild(newLine, checkboxLine);
-                      // Place caret at the start of the converted line
-                      const r = document.createRange();
-                      r.setStart(newSpan.firstChild || newSpan, 0);
-                      r.collapse(true);
-                      selection.removeAllRanges();
-                      selection.addRange(r);
-                    }
-                  }
-                }
-                
-                // Handle Enter key
-                else if (e.key === 'Enter' && checkboxLine) {
-                  const checkbox = checkboxLine.querySelector('.task-checkbox');
-                  // Read text from the entire line, excluding the checkbox input.
-                  // textContent of the line naturally excludes the input's value,
-                  // so this reliably captures any typed text regardless of span structure.
-                  const lineText = (checkboxLine.textContent || '').replace(/\u00A0/g, ' ').trim();
-                  const isEmpty = lineText === '';
-                  const currentIndent = parseInt(checkboxLine.style.marginLeft || '0');
-                  // Find the text span to reposition cursor (fallback to line itself)
-                  const textSpan = checkboxLine.querySelector('span') || checkboxLine;
-                  
-                  // Case 1: Empty checkbox with no indent - delete checkbox, create normal text line
-                  if (isEmpty && currentIndent === 0) {
-                    e.preventDefault();
-                    
-                    // Create normal text line
-                    const newLine = document.createElement('div');
-                    newLine.style.display = 'block';
-                    const newTextSpan = document.createElement('span');
-                    newTextSpan.innerHTML = '&nbsp;';
-                    newTextSpan.contentEditable = 'true';
-                    newLine.appendChild(newTextSpan);
-                    
-                    // Insert after current line and remove checkbox line
-                    checkboxLine.parentNode.insertBefore(newLine, checkboxLine.nextSibling);
-                    checkboxLine.remove();
-                    
-                    // Move cursor to new line
-                    const newRange = document.createRange();
-                    newRange.setStart(newTextSpan, 0);
-                    newRange.collapse(true);
-                    selection.removeAllRanges();
-                    selection.addRange(newRange);
-                  }
-                  
-                  // Case 2: Empty indented checkbox - outdent (reduce indent)
-                  else if (isEmpty && currentIndent > 0) {
-                    e.preventDefault();
-                    checkboxLine.style.marginLeft = Math.max(0, currentIndent - 20) + 'px';
-                    // Keep focus in the text span
-                    const newRange = document.createRange();
-                    newRange.setStart(textSpan, 0);
-                    newRange.collapse(true);
-                    selection.removeAllRanges();
-                    selection.addRange(newRange);
-                  }
-                  
-                  // Case 3: Checkbox with text - create new checkbox at same indent
-                  else {
-                    e.preventDefault();
-                    
-                    // Create new checkbox line with same indent
-                    const newCheckboxLine = document.createElement('div');
-                    newCheckboxLine.className = 'checkbox-line';
-                    newCheckboxLine.style.marginLeft = currentIndent + 'px';
-                    
-                    const newCheckbox = document.createElement('input');
-                    newCheckbox.type = 'checkbox';
-                    newCheckbox.className = 'task-checkbox';
-                    // Delegated listener handles the click; see buildCheckboxLine.
-                    newCheckbox.contentEditable = 'false';
-                    // No inline onchange - delegated change listener handles sync
-                    
-                    const newTextSpan = document.createElement('span');
-                    newTextSpan.innerHTML = '&nbsp;';
-                    newTextSpan.contentEditable = 'true';
-                    
-                    newCheckboxLine.appendChild(newCheckbox);
-                    newCheckboxLine.appendChild(newTextSpan);
-                    
-                    // Insert after current checkbox line
-                    checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
-                    
-                    // Move cursor to new checkbox line
-                    const newRange = document.createRange();
-                    newRange.setStart(newTextSpan, 0);
-                    newRange.collapse(true);
-                    selection.removeAllRanges();
-                    selection.addRange(newRange);
-                  }
-                }
-                
-                // After any structural key (Tab/Enter/Backspace), refresh markers
-                if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'Backspace') {
-                  setTimeout(() => refreshListMarkers(e.target.closest('.details-richtext')), 0);
-                }
-              }}
-              ref={detailsRef}
-            />
-
-            <div className="date-project-row">
-              <div className="due-date-display">
-                <label className="details-label" style={{ margin: 0 }}>Due Date:</label>
-                {/* Was a native <input type="date">. On iOS the picker is a
-                    browser overlay bound to a DOM node, and this app re-creates
-                    task rows on parent renders - when the node is swapped
-                    mid-interaction iOS commits the highlighted value (today)
-                    and tears the sheet down, which is the "sets today and
-                    closes on first tap" bug. InlineDatePicker is React-rendered,
-                    so there is no overlay to lose and it can only ever write a
-                    date that was actually tapped. It also carries its own clear
-                    button, which the native field had no reliable equivalent
-                    for. */}
-                <InlineDatePicker
-                  value={task.dueDate || ''}
-                  onChange={(v) => updateTaskDueDate(listName, task.id, v)}
-                />
-              </div>
-
-              {/* Hidden when Projects is switched off. Any existing projectId
-                  is preserved untouched, so re-enabling restores the link. */}
-              {isFeatureOn('projects') && (() => {
-                // Replaces a native <select>. Its popup is drawn by the browser
-                // as OS chrome - no rounded corners, no theming beyond the
-                // option colours - so it was the one control in the app that
-                // couldn't be made to match. This is the same div-based pattern
-                // the Goal, Timer and Report dropdowns already use.
-                const chosen = getAllProjects().find(
-                  pr => String(pr.id) === String(task.projectId)
-                );
-                const pick = (value) => {
-                  assignTaskToProject(listName, task.id, value);
-                  setProjectDropdownOpen(false);
-                };
-                const optionStyle = (selected) => ({
-                  padding: '10px 14px',
-                  color: 'var(--text)',
-                  fontSize: '0.9rem',
-                  cursor: 'pointer',
-                  background: selected ? 'rgba(var(--accent-rgb), 0.25)' : 'transparent',
-                  borderBottom: '1px solid rgba(var(--accent-rgb), 0.15)',
-                  transition: 'background 0.2s ease'
-                });
-                return (
-                  <div className="due-date-display">
-                    <label className="details-label" style={{ margin: 0 }}>Project:</label>
-                    <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
-                      <div
-                        onClick={(e) => e.stopPropagation()}
-                        onMouseDown={(e) => {
-                          // Toggled on mousedown, and stopped there, so the
-                          // document-level close listener below never sees the
-                          // tap that opened it - otherwise it would open and
-                          // shut in the same gesture.
-                          e.stopPropagation();
-                          setProjectDropdownOpen(o => !o);
-                        }}
-                        onTouchStart={(e) => e.stopPropagation()}
-                        className="project-selector"
-                        style={{
-                          display: 'flex', alignItems: 'center',
-                          justifyContent: 'space-between', gap: '8px'
-                        }}
-                      >
-                        <span style={{
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                          color: chosen ? 'var(--text)' : 'var(--text-muted)'
-                        }}>
-                          {chosen ? chosen.name : 'No project'}
-                        </span>
-                        <span style={{
-                          transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                          transition: 'transform 0.2s ease',
-                          fontSize: '0.7rem', flexShrink: 0
-                        }}>▼</span>
-                      </div>
-
-                      {projectDropdownOpen && (
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onTouchStart={(e) => e.stopPropagation()}
-                          style={{
-                            position: 'absolute', top: '100%', left: 0, right: 0,
-                            marginTop: '4px',
-                            background: 'rgba(var(--surface-rgb), 1)',
-                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                            borderRadius: '12px',
-                            overflow: 'hidden',
-                            // Long project lists shouldn't run off the card.
-                            maxHeight: '220px', overflowY: 'auto',
-                            zIndex: 1000,
-                            boxShadow: '0 8px 24px rgba(var(--shadow-rgb), 0.35)'
-                          }}
-                        >
-                          <div
-                            onClick={() => pick(null)}
-                            style={{ ...optionStyle(!task.projectId), color: 'var(--text-muted)' }}
-                          >
-                            No project
-                          </div>
-                          {getAllProjects().map(pr => (
-                            <div
-                              key={pr.id}
-                              onClick={() => pick(pr.id)}
-                              style={optionStyle(String(pr.id) === String(task.projectId))}
-                            >
-                              {pr.name}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            <div className="fire-flag-selector">
-              <span 
-                className={`fire-flag-icon clickable ${task.priority === 'high' ? 'active' : ''}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  updateTaskPriority(listName, task.id, task.priority === 'high' ? 'low' : 'high');
-                }}
-                title="Pin to top"
-              >
-                {task.priority === 'high' ? <LitFlame /> : <UnlitFlame />}
-              </span>
-            </div>
-
-            <div className="date-field">
-              <label className="details-label" style={{ margin: 0 }}>Created:</label>
-              <span className="date-field-value">{createdDate}</span>
-            </div>
-
-            {task.completed && (
-              <div className="date-field">
-                <label className="details-label" style={{ margin: 0 }}>Completed:</label>
-                <span className="date-field-value">{completedDate}</span>
-              </div>
-            )}
-
-            <div className="task-actions">
-              {showMoveButtons && !task.completed && (
-                <>
-                  {task.section === 'todo' && (
-                    <button 
-                      className="edit-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        moveTaskToSection(listName, task.id, 'backlog');
-                      }}
-                    >
-                      → Backlog
-                    </button>
-                  )}
-                  {task.section === 'backlog' && (
-                    <button 
-                      className="edit-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        moveTaskToSection(listName, task.id, 'todo');
-                      }}
-                    >
-                      → To Do
-                    </button>
-                  )}
-                </>
-              )}
-              {task.completed && (
-                <button
-                  className="edit-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    archiveTask(listName, task.id);
-                  }}
-                >
-                  Archive
-                </button>
-              )}
-              {canDeleteShared && (
-                <button
-                  className="delete-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteTask(listName, task.id);
-                  }}
-                >
-                  Delete
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
+  
 
   const StackedLogs = () => (
     <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -6210,71 +6349,9 @@ function LittleFiresApp() {
     </svg>
   );
 
-  const UnlitFlame = () => (
-    <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 1280.000000 1280.000000"
-      preserveAspectRatio="xMidYMid meet">
-      <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-        fill="#000000" stroke="none">
-        <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-        -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-        -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-        17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-        -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-        132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-        680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-        -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-        -1 -56z"/>
-        <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
-        -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
-        -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
-        -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
-        289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
-        553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
-        -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
-        <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
-        -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
-        -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
-        -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
-        36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
-        -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
-        95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
-      </g>
-    </svg>
-  );
+  
 
-  const LitFlame = () => (
-    <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 1280.000000 1280.000000"
-      preserveAspectRatio="xMidYMid meet">
-      <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"
-        fill="#FF4500" stroke="none">
-        <path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825
-        -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164
-        -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27
-        17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206
-        -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131
-        132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725
-        680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314
-        -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90
-        -1 -56z"/>
-        <path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13
-        -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284
-        -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5
-        -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31
-        289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676
-        553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833
-        -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
-        <path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418
-        -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641
-        -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2
-        -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4
-        36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196
-        -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16
-        95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
-      </g>
-    </svg>
-  );
+  
 
   const UnlitTorch = () => (
     <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -6869,7 +6946,44 @@ function LittleFiresApp() {
     }
   };
 
+  // Built here, at the end of the component, so every one of these is already
+  // declared - the return is the only point where that is guaranteed.
+  //
+  // Deliberately not memoised. A new object each render means every Task
+  // re-renders when the app does, which is exactly what happened before - the
+  // difference is that they now re-render instead of remounting, so editor
+  // state, focus, drags and the undo stack all survive.
+  const taskContextValue = {
+    allLists,
+    archiveTask,
+    assignTaskToProject,
+    canReorderTogether,
+    collapseGuardRef,
+    cycleAssignment,
+    deleteTask,
+    draggingTaskRef,
+    editingTaskName,
+    expandedTaskId,
+    findTask,
+    getAllProjects,
+    isFeatureOn,
+    isSharedList,
+    moveTaskToSection,
+    parseLocalDateTime,
+    partnerDisplayName,
+    renameTask,
+    reorderTask,
+    setEditingTaskName,
+    setExpandedTaskId,
+    settings,
+    toggleTask,
+    updateTaskDetails,
+    updateTaskDueDate,
+    updateTaskPriority
+  };
+
   return (
+    <TaskContext.Provider value={taskContextValue}>
     <div className="little-fires-container">
       {/* Rendered at the container root so it sits above whatever triggered it,
           rather than inside a card that might be scrolled or clipped. */}
@@ -19291,6 +19405,7 @@ function LittleFiresApp() {
         )}
       </div>
     </div>
+    </TaskContext.Provider>
   );
 }
 

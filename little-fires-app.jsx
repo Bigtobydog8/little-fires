@@ -675,6 +675,12 @@ function LittleFiresApp() {
   // How long the report chart takes to draw itself in (lines sweep, bars grow).
   // The fire chart waits this long before igniting, so they run in sequence.
   const CHART_DRAW_MS = 1500;
+  // How long the flame takes to rise, and how long the charts wait for it.
+  // The charts start slightly before the flame finishes so the sequence reads
+  // as one movement handing off to the next, rather than two animations with a
+  // gap between them.
+  const FIRE_FILL_MS = 2200;
+  const CHART_START_DELAY_MS = Math.round(FIRE_FILL_MS * 0.75);
 
   // Curated accent presets. Each is dark enough that white text on the
   // gradient buttons stays readable - a free-form picker can't guarantee that,
@@ -792,7 +798,11 @@ function LittleFiresApp() {
     hiddenLists: {},          // { travel: true } => hidden from the app
     listOrder: null,          // user's drag-ordered keys; null = built-in order
     customLists: [],          // [{ key, label, color }] added by the user
-    hiddenFeatures: {}        // { goals: true } => section switched off
+    // Off by default, so a new install opens as a task list and nothing else.
+    // Every one of these is discoverable in Settings > Menu Sections, and
+    // switching one on never lost data - it was only ever hidden.
+    // Search stays on: it's a way of getting around, not a section to manage.
+    hiddenFeatures: { time: true, goals: true, projects: true, notes: true }
   };
   // Bump when the settings shape changes in a way that needs migrating
   const SETTINGS_VERSION = 1;
@@ -815,6 +825,11 @@ function LittleFiresApp() {
       // existing install, so anyone who never picked a theme is pinned to the
       // behaviour they already had rather than inheriting the new default.
       if (parsed.theme === undefined) parsed.theme = 'system';
+      // Same reasoning as theme, and it matters more here: someone already
+      // using Notes or Projects would open the app one day to find those
+      // sections simply gone. A stored blob means an existing install, so
+      // anyone who never touched these keeps everything switched on.
+      if (parsed.hiddenFeatures === undefined) parsed.hiddenFeatures = {};
       if ('batterySaver' in parsed) batterySaverUserChoiceRef.current = true;
       return { ...DEFAULT_SETTINGS, ...parsed };
     } catch {
@@ -2215,8 +2230,11 @@ function LittleFiresApp() {
 
     let raf, flickRaf;
     const start = performance.now();
-    const duration = 3000; // ms to rise to full
-    const delay = CHART_DRAW_MS; // let the chart draw first
+    const duration = FIRE_FILL_MS; // ms to rise to full
+    // The flame goes first now. It's the headline of the page - the charts are
+    // the supporting detail - and having them draw underneath it while it was
+    // still empty read as the flame lagging behind rather than leading.
+    const delay = 0;
     let fillDone = false;
     setFireFillAnim(0);
 
@@ -4265,13 +4283,15 @@ function LittleFiresApp() {
     // match rather than differing by a stray newline.
     const writeClipboard = (e) => {
       const captured = stashSelectionHtml();
-      if (!captured || !captured.html || !e.clipboardData) return;
+      if (!captured || !captured.html || !e.clipboardData) return null;
       try {
         e.preventDefault();
         e.clipboardData.setData('text/plain', captured.text);
         e.clipboardData.setData('text/html', captured.html);
+        return captured;
       } catch (err) {
         // Blocked - let the browser write its own version rather than nothing.
+        return null;
       }
     };
 
@@ -4328,7 +4348,11 @@ function LittleFiresApp() {
         const holder = document.createElement('div');
         holder.appendChild(cloneRange.cloneContents());
         internalClipboard = { text: sel.toString(), html: holder.innerHTML };
-        return internalClipboard;
+        // The range is handed back so a cut can remove exactly what was taken.
+        // It isn't always the user's literal selection - selecting a checkbox
+        // line's text captures the whole line, box included - so deleting the
+        // raw selection instead would leave an orphaned empty checkbox behind.
+        return { ...internalClipboard, range: cloneRange };
       } catch (err) {
         internalClipboard = { text: '', html: '' };
         return null;
@@ -4860,18 +4884,20 @@ function LittleFiresApp() {
         // The checkbox itself never focuses anything.
         if (t.closest('.task-checkbox')) { evt.preventDefault(); return; }
 
-        // Neither does the text of a checkbox line. A checklist you already
-        // filled in is something you tick, not something you happen to be
-        // typing in - and letting a tap anywhere near a box drop a caret is
-        // what made ticking feel unreliable, because every miss opened the
-        // keyboard and shifted the layout under your finger.
+        // Touch only, from here down. The restriction exists because a finger
+        // aiming for a checkbox often lands on the words beside it, and every
+        // miss used to open the keyboard and shift the layout mid-tap. A mouse
+        // doesn't miss, so on desktop clicking the text means exactly what it
+        // says and should place a cursor.
+        if (!IS_TOUCH_DEVICE) return;
+
         const line = t.closest('.checkbox-line');
         if (!line) return;   // plain text, or the empty space below - editable
 
-        // The deliberate way in: tap past the end of the line's text. That is
-        // an unambiguous "put the cursor here" and it can't be hit by aiming
-        // for the box. Clicking below the content works the same way, since
-        // that isn't inside a checkbox line at all.
+        // The deliberate way in on touch: tap past the end of the line's text.
+        // That is an unambiguous "put the cursor here" and it can't be hit by
+        // aiming for the box. Clicking below the content works the same way,
+        // since that isn't inside a checkbox line at all.
         const label = line.querySelector('span') || line;
         const rect = label.getBoundingClientRect();
         if (evt.clientX <= rect.right) evt.preventDefault();
@@ -5593,9 +5619,27 @@ function LittleFiresApp() {
               }}
               onCut={(e) => {
                 e.stopPropagation();
-                // The browser still performs the deletion; only what it writes
-                // is replaced.
-                writeClipboard(e);
+                // preventDefault on a cut cancels the deletion as well as the
+                // clipboard write - the two are one default action, not two.
+                // That is why cut was behaving like copy. Since we override the
+                // write, we have to do the removal ourselves.
+                const captured = writeClipboard(e);
+                if (!captured) return;
+                try {
+                  if (captured.range) {
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(captured.range);
+                  }
+                  // execCommand rather than range.deleteContents(): this one
+                  // registers with the browser's own undo stack, so Cmd-Z can
+                  // still reverse the cut.
+                  document.execCommand('delete', false, null);
+                  saveDetails(e.currentTarget);
+                } catch (err) {
+                  // Nothing removed - the clipboard still holds the content,
+                  // so no data is lost either way.
+                }
               }}
               onPaste={(e) => {
                 e.preventDefault();
@@ -5662,23 +5706,37 @@ function LittleFiresApp() {
                   // is reduced to the same small set of tags or to plain text.
                   // This is the sanitizer doing the job it exists for, not a
                   // relaxation of it.
-                  const holder = document.createElement('div');
-                  holder.innerHTML = sanitizeRichText(html);
+                  const clean = sanitizeRichText(html);
 
-                  const fragment = document.createDocumentFragment();
-                  while (holder.firstChild) fragment.appendChild(holder.firstChild);
-                  // Captured before insertion - a fragment is emptied by
-                  // insertNode, so afterwards there is nothing left to measure
-                  // the caret position against.
-                  const lastNode = fragment.lastChild;
-                  range.insertNode(fragment);
+                  // insertHTML rather than range.insertNode. Both put the same
+                  // nodes in the same place, but only execCommand registers
+                  // with the browser's undo stack - a directly inserted node is
+                  // invisible to it, which is why Cmd-Z after a paste did
+                  // nothing. It also places the caret after the insertion for
+                  // us, so the manual range juggling goes away.
+                  let inserted = false;
+                  try {
+                    inserted = document.execCommand('insertHTML', false, clean);
+                  } catch (err) {
+                    inserted = false;
+                  }
 
-                  if (lastNode) {
-                    const after = document.createRange();
-                    after.setStartAfter(lastNode);
-                    after.collapse(true);
-                    selection.removeAllRanges();
-                    selection.addRange(after);
+                  if (!inserted) {
+                    // Fallback for anywhere execCommand is unavailable: correct
+                    // content, no undo.
+                    const holder = document.createElement('div');
+                    holder.innerHTML = clean;
+                    const fragment = document.createDocumentFragment();
+                    while (holder.firstChild) fragment.appendChild(holder.firstChild);
+                    const lastNode = fragment.lastChild;
+                    range.insertNode(fragment);
+                    if (lastNode) {
+                      const after = document.createRange();
+                      after.setStartAfter(lastNode);
+                      after.collapse(true);
+                      selection.removeAllRanges();
+                      selection.addRange(after);
+                    }
                   }
 
                   // Pasted nodes need the same treatment as freshly loaded ones:
@@ -7134,7 +7192,10 @@ function LittleFiresApp() {
 
         .menu-divider {
           height: 1px;
-          background: rgba(244, 232, 216, 0.3);
+          /* Was a hardcoded cream - the dark theme's own text colour - so on a
+             pale menu it was near-white on white and the sections ran together.
+             Borrowing the border token means it darkens with the theme. */
+          background: rgba(var(--border-rgb), 0.35);
           margin: 8px 16px;
         }
 
@@ -12458,12 +12519,16 @@ function LittleFiresApp() {
                               <div
                                 onClick={() => setTaskListDropdownOpen(!taskListDropdownOpen)}
                                 style={{
-                                  padding: '10px',
+                                  // Matched to the Goal dropdown above it, so
+                                  // the two controls in this view are the same
+                                  // size rather than one being noticeably
+                                  // chunkier than the other.
+                                  padding: isMobile ? '8px 10px' : '10px',
                                   background: 'rgba(var(--surface-rgb), 1)',
                                   border: '2px solid rgba(var(--accent-rgb), 0.3)',
                                   borderRadius: '10px',
                                   color: 'var(--text)',
-                                  fontSize: '0.95rem',
+                                  fontSize: isMobile ? '0.85rem' : '0.95rem',
                                   cursor: 'pointer',
                                   width: '100%',
                                   display: 'flex',
@@ -17453,7 +17518,7 @@ function LittleFiresApp() {
             style={{
               display: 'flex', alignItems: 'center', gap: '10px',
               padding: '10px 0', flexWrap: 'wrap',
-              borderBottom: '1px solid rgba(255,255,255,0.05)',
+              borderBottom: '1px solid rgba(var(--border-rgb), 0.18)',
               borderTop: isDragTarget ? '2px solid rgba(var(--accent-rgb), 0.9)' : '2px solid transparent',
               opacity: isDragging ? 0.4 : (hidden ? 0.55 : 1),
               transition: 'opacity 0.2s ease'
@@ -17670,8 +17735,8 @@ function LittleFiresApp() {
                             style={{
                               cursor: 'pointer', textAlign: 'center',
                               padding: '10px 4px', borderRadius: '10px',
-                              border: active ? '2px solid var(--text)' : '2px solid rgba(255,255,255,0.08)',
-                              background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                              border: active ? '2px solid var(--text)' : '2px solid rgba(var(--border-rgb), 0.25)',
+                              background: active ? 'rgba(var(--border-rgb), 0.12)' : 'transparent',
                               transition: 'all 0.2s ease'
                             }}
                           >
@@ -18070,7 +18135,7 @@ function LittleFiresApp() {
                           style={{
                             display: 'flex', alignItems: 'center', gap: '12px',
                             padding: '12px 0', flexWrap: 'wrap',
-                            borderBottom: i < FEATURES.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                            borderBottom: i < FEATURES.length - 1 ? '1px solid rgba(var(--border-rgb), 0.18)' : 'none',
                             opacity: on ? 1 : 0.55, transition: 'opacity 0.2s ease'
                           }}
                         >
@@ -18936,7 +19001,6 @@ function LittleFiresApp() {
                       };
                       const flameEdge = makeFlameEdge(levelY, fireFlicker);
 
-                      const isFull = fillRatio >= 1;
                       const glow = count <= 0
                         ? 'rgba(120,120,140,0.12)'
                         : `rgba(255, 140, 40, ${0.18 + animatedFill * 0.4})`;
@@ -18986,8 +19050,12 @@ function LittleFiresApp() {
                               {count}
                             </div>
                             <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px' }}>
+                              {/* The flame that used to mark a hit goal sat here.
+                                  It's directly beneath the large flame this card
+                                  is built around, so it read as a stray mark
+                                  rather than a badge - the big one already shows
+                                  a full fire when the goal is met. */}
                               {count === 0 ? 'No tasks yet' : ({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
-                              {isFull && <> <FlameIcon /></>}
                             </div>
                           </div>
                         </>
@@ -19006,7 +19074,10 @@ function LittleFiresApp() {
                       {/* Y gridlines + labels */}
                       {uniqueTicks.map((tick, i) => (
                         <g key={'y' + i}>
-                          <line x1={padL} y1={yFor(tick)} x2={chartW - padR} y2={yFor(tick)} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+                          {/* style, not a stroke attribute: var() does not
+                              resolve in SVG presentation attributes. */}
+                          <line x1={padL} y1={yFor(tick)} x2={chartW - padR} y2={yFor(tick)}
+                            style={{ stroke: 'rgba(var(--border-rgb), 0.22)' }} strokeWidth="1" />
                           <text x={padL - 8} y={yFor(tick) + 4} textAnchor="end" style={{ fill: 'var(--text-muted)' }} fontSize="12" fontFamily="Quicksand, sans-serif">{tick}</text>
                         </g>
                       ))}
@@ -19051,7 +19122,7 @@ function LittleFiresApp() {
                                     transformOrigin: `${x}px ${baselineY}px`,
                                     // 'both' holds scaleY(0) during the stagger delay,
                                     // otherwise the bar would flash full-height first
-                                    animation: `growBar ${Math.round(CHART_DRAW_MS * 0.5)}ms ease-out ${delayMs}ms both`
+                                    animation: `growBar ${Math.round(CHART_DRAW_MS * 0.5)}ms ease-out ${CHART_START_DELAY_MS + delayMs}ms both`
                                   } : { transition: 'opacity 0.15s ease' }} />
                               ) : null;
                             })}
@@ -19081,7 +19152,7 @@ function LittleFiresApp() {
                                 pathLength="1"
                                 strokeDasharray="1"
                                 style={chartAnimate
-                                  ? { animation: `drawLine ${drawMs}ms ease-out forwards` }
+                                  ? { animation: `drawLine ${drawMs}ms ease-out ${CHART_START_DELAY_MS}ms forwards` }
                                   : undefined} />
                               {vals.map((v, i) => (
                                 // Only mark buckets that have data
@@ -19096,8 +19167,9 @@ function LittleFiresApp() {
                                       transformOrigin: `${xFor(i)}px ${yFor(v)}px`,
                                       opacity: 0,
                                       animation: `dotPop 260ms ease-out forwards`,
-                                      // stagger each dot so it appears as the line reaches it
-                                      animationDelay: `${n <= 1 ? 0 : Math.round((i / (n - 1)) * drawMs)}ms`
+                                      // stagger each dot so it appears as the line reaches it,
+                                      // offset by the same wait the line itself takes
+                                      animationDelay: `${CHART_START_DELAY_MS + (n <= 1 ? 0 : Math.round((i / (n - 1)) * drawMs))}ms`
                                     } : { transition: 'r 0.1s ease', opacity: 1 }} />
                                 ) : null
                               ))}

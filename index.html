@@ -1,9 +1,52 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Little Fires</title>
-
+<!-- Theme, resolved before first paint.
+     The app's stylesheets are rendered by React and the .theme-light class is
+     applied in a passive effect, so on a cold load the first commit painted
+     with the :root (dark) tokens and only went light after the browser had
+     already shown that frame. Setting the class here means the first commit
+     paints correctly; the inline background covers the window before React
+     mounts at all.
+     KEEP IN SYNC with the theme effect in little-fires-app.jsx - same rules:
+     no stored settings -> light (fresh-install default), stored blob with no
+     theme key -> system (existing-install pin), parse failure -> light,
+     'system' follows the OS. The two colours are the themes' --bg-1 tokens.
+     After mount the React effect owns these same inline properties, so a
+     theme switch in Settings cleans up after this script.
+     tests/theme-boot-test.js pins both copies; change one and it fails. -->
+<script>
+  (function () {
+    try {
+      var theme;
+      try {
+        var saved = localStorage.getItem('little_fires_settings');
+        if (!saved) {
+          theme = 'light';
+        } else {
+          var parsed = JSON.parse(saved);
+          theme = parsed.theme === undefined ? 'system' : parsed.theme;
+        }
+      } catch (err) {
+        theme = 'light';
+      }
+      var light = theme === 'light' || (
+        theme === 'system' &&
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-color-scheme: light)').matches
+      );
+      var root = document.documentElement;
+      if (light) root.classList.add('theme-light');
+      root.style.backgroundColor = light ? '#faf9f5' : '#1a1a2e';
+      root.style.colorScheme = light ? 'light' : 'dark';
+    } catch (err) {
+      /* Never let theming break the page. */
+    }
+  })();
+</script>
 <!-- Fonts are requested here rather than from an @import inside the app's
      <style> block. From there nothing was fetched until the JS bundle had
      downloaded, parsed, and React had mounted and rendered - a fully
@@ -16,7 +59,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap">
 </head>
-
 <body>
 <div id="root"></div>
 <script type="module" src="main.jsx"></script>

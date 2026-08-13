@@ -4,60 +4,96 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Little Fires</title>
-<!-- Theme, resolved before first paint.
-     The app's stylesheets are rendered by React and the .theme-light class is
-     applied in a passive effect, so on a cold load the first commit painted
-     with the :root (dark) tokens and only went light after the browser had
-     already shown that frame. Setting the class here means the first commit
-     paints correctly; the inline background covers the window before React
-     mounts at all.
-     KEEP IN SYNC with the theme effect in little-fires-app.jsx - same rules:
-     no stored settings -> light (fresh-install default), stored blob with no
-     theme key -> system (existing-install pin), parse failure -> light,
-     'system' follows the OS. The two colours are the themes' --bg-1 tokens.
-     After mount the React effect owns these same inline properties, so a
-     theme switch in Settings cleans up after this script.
-     tests/theme-boot-test.js pins both copies; change one and it fails. -->
+<!-- preconnect opens the TLS connections up front, before the boot script below
+     knows which family it needs; gstatic is where the font files themselves
+     live and needs crossorigin. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Theme and font, resolved before first paint.
+     Both used to be applied by passive effects in the app, which meant the
+     first commit painted with the :root defaults (dark tokens, Quicksand and
+     Nunito) and only corrected itself after the browser had shown that frame.
+     For a non-default font it was worse: the family's <link> was appended
+     after React mounted, so the real font arrived long after the app was
+     interactive and popped in.
+     Doing it here also means only the family actually in use is downloaded.
+     A synchronous inline script in <head> starts that fetch during HTML
+     parsing, so nothing waits on the bundle.
+     KEEP IN SYNC with little-fires-app.jsx - the theme rules match the
+     settings loader (no stored settings -> light, stored blob with no theme
+     key -> system, parse failure -> light, 'system' follows the OS), the two
+     colours are the themes' --bg-1 tokens, and FONTS mirrors FONT_OPTIONS.
+     After mount the app's effects own these same properties, so switching
+     theme or font in Settings cleans up after this script.
+     tests/theme-boot-test.js pins every one of those couplings. -->
 <script>
   (function () {
+    var FONTS = {
+      'default':  { ui: "'Quicksand', sans-serif", body: "'Nunito', sans-serif",
+                    google: 'Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700' },
+      'system':   { ui: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    body: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    google: null },
+      'serif':    { ui: "'Lora', Georgia, serif", body: "'Inter', sans-serif",
+                    google: 'Lora:wght@500;600;700&family=Inter:wght@400;500;600;700' },
+      'mono':     { ui: "'Space Grotesk', sans-serif", body: "'Inter', sans-serif",
+                    google: 'Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700' },
+      'humanist': { ui: "'Nunito', sans-serif", body: "'Nunito', sans-serif",
+                    google: 'Nunito:wght@400;500;600;700;800' }
+    };
     try {
-      var theme;
+      var theme, fontChoice;
       try {
         var saved = localStorage.getItem('little_fires_settings');
         if (!saved) {
           theme = 'light';
+          fontChoice = 'default';
         } else {
           var parsed = JSON.parse(saved);
           theme = parsed.theme === undefined ? 'system' : parsed.theme;
+          fontChoice = parsed.fontChoice || 'default';
         }
       } catch (err) {
         theme = 'light';
+        fontChoice = 'default';
       }
+
+      var root = document.documentElement;
+
       var light = theme === 'light' || (
         theme === 'system' &&
         typeof window.matchMedia === 'function' &&
         window.matchMedia('(prefers-color-scheme: light)').matches
       );
-      var root = document.documentElement;
       if (light) root.classList.add('theme-light');
       root.style.backgroundColor = light ? '#faf9f5' : '#1a1a2e';
       root.style.colorScheme = light ? 'light' : 'dark';
+
+      // Resolve the id before using it: an unrecognised stored choice (an
+      // older or newer settings blob) falls back to the default pairing, and
+      // the link must be keyed by the family actually requested or the app's
+      // effect won't find it and will request the same font again.
+      var fontId = FONTS[fontChoice] ? fontChoice : 'default';
+      var choice = FONTS[fontId];
+      root.style.setProperty('--font-ui', choice.ui);
+      root.style.setProperty('--font-body', choice.body);
+      if (choice.google) {
+        // Same id scheme the app's font effect uses, so it finds this link
+        // already present and doesn't request the family a second time.
+        var link = document.createElement('link');
+        link.id = 'lf-font-' + fontId;
+        link.rel = 'stylesheet';
+        link.href = 'https://fonts.googleapis.com/css2?family=' + choice.google + '&display=swap';
+        document.head.appendChild(link);
+      }
     } catch (err) {
-      /* Never let theming break the page. */
+      /* Never let theming or fonts break the page. */
     }
   })();
 </script>
-<!-- Fonts are requested here rather than from an @import inside the app's
-     <style> block. From there nothing was fetched until the JS bundle had
-     downloaded, parsed, and React had mounted and rendered - a fully
-     serialised chain before a single font byte was asked for. In the document
-     head the browser's preload scanner finds these while the HTML is still
-     parsing, so they download in parallel with the bundle.
-     preconnect opens the TLS connections up front; gstatic is where the font
-     files themselves live and needs crossorigin. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap">
+<noscript>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap">
+</noscript>
 </head>
 <body>
 <div id="root"></div>

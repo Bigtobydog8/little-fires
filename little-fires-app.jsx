@@ -3513,19 +3513,32 @@ function LittleFiresApp() {
 
   // Font. The variables are set on <html> alongside the theme tokens.
   //
-  // The chosen family is requested only when it isn't the default - the default
-  // pairing is already in index.html's <link> tags, where the preload scanner
-  // finds it while the HTML is still parsing. Loading all five upfront would
-  // mean downloading four families nobody is using on every visit.
+  // Only the family in use is ever requested - loading all five upfront would
+  // mean downloading four families nobody is using on every visit. The first
+  // request happens in index.html's boot script, before first paint, because
+  // doing it here meant a non-default family wasn't even asked for until
+  // React had mounted: the app painted in the :root defaults, reflowed to the
+  // fallback when these variables changed, then popped again when the real
+  // font finally arrived. This effect now handles runtime switches, and finds
+  // the boot script's link already in place on load.
   useEffect(() => {
     const choice = FONT_OPTIONS.find(f => f.id === settings.fontChoice) || FONT_OPTIONS[0];
     const root = document.documentElement;
     root.style.setProperty('--font-ui', choice.ui);
     root.style.setProperty('--font-body', choice.body);
 
-    if (!choice.google || choice.id === 'default') return;
+    if (!choice.google) return;
 
-    // Keyed by id so switching fonts twice doesn't stack duplicate <link>s.
+    // Keyed by id so switching fonts twice doesn't stack duplicate <link>s -
+    // and so the link the boot script in index.html already inserted for the
+    // font in use is found here rather than requested again.
+    //
+    // 'default' is no longer special-cased. It used to be skipped because
+    // index.html carried a static <link> for that pairing, but that link is
+    // gone: it downloaded two families every visit for anyone using a
+    // different font, competing with the one they actually wanted. The boot
+    // script now requests whichever family is in use, and this branch covers
+    // switching back to the default at runtime.
     const id = 'lf-font-' + choice.id;
     if (document.getElementById(id)) return;
     const link = document.createElement('link');
@@ -3541,6 +3554,18 @@ function LittleFiresApp() {
   // Theme. The class goes on <html> rather than <body> so the tokens are in
   // scope for anything portalled or rendered outside the app root, and so the
   // page background is right before React has mounted anything.
+  //
+  // "Before React has mounted" needs more than the class: the stylesheets are
+  // React-rendered, so pre-bundle the class has no rules to trigger. An inline
+  // script in index.html resolves the theme synchronously and sets the class
+  // plus an inline background-color and color-scheme on <html> before first
+  // paint. This effect then OWNS those two inline properties from mount on -
+  // re-set on every apply, with the background read from the live --bg-1
+  // token rather than hardcoded - so a runtime theme switch can never leave
+  // the pre-paint background stale behind the container (it shows in
+  // overscroll). If the resolution logic here changes, index.html's copy must
+  // change with it: fresh install -> 'light', stored blob without a theme ->
+  // 'system', parse failure -> 'light'.
   useEffect(() => {
     const root = document.documentElement;
     const apply = () => {
@@ -3551,6 +3576,10 @@ function LittleFiresApp() {
         window.matchMedia('(prefers-color-scheme: light)').matches
       );
       root.classList.toggle('theme-light', light);
+      // Class first, then read: the token reflects the theme just applied.
+      const bg = getComputedStyle(root).getPropertyValue('--bg-1').trim();
+      if (bg) root.style.backgroundColor = bg;
+      root.style.colorScheme = light ? 'light' : 'dark';
     };
     apply();
     // Only follow the OS while set to 'system' - otherwise an explicit choice

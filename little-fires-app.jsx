@@ -449,6 +449,62 @@ function sanitizeRichText(html) {
   return doc.body.innerHTML;
 }
 
+// ---- Editor crash journal --------------------------------------------------
+// The debounced-write flush on pagehide can only persist state that has
+// already been captured into React. Content typed into the details editor
+// since the last blur exists only in the DOM - and a save dispatched during
+// pagehide cannot reach localStorage through the normal path, because the
+// state update and its debounced write never run if iOS kills the suspended
+// PWA (or an auth redirect navigates away). So a hide-time save is also
+// journalled here, synchronously, and applied on the next load only if it is
+// strictly newer than what the stored task already carries.
+//
+// The draft holds the SANITIZED form (what saveDetails computed), so applying
+// it is equivalent to the save that would have landed.
+const EDITOR_DRAFT_KEY = 'little_fires_editor_draft';
+
+function writeEditorDraft(listName, taskId, details) {
+  try {
+    localStorage.setItem(EDITOR_DRAFT_KEY, JSON.stringify({
+      listName, taskId, details, savedAt: new Date().toISOString()
+    }));
+  } catch (err) {
+    // Storage full or unavailable. The normal save path was still dispatched;
+    // only the crash journal is lost, which is the pre-journal behaviour.
+  }
+}
+
+function clearEditorDraft() {
+  try { localStorage.removeItem(EDITOR_DRAFT_KEY); } catch (err) {}
+}
+
+// Read-only: called from a useState initializer, which StrictMode invokes
+// twice in development - so this must not consume the draft. The mount effect
+// next to the allLists state is what clears it.
+function applyEditorDraft(lists) {
+  try {
+    const raw = localStorage.getItem(EDITOR_DRAFT_KEY);
+    if (!raw) return lists;
+    const draft = JSON.parse(raw);
+    if (!draft || typeof draft.details !== 'string') return lists;
+    const list = lists && lists[draft.listName];
+    if (!Array.isArray(list)) return lists;
+    const idx = list.findIndex(t => t && t.id === draft.taskId);
+    if (idx === -1) return lists;
+    const task = list[idx];
+    // Strictly newer only. If the app survived the hide, the normal save (or
+    // a later edit) stamped updatedAt at or after savedAt, and the stored
+    // value wins - a stale draft must never overwrite newer content.
+    if (task.updatedAt && draft.savedAt && draft.savedAt <= task.updatedAt) return lists;
+    if ((task.details || '') === draft.details) return lists;
+    const nextList = [...list];
+    nextList[idx] = { ...task, details: draft.details, updatedAt: draft.savedAt || new Date().toISOString() };
+    return { ...lists, [draft.listName]: nextList };
+  } catch (err) {
+    return lists;
+  }
+}
+
 // Battery saver defaults on for touch devices. Phones and tablets run on a
 // battery and pay the real cost of backdrop blur and a full-screen gradient
 // layer; a desktop plugged into the wall does not. Deliberately tests the
@@ -1007,9 +1063,21 @@ const Task = ({ task, listName, showMoveButtons }) => {
     // re-rendered, remounted the subtree and reloaded the editor. Comparing
     // like with like makes "unchanged" actually mean unchanged.
     const cleaned = sanitizeRichText(content);
-    if (!force && cleaned === task.details) return;
+    if (!force && cleaned === task.details) {
+      // Nothing to write - but the DOM demonstrably matches storage right
+      // now, so refresh the baseline the load guard's unsaved-changes test
+      // compares against. Without this a reverted edit could leave the
+      // baseline pointing at an older save and misread a clean editor as
+      // dirty.
+      lastSavedHtmlRef.current = cleaned;
+      return null;
+    }
     lastSavedHtmlRef.current = cleaned;
     updateTaskDetails(listName, task.id, content);
+    // The sanitized value that is now on its way to storage. The hide-time
+    // save journals exactly this, so the crash journal and the stored task
+    // can never disagree about what the save contained.
+    return cleaned;
   };
 
   React.useEffect(() => {
@@ -1164,25 +1232,41 @@ const Task = ({ task, listName, showMoveButtons }) => {
     if (isExpanded && area) {
       // Only set content once when first expanded
       if (!hasSetInitialContent.current) {
-        // The echo test has to include the DOM, not just the refs.
+        // The guard is DOM truth, not ref bookkeeping.
         //
-        // lastSavedHtmlRef tracks what we last wrote to storage, and it used to
-        // be enough on its own: Task remounted constantly, so the ref was
-        // rebuilt empty every time and could never match a real saved value.
-        // Hoisting Task made these refs persist for the life of the page - so
-        // after collapse and re-expand, task.details and lastSavedHtmlRef still
-        // matched each other while the editor was a brand new, EMPTY div. That
-        // took the "already showing it" branch and skipped the load, leaving the
-        // editor blank - and the next collapse then saved that blank over the
-        // real content.
-        //
-        // Requiring the DOM to actually hold the content makes the guard mean
-        // what it says: skip the rewrite only when there is genuinely nothing
-        // to change.
+        // lastSavedHtmlRef tracks what we last wrote to storage, and the skip
+        // used to require it to match as well. That condition was vestigial:
+        // whenever the DOM already serializes to exactly the incoming value, a
+        // rewrite is a no-op that only costs the caret and scroll position -
+        // regardless of who wrote the value. (The DOM check itself is load-
+        // bearing and stays: after collapse and re-expand the editor is a
+        // brand new EMPTY div, and skipping the load then is what once left
+        // it blank and saved that blank over the real content.)
         const domNow = sanitizeRichText(area.innerHTML || '');
-        if (task.details === lastSavedHtmlRef.current && domNow === (task.details || '')) {
-          // A true echo of our own save: the DOM already shows exactly this, so
-          // rewriting it would only cost the caret and scroll position.
+        const incoming = sanitizeRichText(task.details || '');
+        if (domNow === incoming) {
+          // The DOM already shows exactly this - nothing to change.
+          hasSetInitialContent.current = true;
+          lastSavedHtmlRef.current = incoming;
+        } else if (
+          // Defer, don't clobber: a rewrite here while the user is typing
+          // destroys the caret and everything since the last save. Applies
+          // only when the editor is focused AND holds unsaved local changes
+          // (the DOM has moved past the last load/save baseline). Both
+          // conditions matter - a focused-but-untouched editor must take the
+          // rewrite, or its next blur would save stale content over the newer
+          // incoming value.
+          //
+          // Nothing external writes task.details while expanded today; this
+          // is the rule Session 4's snapshot listener relies on. The deferred
+          // value is not lost: the user's next save (blur, tick, collapse)
+          // writes the local DOM with a fresh updatedAt, and last-write-wins
+          // then resolves in favour of the person actively editing - which is
+          // the newest edit in fact, not just in bookkeeping.
+          lastSavedHtmlRef.current !== null &&
+          domNow !== lastSavedHtmlRef.current &&
+          area.contains(document.activeElement)
+        ) {
           hasSetInitialContent.current = true;
         } else {
           // Sanitized here too, not just on write. A task's details can arrive
@@ -1190,7 +1274,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
           // stored value can't be assumed to have gone through this app's own
           // editor. This assignment is into a live element, so anything unsafe
           // would execute immediately.
-          area.innerHTML = sanitizeRichText(task.details || '');
+          area.innerHTML = incoming;
+          // Baseline for the unsaved-changes test above: from this moment the
+          // DOM matches storage, so any later divergence is a local edit.
+          lastSavedHtmlRef.current = incoming;
           hasSetInitialContent.current = true;
           // After loading, reflect any already-complete child sets on their parents
           setTimeout(() => syncParentCheckboxes(area), 0);
@@ -1240,20 +1327,13 @@ const Task = ({ task, listName, showMoveButtons }) => {
       }
 
       if (!taskRef.current.contains(e.target)) {
-        // Save details before collapsing when clicking outside
-        const detailsArea = taskRef.current.querySelector('.details-richtext');
-        if (detailsArea) {
-          const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
-          allCheckboxes.forEach(cb => {
-            if (cb.checked) {
-              cb.setAttribute('checked', 'checked');
-            } else {
-              cb.removeAttribute('checked');
-            }
-          });
-          const content = detailsArea.innerHTML;
-          updateTaskDetails(listName, task.id, content);
-        }
+        // Save details before collapsing when clicking outside. Through
+        // saveDetails, which mirrors checked state and no-ops when nothing
+        // changed - the unconditional updateTaskDetails this replaces stamped
+        // updatedAt on every open-and-close, and under last-write-wins sync a
+        // task you merely looked at must never beat a real edit from the
+        // other device. The cleanup save on collapse is the backstop.
+        saveDetails(taskRef.current.querySelector('.details-richtext'));
         setExpandedTaskId(null);
       }
     };
@@ -1455,8 +1535,49 @@ const Task = ({ task, listName, showMoveButtons }) => {
       // middle of an earlier line - so the gesture has to be explicit about
       // meaning "carry on from the end".
       if (t === detailsArea) {
+        // Where the tap landed vertically, captured before the deferred work -
+        // the event object is not safe to read from a timeout.
+        const tapY = evt.clientY;
         setTimeout(() => {
           try {
+            // Tapping to the right of a line also lands on detailsArea when that
+            // line has no block wrapper - which is exactly what freshly typed
+            // text is, until the first Enter. Without this the tap was read as
+            // "below everything" and the caret was sent to the bottom of the
+            // editor, past any checkboxes underneath.
+            let alongside = null;
+            detailsArea.childNodes.forEach(node => {
+              let rect = null;
+              if (node.nodeType === Node.ELEMENT_NODE) {
+                rect = node.getBoundingClientRect();
+              } else if (node.nodeType === Node.TEXT_NODE && (node.textContent || '').trim()) {
+                const rr = document.createRange();
+                rr.selectNodeContents(node);
+                rect = rr.getBoundingClientRect();
+              }
+              if (rect && rect.height && tapY >= rect.top && tapY <= rect.bottom) alongside = node;
+            });
+
+            if (alongside) {
+              // Same treatment as the end of a checkbox line: sit one space
+              // clear of the last word, ready to keep writing.
+              const host = alongside.nodeType === Node.ELEMENT_NODE
+                ? (alongside.querySelector('span') || alongside)
+                : alongside.parentNode;
+              const existing = (alongside.textContent || '');
+              if (existing && !/[\s\u00A0]$/.test(existing)) {
+                if (alongside.nodeType === Node.TEXT_NODE) alongside.textContent = existing + ' ';
+                else host.appendChild(document.createTextNode(' '));
+              }
+              const rr = document.createRange();
+              rr.selectNodeContents(alongside.nodeType === Node.TEXT_NODE ? alongside : host);
+              rr.collapse(false);
+              const sel2 = window.getSelection();
+              sel2.removeAllRanges();
+              sel2.addRange(rr);
+              return;
+            }
+
             const last = detailsArea.lastElementChild;
             const isStructured = last && (
               (last.classList && last.classList.contains('checkbox-line')) ||
@@ -1512,13 +1633,48 @@ const Task = ({ task, listName, showMoveButtons }) => {
       const line = t.closest('.checkbox-line');
       if (!line) return;   // plain text, or the empty space below - editable
 
-      // The deliberate way in on touch: tap past the end of the line's text.
-      // That is an unambiguous "put the cursor here" and it can't be hit by
-      // aiming for the box. Clicking below the content works the same way,
+      // The deliberate way in on touch: tap at or past the end of the line's
+      // text. That is an unambiguous "put the cursor here" and it can't be hit
+      // by aiming for the box. Clicking below the content works the same way,
       // since that isn't inside a checkbox line at all.
       const label = line.querySelector('span') || line;
       const rect = label.getBoundingClientRect();
-      if (evt.clientX <= rect.right) evt.preventDefault();
+
+      // A margin before the end of the text still counts as "the end of the
+      // line". The target used to be the exact pixel edge of the last glyph,
+      // which is far finer than a fingertip - so carrying on writing a line you
+      // had already started was close to impossible.
+      const END_ZONE = 24;
+      if (evt.clientX <= rect.right - END_ZONE) {
+        evt.preventDefault();
+        return;
+      }
+
+      // Place the caret after the last word rather than leaving it to the
+      // browser. A tap in the blank space right of the text has no character
+      // under it, so the browser's guess is often the start of the line or the
+      // far side of the checkbox.
+      setTimeout(() => {
+        try {
+          // Separate the caret from the last word, so continuing a line doesn't
+          // start by typing a space. A plain space rather than \u00A0 because
+          // the editor is white-space: pre-wrap, which preserves it and still
+          // allows the line to wrap there - a non-breaking space would render
+          // the same but quietly stop wrapping mid-sentence.
+          const existing = label.textContent || '';
+          if (existing && !/[\s\u00A0]$/.test(existing)) {
+            label.appendChild(document.createTextNode(' '));
+          }
+          const r = document.createRange();
+          r.selectNodeContents(label);
+          r.collapse(false);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(r);
+        } catch (err) {
+          // Focus still landed; only the caret position is a nicety.
+        }
+      }, 0);
     };
 
     if (detailsArea) {
@@ -1567,7 +1723,55 @@ const Task = ({ task, listName, showMoveButtons }) => {
         detailsArea.removeEventListener('touchcancel', onIndentEnd);
       }
     };
-  }, [isExpanded, listName, task.id]);
+    // task.details is in the deps for correctness, not convenience. The
+    // handlers above (outside-click save, the delegated tick save) close over
+    // saveDetails, whose "did anything change" comparison closes over
+    // task.details. Without this dep those handlers keep the snapshot from
+    // when the effect last ran, and after any save while expanded the stale
+    // comparison fails both ways: content that hadn't changed looked changed
+    // (a redundant save, stamping updatedAt - the exact write a sync merge
+    // must not see), and content reverted to the stale snapshot looked
+    // unchanged (a skipped save, rescued only by the collapse backstop).
+    // Re-running on each save re-registers the listeners and resets the
+    // indent-drag accumulator; every save happens between gestures, so
+    // there is nothing in flight to lose. A side benefit: the
+    // contentEditable re-arm above now also re-runs if details are ever
+    // rewritten externally while expanded.
+  }, [isExpanded, listName, task.id, task.details]);
+
+  // Save the open editor the moment the app is hidden or torn down. Saves
+  // otherwise happen on blur, cut, indent-end and collapse - but iOS does not
+  // reliably blur the focused element when a home-screen app is backgrounded,
+  // and a backgrounded PWA can be killed before the user ever returns. The
+  // dispatch below feeds the normal save path for the case where the app
+  // survives; the journal write is the synchronous copy for the case where it
+  // does not (see EDITOR_DRAFT_KEY). saveDetails no-ops on unchanged content,
+  // so the common case costs one sanitize and a string compare.
+  //
+  // task.details is deliberately in the deps: the handler's comparison inside
+  // saveDetails closes over it, and a stale closure would re-save (and
+  // re-stamp) content that had not actually changed.
+  React.useEffect(() => {
+    if (!isExpanded) return;
+    const saveOnHide = () => {
+      const cleaned = saveDetails(detailsRef.current);
+      if (typeof cleaned === 'string') {
+        writeEditorDraft(listName, task.id, cleaned);
+      } else {
+        // Nothing new to save, so any draft still sitting in storage is by
+        // definition stale. Clearing it keeps the journal from ever holding
+        // something older than the state it would be applied to.
+        clearEditorDraft();
+      }
+    };
+    const onVisibility = () => { if (document.hidden) saveOnHide(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', saveOnHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', saveOnHide);
+    };
+  }, [isExpanded, listName, task.id, task.details]);
 
   return (
     <div 
@@ -1628,21 +1832,13 @@ const Task = ({ task, listName, showMoveButtons }) => {
           return;
         }
         
-        // Save details before collapsing
-        if (isExpanded && detailsRef.current) {
-          const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-          allCheckboxes.forEach(cb => {
-            if (cb.checked) {
-              cb.setAttribute('checked', 'checked');
-            } else {
-              cb.removeAttribute('checked');
-            }
-          });
-          const content = detailsRef.current.innerHTML;
-          // Always save when collapsing, even if content looks the same
-          // This ensures text is persisted
-          updateTaskDetails(listName, task.id, content);
-        }
+        // Save details before collapsing. Through saveDetails rather than the
+        // unconditional updateTaskDetails this replaces: "always save even if
+        // content looks the same" predates the reliable cleanup save on
+        // collapse, and its unconditional updatedAt stamp is what would let
+        // merely opening a task win sync conflicts. saveDetails no-ops when
+        // unchanged; the collapse cleanup still saves as the backstop.
+        if (isExpanded) saveDetails(detailsRef.current);
         
         setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
       }}
@@ -1756,21 +1952,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   // If collapsed, single click expands
                   // Delay single-click action to allow double-click to cancel it
                   clickTimeoutRef.current = setTimeout(() => {
-                    // Save details before toggling if expanded
-                    if (isExpanded && detailsRef.current) {
-                      const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-                      allCheckboxes.forEach(cb => {
-                        if (cb.checked) {
-                          cb.setAttribute('checked', 'checked');
-                        } else {
-                          cb.removeAttribute('checked');
-                        }
-                      });
-                      const content = detailsRef.current.innerHTML;
-                      // Always save when collapsing, even if content looks the same
-                      // This ensures text is persisted
-                      updateTaskDetails(listName, task.id, content);
-                    }
+                    // Save details before toggling if expanded. Same reasoning
+                    // as the collapse path above: saveDetails no-ops when
+                    // unchanged, so opening a task is never a write.
+                    if (isExpanded) saveDetails(detailsRef.current);
                     
                     // Single click toggles task expanded/collapsed
                     if (!task.isArchived) {
@@ -1999,34 +2184,89 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   const isProperLine = currentLine && currentLine !== detailsArea && currentLine.parentElement === detailsArea;
                   const currentLineText = isProperLine ? (currentLine.textContent || '').replace(/\u00A0/g, '').trim() : '';
                   
+                  // Text typed straight into an empty editor has no wrapping
+                  // block - browsers leave it as bare text nodes until the first
+                  // Enter. That is the most common way to reach this button, so
+                  // the run around the caret is wrapped first and then treated
+                  // like any other line.
+                  const wrapBareLine = () => {
+                    let node = range.startContainer;
+                    if (node === detailsArea) {
+                      node = detailsArea.childNodes[Math.max(0, range.startOffset - 1)]
+                        || detailsArea.firstChild;
+                    }
+                    while (node && node.parentElement !== detailsArea) node = node.parentElement;
+                    if (!node) return null;
+                    const isBoundary = (n) => !n || (n.nodeType === Node.ELEMENT_NODE &&
+                      ['BR', 'DIV', 'P', 'UL', 'OL'].includes(n.tagName));
+                    if (isBoundary(node)) return null;
+                    let first = node, last = node;
+                    while (first.previousSibling && !isBoundary(first.previousSibling)) first = first.previousSibling;
+                    while (last.nextSibling && !isBoundary(last.nextSibling)) last = last.nextSibling;
+                    const wrapper = document.createElement('div');
+                    detailsArea.insertBefore(wrapper, first);
+                    let n = first;
+                    while (n) {
+                      const next = (n === last) ? null : n.nextSibling;
+                      wrapper.appendChild(n);
+                      n = next;
+                    }
+                    return wrapper;
+                  };
+
+                  // Converts a line in place, keeping its text and indent, so a
+                  // checkbox can be added to something already written. This
+                  // used to insert an empty checkbox on the NEXT line instead,
+                  // which meant you could never tick a line you'd already typed.
+                  const convertInPlace = (lineEl) => {
+                    textSpan.innerHTML = '';
+                    while (lineEl.firstChild) textSpan.appendChild(lineEl.firstChild);
+                    if (lineEl.style && lineEl.style.marginLeft) {
+                      checkboxLine.style.marginLeft = lineEl.style.marginLeft;
+                    }
+                    lineEl.parentElement.replaceChild(checkboxLine, lineEl);
+                  };
+
+                  let caretToEnd = false;
+
                   if (explicitAnchor) {
                     explicitAnchor.parent.insertBefore(checkboxLine, explicitAnchor.before);
                   } else if (isProperLine && currentLineText === '') {
-                    // Empty line (including leftover empty checkbox-line) - replace with checkbox line
+                    // Empty line (including a leftover empty checkbox-line)
                     currentLine.parentElement.replaceChild(checkboxLine, currentLine);
                   } else if (isProperLine && currentLineText !== '') {
-                    // Line has text - add checkbox on the NEXT line
-                    currentLine.parentElement.insertBefore(checkboxLine, currentLine.nextSibling);
+                    convertInPlace(currentLine);
+                    caretToEnd = true;
                   } else {
-                    // Cursor is directly in detailsArea (no wrapping line div)
-                    // Check if there's any text content at the cursor position on this "line"
                     const areaText = (detailsArea.textContent || '').replace(/\u00A0/g, '').trim();
                     if (areaText === '') {
-                      // Empty details area - just add the checkbox at the start
                       detailsArea.appendChild(checkboxLine);
                     } else {
-                      // There's text - insert checkbox line after current position
-                      range.collapse(false);
-                      range.insertNode(checkboxLine);
+                      const wrapped = wrapBareLine();
+                      if (wrapped && (wrapped.textContent || '').replace(/\u00A0/g, '').trim() !== '') {
+                        convertInPlace(wrapped);
+                        caretToEnd = true;
+                      } else {
+                        if (wrapped && wrapped.parentElement) wrapped.remove();
+                        range.collapse(false);
+                        range.insertNode(checkboxLine);
+                      }
                     }
                   }
                   
-                  // Move cursor into the checkbox's text span
+                  // After converting existing text the caret belongs at the end
+                  // of it, not in front of what you already wrote.
                   const newRange = document.createRange();
-                  newRange.setStart(textSpan, 0);
-                  newRange.collapse(true);
+                  if (caretToEnd) {
+                    newRange.selectNodeContents(textSpan);
+                    newRange.collapse(false);
+                  } else {
+                    newRange.setStart(textSpan, 0);
+                    newRange.collapse(true);
+                  }
                   selection.removeAllRanges();
                   selection.addRange(newRange);
+                  setTimeout(() => refreshListMarkers(detailsArea), 0);
                 }
               }}
               title="Insert Checkbox"
@@ -4020,8 +4260,18 @@ function LittleFiresApp() {
       parsed.partner = [];
     }
     
-    return parsed;
+    // Recover any hide-time editor save that never made it through the normal
+    // path (see EDITOR_DRAFT_KEY). Read-only, and applied only if strictly
+    // newer than the stored task - the effect below is what consumes it.
+    return applyEditorDraft(parsed);
   });
+
+  // Clear the journal here rather than inside the initializer above: an
+  // initializer must stay pure (StrictMode invokes it twice in development),
+  // and by this point the draft has either been applied into state or been
+  // judged stale. The persistence effect will write the applied result back
+  // to storage on this same mount.
+  useEffect(() => { clearEditorDraft(); }, []);
 
   // Deletion tombstones: { [taskId]: deletedAtISO }.
   //
@@ -4649,9 +4899,21 @@ function LittleFiresApp() {
     queueSetItem('little_fires_deleted', () => JSON.stringify(deletedTaskIds));
   }, [deletedTaskIds, queueSetItem]);
 
-  // Auto-archive completed tasks from previous months on app load and daily
+  // Auto-archive completed tasks from previous months on app load and daily.
+  //
+  // The check body lives in a ref that is refreshed every commit, and the
+  // timers below call through it. With the timers' effect on [] deps, calling
+  // checkAndArchive directly would freeze the closure at FIRST render - so a
+  // midnight run would filter the app-launch snapshot of allLists. That was
+  // not hypothetical: a last-month-completed task deleted (or manually
+  // archived) during the day was still in that snapshot, and midnight would
+  // re-add it to the archive - resurrecting the deleted one, duplicating the
+  // archived one - while the identity-based removal filter matched nothing
+  // and hid the evidence. The ref means whenever the timer fires, it sees the
+  // lists and lastArchiveCheck of the latest render.
+  const checkAndArchiveRef = React.useRef(() => {});
   useEffect(() => {
-    const checkAndArchive = () => {
+    checkAndArchiveRef.current = () => {
       const now = new Date();
       const lastCheck = new Date(lastArchiveCheck);
       
@@ -4666,6 +4928,10 @@ function LittleFiresApp() {
         safeSetItem('little_fires_last_archive_check', newCheckDate);
       }
     };
+  });
+
+  useEffect(() => {
+    const checkAndArchive = () => checkAndArchiveRef.current();
     
     // Check on initial load
     checkAndArchive();
@@ -4675,17 +4941,25 @@ function LittleFiresApp() {
     const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
     const msUntilMidnight = tomorrow.getTime() - now.getTime();
     
+    // Declared at effect scope so the cleanup below can reach it. The
+    // previous version returned the clearInterval from inside the setTimeout
+    // callback, where a return value goes nowhere - once the app had been
+    // open past midnight, the interval could never be cleaned up, and every
+    // error-boundary remount stacked another immortal one.
+    let dailyInterval = null;
+    
     // Schedule first midnight check
     const midnightTimeout = setTimeout(() => {
       checkAndArchive();
       
       // Then check every 24 hours
-      const dailyInterval = setInterval(checkAndArchive, 24 * 60 * 60 * 1000);
-      
-      return () => clearInterval(dailyInterval);
+      dailyInterval = setInterval(checkAndArchive, 24 * 60 * 60 * 1000);
     }, msUntilMidnight);
     
-    return () => clearTimeout(midnightTimeout);
+    return () => {
+      clearTimeout(midnightTimeout);
+      if (dailyInterval) clearInterval(dailyInterval);
+    };
   }, []);
 
   // Close dropdowns when clicking outside
@@ -4970,11 +5244,16 @@ function LittleFiresApp() {
   // would tell the other device to destroy a task that was only filed away.
   const removeTaskFromList = (listName, taskId) => {
     setAllLists(prev => {
-      const newLists = { ...prev };
-      const idx = findTaskIndex(newLists[listName], taskId);
+      const idx = findTaskIndex(prev[listName], taskId);
       if (idx === -1) return prev;
-      newLists[listName].splice(idx, 1);
-      return newLists;
+      // Copy the ARRAY, not just the object. { ...prev } shares every list
+      // array with prev, so splicing in place mutated the state React was
+      // still holding - masked today, but any change detection that compares
+      // old and new list references (exactly what sync's push layer will do)
+      // would see removals as "nothing changed" and never propagate them.
+      const nextList = [...prev[listName]];
+      nextList.splice(idx, 1);
+      return { ...prev, [listName]: nextList };
     });
   };
 
@@ -5021,21 +5300,23 @@ function LittleFiresApp() {
 
     // Remove from archived
     setArchivedTasks(prev => {
-      const newArchived = { ...prev };
-      const idx = findTaskIndex(newArchived[listName], taskId);
+      const idx = findTaskIndex(prev[listName], taskId);
       if (idx === -1) return prev;
-      newArchived[listName].splice(idx, 1);
-      return newArchived;
+      // Copy the array, not just the object - see removeTaskFromList.
+      const nextList = [...prev[listName]];
+      nextList.splice(idx, 1);
+      return { ...prev, [listName]: nextList };
     });
   };
 
   const deleteArchivedTask = (listName, taskId) => {
     setArchivedTasks(prev => {
-      const newArchived = { ...prev };
-      const idx = findTaskIndex(newArchived[listName], taskId);
+      const idx = findTaskIndex(prev[listName], taskId);
       if (idx === -1) return prev;
-      newArchived[listName].splice(idx, 1);
-      return newArchived;
+      // Copy the array, not just the object - see removeTaskFromList.
+      const nextList = [...prev[listName]];
+      nextList.splice(idx, 1);
+      return { ...prev, [listName]: nextList };
     });
     recordDeletion(taskId);
   };
@@ -5748,10 +6029,17 @@ function LittleFiresApp() {
       tasksToArchive.forEach(task => {
         const taskIndex = allLists[listName].findIndex(t => t === task);
         if (taskIndex !== -1) {
-          // Add to archived tasks
+          // Add to archived tasks. Stamped like the manual archiveTask path:
+          // archiving is a state change like any other, and without the stamp
+          // two devices disagreeing about whether a task is archived have no
+          // way to tell which opinion is newer.
           setArchivedTasks(prev => ({
             ...prev,
-            [listName]: [...(prev[listName] || []), { ...task, archivedAt: new Date().toISOString() }]
+            [listName]: [...(prev[listName] || []), {
+              ...task,
+              archivedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }]
           }));
         }
       });
@@ -13343,7 +13631,7 @@ function LittleFiresApp() {
                                         if (taskIndex !== -1) {
                                           setAppMode('tasks');
                                           setCurrentList(item.list);
-                                          setSelectedDate(null);
+                                          setSelectedDay(null);
                                           setTimeout(() => {
                                             setExpandedTaskId(`${item.list}-${item.data.id}`);
                                           }, 100);
@@ -13420,7 +13708,7 @@ function LittleFiresApp() {
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setAppMode('notes');
-                                        setSelectedDate(null);
+                                        setSelectedDay(null);
                                         setTimeout(() => {
                                           const noteElement = document.querySelector(`[data-note-id="${item.data.id}"]`);
                                           if (noteElement) {
@@ -13429,7 +13717,7 @@ function LittleFiresApp() {
                                               block: 'center'
                                             });
                                             // Expand the note
-                                            const currentNote = allNotes.find(n => n.id === item.data.id);
+                                            const currentNote = notes.find(n => n.id === item.data.id);
                                             if (currentNote && !currentNote.expanded) {
                                               toggleNoteExpanded(item.data.id);
                                             }
@@ -13520,7 +13808,7 @@ function LittleFiresApp() {
                                         setAppMode('projects');
                                         setCurrentProjectList(item.list);
                                         setSelectedProject({ id: item.data.id, listName: item.list });
-                                        setSelectedDate(null);
+                                        setSelectedDay(null);
                                       }}
                                     >
                                       Go to Project →

@@ -7817,6 +7817,12 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
           outline: none;
           min-width: 150px;
+          /* The mobile block sets width: 100% on this control. There is no
+             global border-box reset in this stylesheet - it is declared per
+             rule - so without this the 14px side padding and 2px border were
+             added OUTSIDE that 100% and the field rendered 32px wider than its
+             parent, spilling past the right edge of the task card. */
+          box-sizing: border-box;
         }
 
         .project-selector:focus {
@@ -9041,6 +9047,9 @@ function LittleFiresApp() {
         .project-detail-content {
           max-width: 800px;
           width: 100%;
+          /* 30px padding outside a 100% width overflowed the viewport by
+             60px on a phone - same class of bug as .project-selector. */
+          box-sizing: border-box;
           background: #1e1e2e;
           border-radius: 20px;
           padding: 30px;
@@ -9065,6 +9074,9 @@ function LittleFiresApp() {
         .goal-detail-content {
           max-width: 800px;
           width: 100%;
+          /* 30px padding outside a 100% width overflowed the viewport by
+             60px on a phone - same class of bug as .project-selector. */
+          box-sizing: border-box;
           background: #1e1e2e;
           border-radius: 20px;
           padding: 30px;
@@ -9575,6 +9587,9 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
           font-family: var(--font-body);
           width: 100%;
+          /* width: 100% plus side padding and a border, with no global
+             border-box reset - same overflow as .project-selector. */
+          box-sizing: border-box;
         }
 
         .tag-input:focus {
@@ -9938,6 +9953,9 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
           box-shadow: 0 4px 15px rgba(45, 106, 79, 0.3);
           width: 100%;
+          /* Same as .project-selector: 20px side padding outside a 100%
+             width overflowed the card by 40px. */
+          box-sizing: border-box;
         }
 
         .go-to-btn:hover {

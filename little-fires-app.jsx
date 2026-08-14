@@ -3250,9 +3250,14 @@ function LittleFiresApp() {
     defaultTimerDuration: '', // '' = open-ended "Timer"
     defaultReportTimeframe: 'thisWeek',
     completionDelay: true,    // pause so the checkmark is visible before a task moves
-    accentId: 'matcha',       // preset id, or 'custom'
+    // Fresh-install defaults: Ember accent, Lora & Inter, light theme.
+    // Existing installs are held on the previous defaults by the pins in the
+    // loader below - changing a default normally reaches everyone who never
+    // overrode it, which is right for most keys but would silently restyle an
+    // app somebody is already using.
+    accentId: 'ember',        // preset id, or 'custom'
     customAccent: '#53745f',
-    fontChoice: 'default',
+    fontChoice: 'serif',      // Lora & Inter
     // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
     // default for a fresh install - see the loader below, which keeps everyone
     // who was already using the app on what they had.
@@ -3305,10 +3310,23 @@ function LittleFiresApp() {
       // Changing a default normally reaches everyone, because only deltas are
       // stored - that's the point of the delta scheme. It's the wrong outcome
       // for theme: someone who has been using a dark app would open it one day
-      // to find it light, having changed nothing. A stored blob means an
-      // existing install, so anyone who never picked a theme is pinned to the
-      // behaviour they already had rather than inheriting the new default.
+      // to find it light, having changed nothing.
+      //
+      // Narrower than it looks now. The persistence effect writes `theme`
+      // unconditionally, so any blob saved by current code HAS the key and
+      // never reaches this line. Only a blob written before that change can
+      // be missing it - a genuine pre-existing install, which is precisely
+      // who this pin is for. It used to catch everyone, including fresh
+      // installs on their second launch, which is what made a chosen Light
+      // theme revert to the phone's dark setting on every open.
       if (parsed.theme === undefined) parsed.theme = 'system';
+      // Same treatment, same reasoning, for the two other look-and-feel
+      // defaults that changed when Ember and Lora & Inter became the
+      // fresh-install look. Current code writes both keys unconditionally, so
+      // a blob missing them predates that change and belongs to someone
+      // already using the app: hold them on what they had.
+      if (parsed.accentId === undefined) parsed.accentId = 'matcha';
+      if (parsed.fontChoice === undefined) parsed.fontChoice = 'default';
       // Same reasoning as theme, and it matters more here: someone already
       // using Notes or Projects would open the app one day to find those
       // sections simply gone. A stored blob means an existing install, so
@@ -3371,6 +3389,37 @@ function LittleFiresApp() {
       // the next auto-detect could silently override it back to on.
       if (k === 'batterySaver') {
         if (batterySaverUserChoiceRef.current) overrides.batterySaver = settings.batterySaver;
+        return;
+      }
+      // Theme is always written, for the same reason batterySaver is: its
+      // chosen value can equal the default, and the generic check below
+      // cannot tell "I chose Light" from "I never touched it".
+      //
+      // That distinction is not cosmetic here. DEFAULT_SETTINGS.theme is
+      // 'light', so choosing Light used to write nothing at all - and the
+      // loader treats a stored blob with no theme key as an existing install
+      // and pins it to 'system'. On a phone set to dark, the app therefore
+      // reopened dark every single time, no matter how often Light was
+      // chosen. It also caught fresh installs, because this effect writes a
+      // blob on first mount, so by the second launch every install looked
+      // like an "existing" one.
+      //
+      // With the key always present, a blob that lacks it can only have been
+      // written before this change - a genuine pre-existing install - which
+      // is exactly what the loader's pin was written for, so that pin stays.
+      if (k === 'theme') {
+        overrides.theme = settings.theme;
+        return;
+      }
+      // accentId and fontChoice need the identical exception, and for the
+      // identical reason: both now have a fresh-install default a user can
+      // also choose deliberately (Ember, Lora & Inter). Under the generic
+      // equals-default check, choosing the default writes nothing, the
+      // loader's pin above then reads the key as absent, and the choice
+      // reverts to the old default on the next launch - which is exactly the
+      // bug that made a chosen Light theme reopen dark.
+      if (k === 'accentId' || k === 'fontChoice') {
+        overrides[k] = settings[k];
         return;
       }
       if (JSON.stringify(settings[k]) !== JSON.stringify(DEFAULT_SETTINGS[k])) {

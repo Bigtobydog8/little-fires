@@ -655,6 +655,20 @@ const MOVE_HOLD_MS = 0;
 // icons. They were declared inside LittleFiresApp and referenced by Task, which
 // only breaks once Task is hoisted - and only on the expanded task, since that
 // is the one place they render.
+// Start and end of a project or goal as one short line. Both fields are
+// date-only strings, so they go through parseLocalDate - new Date() would read
+// them as UTC and show the day before for anyone behind it.
+function formatProjectSpan(item, parseLocalDate) {
+  const fmt = (value) => {
+    const d = parseLocalDate(value);
+    return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null;
+  };
+  const start = item && item.startDate ? fmt(item.startDate) : null;
+  const end = item && item.endDate ? fmt(item.endDate) : null;
+  if (start && end) return start === end ? start : start + ' – ' + end;
+  return start || end || '';
+}
+
 // ---- Calendar day grouping -------------------------------------------------
 // The same three buckets the task list and the project detail already use, in
 // the same order.
@@ -1376,8 +1390,15 @@ const Task = ({ task, listName, showMoveButtons }) => {
         const indent = getIndent(lines[i]);
         const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
         const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
+        // "Directly under" means adjacent in the document, not merely the next
+        // checkbox line. This list is built from querySelectorAll, so anything
+        // that is not a checkbox line - an empty line most of all - is
+        // invisible to it, and a line separated from an indented line by a
+        // blank one was still being drawn as its heading.
+        const childIsAdjacent = i + 1 < lines.length &&
+          lines[i].nextElementSibling === lines[i + 1];
         // Parent: a line immediately followed by a more-indented line, with text
-        if (nextIndent > indent) {
+        if (nextIndent > indent && childIsAdjacent) {
           const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
           if (txt) {
             // Class only. These used to also set fontWeight, borderBottom and
@@ -5237,6 +5258,7 @@ function LittleFiresApp() {
   const [showJournalTimeLogs, setShowJournalTimeLogs] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
   const [showProjects, setShowProjects] = useState(true);
+  const [showGoals, setShowGoals] = useState(true);
   
   const [lastArchiveCheck, setLastArchiveCheck] = useState(() => {
     const saved = localStorage.getItem('little_fires_last_archive_check');
@@ -5595,10 +5617,15 @@ function LittleFiresApp() {
     // Touch has to wait. Putting a finger down outside the card is how you
     // scroll, and collapsing on touchstart meant the details closed the moment
     // you tried to look further down the page. So the decision is deferred to
-    // touchend and only made if the finger effectively stayed put - a tap is a
-    // dismissal, a drag is a scroll.
-    const touch = { x: 0, y: 0, pending: false };
+    // touchend, and only a QUICK TAP counts as a dismissal: the finger has to
+    // stay put and lift promptly. Anything longer is a press - holding to read,
+    // to select text, or to start a scroll that has not moved yet - and the
+    // task stays open.
+    const touch = { x: 0, y: 0, startedAt: 0, pending: false };
     const MOVE_TOLERANCE = 10;
+    // Just above the platform's own long-press threshold, so anything iOS
+    // would treat as a press rather than a tap is left alone here too.
+    const TAP_MAX_MS = 500;
 
     const onTouchStart = (e) => {
       if (e.touches.length !== 1 || !isOutside(e.target)) {
@@ -5608,11 +5635,17 @@ function LittleFiresApp() {
       const t = e.touches[0];
       touch.x = t.clientX;
       touch.y = t.clientY;
+      touch.startedAt = Date.now();
       touch.pending = true;
     };
 
     const onTouchMove = (e) => {
       if (!touch.pending) return;
+      // A second finger means a pinch or a two-finger scroll, never a tap.
+      if (e.touches.length !== 1) {
+        touch.pending = false;
+        return;
+      }
       const t = e.touches[0];
       if (Math.abs(t.clientX - touch.x) > MOVE_TOLERANCE ||
           Math.abs(t.clientY - touch.y) > MOVE_TOLERANCE) {
@@ -5623,21 +5656,32 @@ function LittleFiresApp() {
     const onTouchEnd = () => {
       if (!touch.pending) return;
       touch.pending = false;
+      // A held finger is not a dismissal, even if it never moved. Scrolling
+      // often begins as a stationary press while the page decides to move, and
+      // closing the task at the end of that reads as the app closing itself.
+      if (Date.now() - touch.startedAt > TAP_MAX_MS) return;
       collapse();
     };
+
+    // touchcancel is not a tap that happened to end - it is the gesture being
+    // taken away, which is exactly what the browser does when it decides the
+    // touch is a scroll. Routing it to onTouchEnd meant a scroll that had not
+    // yet passed the movement tolerance collapsed the task at the moment the
+    // browser took over.
+    const onTouchCancel = () => { touch.pending = false; };
 
     // Capture phase so this runs before the tapped card's own handler.
     document.addEventListener('mousedown', onMouseDown, true);
     document.addEventListener('touchstart', onTouchStart, true);
     document.addEventListener('touchmove', onTouchMove, true);
     document.addEventListener('touchend', onTouchEnd, true);
-    document.addEventListener('touchcancel', onTouchEnd, true);
+    document.addEventListener('touchcancel', onTouchCancel, true);
     return () => {
       document.removeEventListener('mousedown', onMouseDown, true);
       document.removeEventListener('touchstart', onTouchStart, true);
       document.removeEventListener('touchmove', onTouchMove, true);
       document.removeEventListener('touchend', onTouchEnd, true);
-      document.removeEventListener('touchcancel', onTouchEnd, true);
+      document.removeEventListener('touchcancel', onTouchCancel, true);
     };
   }, [expandedTaskId]);
 
@@ -6548,7 +6592,45 @@ function LittleFiresApp() {
         });
       });
     }
-    
+
+    // Goals, on their start and end dates. Same shape and same rules as
+    // projects - a goal that starts and ends on one day is marked once, as
+    // 'both', rather than appearing twice.
+    if (showGoals && isFeatureOn('goals')) {
+      const allGoalLists = ['personal', 'work', 'home', 'travel', 'kids'];
+      allGoalLists.forEach(listName => {
+        (goals[listName] || []).forEach(goal => {
+          let shouldShow = false;
+          let dateType = '';
+
+          if (goal.startDate) {
+            const startDate = parseLocalDate(goal.startDate);
+            if (startDate && isSameDate(startDate, date)) {
+              shouldShow = true;
+              dateType = 'start';
+            }
+          }
+
+          if (goal.endDate) {
+            const endDate = parseLocalDate(goal.endDate);
+            if (endDate && isSameDate(endDate, date)) {
+              shouldShow = true;
+              dateType = dateType === 'start' ? 'both' : 'end';
+            }
+          }
+
+          if (shouldShow) {
+            items.push({
+              type: 'goal',
+              data: goal,
+              list: listName,
+              dateType: dateType
+            });
+          }
+        });
+      });
+    }
+
     return items;
   };
 
@@ -10423,6 +10505,12 @@ function LittleFiresApp() {
           color: #9333EA;
         }
 
+        /* Distinct from the project dot beside it, and readable on both
+           themes - the other three indicators are fixed colours too. */
+        .goal-indicator {
+          color: #0EA5E9;
+        }
+
         .day-details {
           background: rgba(var(--surface-raised-rgb), 0.6);
           border: 2px solid rgba(var(--border-rgb), 0.3);
@@ -10512,7 +10600,8 @@ function LittleFiresApp() {
 
         /* Completed rows recede: the eye should land on what is still open.
            Opacity rather than a colour change, so it works in both themes. */
-        .day-status-group.status-complete .calendar-item .item-text {
+        .day-status-group.status-complete .calendar-item .item-text,
+        .day-status-group.status-complete .calendar-item .item-project {
           opacity: 0.62;
         }
 
@@ -10717,8 +10806,22 @@ function LittleFiresApp() {
           border-left: 4px solid var(--accent);
         }
 
+        /* No left stripe. The row is identified by its bullet, in the same
+           colour it uses on the month grid, which keeps the calendar's own
+           colour language rather than adding a second one. */
         .project-item {
-          border-left: 4px solid #9333EA;
+          border-left: none;
+        }
+
+        /* Shares the task bullet's metrics so a project row and a task row
+           line up down the panel. */
+        .item-dot {
+          font-size: 0.8rem;
+          margin-right: 6px;
+        }
+
+        .project-dot {
+          color: #9333EA;
         }
 
         .project-date-badge {
@@ -10813,7 +10916,31 @@ function LittleFiresApp() {
         .item-text {
           color: var(--text);
           font-size: 1rem;
+          /* Matched to .task-text in the main list. Both surfaces inherit
+             --font-body from the container, so weight was the only thing that
+             differed - this read as 400 next to the list's 600 and looked like
+             a different font rather than the same task in another view.
+             600 is deliberate there (the import carries 400/600/700/800 only,
+             so 500 would silently render as 400). */
+          font-weight: 600;
           line-height: 1.5;
+        }
+
+        /* The flame sits inline after the name now, rather than in a header
+           row above it. A small gap so it reads as attached to the text
+           without crowding the last word. */
+        .item-text .priority-badge {
+          margin-left: 6px;
+        }
+
+        /* Project name as a subtitle under the task. Indented to line up with
+           the task text rather than the bullet, so the two read as one block. */
+        .item-project {
+          margin-top: 2px;
+          padding-left: 18px;
+          color: var(--text-muted);
+          font-size: 0.8rem;
+          line-height: 1.4;
         }
 
         .task-dot {
@@ -14103,6 +14230,16 @@ function LittleFiresApp() {
                   <span>Projects</span>
                 </label>
               )}
+              {isFeatureOn('goals') && (
+                <label className="calendar-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={showGoals}
+                    onChange={(e) => setShowGoals(e.target.checked)}
+                  />
+                  <span>Goals</span>
+                </label>
+              )}
               {isFeatureOn('notes') && (
                 <label className="calendar-checkbox">
                   <input
@@ -14237,6 +14374,11 @@ function LittleFiresApp() {
                             ●
                           </span>
                         )}
+                        {items.filter(item => item.type === 'goal').length > 0 && (
+                          <span className="indicator goal-indicator" title={`${items.filter(item => item.type === 'goal').length} goal(s)`}>
+                            ●
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -14264,6 +14406,7 @@ function LittleFiresApp() {
                   const tasks = items.filter(item => item.type === 'task');
                   const notes = items.filter(item => item.type === 'note');
                   const projectItems = items.filter(item => item.type === 'project');
+                  const goalItems = items.filter(item => item.type === 'goal');
                   
                   return (
                     <div className="day-items">
@@ -14318,25 +14461,22 @@ function LittleFiresApp() {
                                 onClick={() => setExpandedCalendarTaskId(isExpanded ? null : taskId)}
                                 style={{cursor: 'pointer'}}
                               >
-                                {/* The list badge and the Completed badge are gone: the
-                                    row now sits under a list heading and a status
-                                    heading that say the same thing. Project and
-                                    priority stay - neither is implied by where the row
-                                    sits - and the header is dropped entirely when it
-                                    would otherwise be an empty box above the text. */}
-                                {(project || item.data.priority === 'high') && (
-                                  <div className="item-header">
-                                    {project && (
-                                      <span className="project-badge">
-                                        {project.name}
-                                      </span>
-                                    )}
-                                    {item.data.priority === 'high' && <span className="priority-badge"><FlameIcon /></span>}
-                                  </div>
-                                )}
+                                {/* No header row. The list badge and the Completed
+                                    badge went when the rows gained list and status
+                                    headings that said the same thing; the flame now
+                                    sits inline with the name it describes, and the
+                                    project reads as a subtitle beneath it. What is
+                                    left is the same shape as a task in the main list:
+                                    name first, detail under it. */}
                                 <div className="item-text">
                                   <span className="task-dot">●</span> {item.data.text}
+                                  {item.data.priority === 'high' && (
+                                    <span className="priority-badge"><FlameIcon /></span>
+                                  )}
                                 </div>
+                                {project && (
+                                  <div className="item-project">{project.name}</div>
+                                )}
                                 
                                 {isExpanded && (
                                   <div className="calendar-task-details" onClick={(e) => e.stopPropagation()}>
@@ -14401,6 +14541,43 @@ function LittleFiresApp() {
                         </div>
                       )}
                       
+                      {goalItems.length > 0 && (
+                        <div className="day-section">
+                          <h4
+                            className="day-section-toggle"
+                            onClick={() => toggleCalendarSection('goals')}
+                          >
+                            <span>Goals</span>
+                            <span className="day-section-count">{goalItems.length}</span>
+                          </h4>
+                          {!isCalendarSectionCollapsed('goals') && (<>
+                          {goalItems.map((item, idx) => (
+                            <div key={`goal-${item.data.id}-${idx}`} className="calendar-item goal-item">
+                              <div className="item-header">
+                                <span className={`list-badge ${item.list}`}>{item.list}</span>
+                                {/* Which end of the goal this day is - the same
+                                    marking projects carry, since a goal can start
+                                    and finish on the same day. */}
+                                <span className="project-date-badge">
+                                  {item.dateType === 'start' && 'Start'}
+                                  {item.dateType === 'end' && 'End'}
+                                  {item.dateType === 'both' && 'Start & End'}
+                                </span>
+                              </div>
+                              <div className="item-text">
+                                {item.data.name}
+                              </div>
+                              {item.data.description && (
+                                <div className="project-description-preview">
+                                  {item.data.description}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          </>)}
+                        </div>
+                      )}
+
                       {notes.length > 0 && (
                         <div className="day-section">
                           <h4
@@ -14495,7 +14672,27 @@ function LittleFiresApp() {
                             <span className="day-section-count">{projectItems.length}</span>
                           </h4>
                           {!isCalendarSectionCollapsed('projects') && (<>
-                          {projectItems.map((item, idx) => {
+                          {/* Grouped by list exactly as the tasks above are, and in
+                              the same Settings order, so the two sections read the
+                              same way. Only lists with something on this day get a
+                              header. Projects live in the five personal lists, so
+                              orderedTaskLists is filtered against what is actually
+                              here rather than assumed. */}
+                          {orderedTaskLists
+                            .filter(listName => projectItems.some(p => p.list === listName))
+                            .map(listName => {
+                          const listProjects = projectItems.filter(p => p.list === listName);
+                          return (
+                            <div key={listName} className="day-list-group">
+                              <div
+                                className="list-section-header day-list-header day-section-toggle"
+                                onClick={() => toggleCalendarSection(`project-list-${listName}`)}
+                              >
+                                <span>{listLabel(listName)}</span>
+                                <span className={`badge ${listName}`}>{listProjects.length}</span>
+                              </div>
+                              {!isCalendarSectionCollapsed(`project-list-${listName}`) &&
+                                listProjects.map((item, idx) => {
                             const projectId = `calendar-project-${item.data.id}`;
                             const isExpanded = expandedCalendarProjectId === projectId;
                             
@@ -14506,16 +14703,24 @@ function LittleFiresApp() {
                                 onClick={() => setExpandedCalendarProjectId(isExpanded ? null : projectId)}
                                 style={{cursor: 'pointer'}}
                               >
-                                <div className="item-header">
-                                  <span className={`list-badge ${item.list}`}>{item.list}</span>
-                                  <span className="project-date-badge">
-                                    {item.dateType === 'start' && 'Start'}
-                                    {item.dateType === 'end' && 'End'}
-                                    {item.dateType === 'both' && 'Start & End'}
-                                  </span>
-                                </div>
+                                {/* Name first, in the same weight as a task, with a
+                                    bullet in the colour this project carries on the
+                                    month grid. The list pill is gone - the row sits
+                                    under a list heading that says the same thing. */}
                                 <div className="item-text">
+                                  <span className="item-dot project-dot">●</span>
                                   {item.data.name}
+                                </div>
+                                {/* Dates read as a subtitle under the name rather than
+                                    as a badge above it, matching the task rows. The
+                                    marking still says which end of the project this
+                                    day is, because a project can start and finish on
+                                    the same one. */}
+                                <div className="item-project">
+                                  {item.dateType === 'start' && 'Starts '}
+                                  {item.dateType === 'end' && 'Ends '}
+                                  {item.dateType === 'both' && 'Starts & ends '}
+                                  {formatProjectSpan(item.data, parseLocalDate)}
                                 </div>
                                 {item.data.description && (
                                   <div className="project-description-preview">
@@ -14566,6 +14771,9 @@ function LittleFiresApp() {
                                 )}
                               </div>
                             );
+                          })}
+                            </div>
+                          );
                           })}
                           </>)}
                         </div>

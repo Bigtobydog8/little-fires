@@ -10998,19 +10998,34 @@ function LittleFiresApp() {
             display: inline-flex;
           }
 
-          /* Sized for a finger now that the labels are gone. ~41px square:
-             comfortably above the ~30px these were, close to the 44px touch
-             guideline, and still six across a 390px screen with room to spare
-             (6 x 41 + gaps + padding is about 273px of roughly 300px).
+          /* Sized for a finger, and share the row rather than each claiming a
+             fixed width.
+             
+             A fixed 41px square fitted five buttons and pushed the sixth onto
+             its own line: the toolbar's interior is about 244px on a 390px
+             phone, not the ~300px a first estimate suggested, and six squares
+             plus gaps need 283px. Rather than pick a smaller number that would
+             fail again on a narrower phone, the buttons flex.
+             
+             Shrinking is safe HERE specifically, and only because the labels
+             are hidden: what made a shrunk button overrun its border was text
+             that could not reflow. An icon is a fixed 17px centred in whatever
+             width the button gets, and Bold is a single character. The floor
+             keeps the touch target honest - 6 x 34 + gaps is 229px, so the row
+             holds down to a considerably narrower screen than any current
+             iPhone, and wrap remains as the last resort below that.
              
              Scoped to the details toolbar on purpose. The Notes editor uses
-             .toolbar-btn too and still shows its labels, so a bare
-             .toolbar-btn rule here would grow those buttons by their text
-             width rather than to a square. */
+             .toolbar-btn too and still shows its labels, where shrinking would
+             bring the overrun straight back. */
           .task-details-section .richtext-toolbar .toolbar-btn {
-            min-width: 41px;
+            flex: 1 1 0;
+            min-width: 34px;
+            /* Stops five buttons stretching into lozenges when the outdent
+               button is hidden. */
+            max-width: 52px;
             min-height: 41px;
-            padding: 11px 12px;
+            padding: 11px 0;
           }
 
           .task-details-section .richtext-toolbar .toolbar-btn svg {

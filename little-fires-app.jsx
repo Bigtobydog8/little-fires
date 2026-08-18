@@ -644,6 +644,13 @@ const COMPLETE_HOLD_MS = 900;   // tick lit, nothing moving yet
 const COMPLETE_ANIM_MS = 400;   // fade and collapse, run together
 const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 
+// Moving a task between To Do and Backlog reuses the same fade-and-collapse,
+// so rows below slide up into the gap instead of jumping - but with no hold.
+// The 900ms above buys time to SEE the tick light up; a section move has no
+// such moment, and a card that sits motionless for most of a second after a
+// button press reads as the app having hung rather than as a flourish.
+const MOVE_HOLD_MS = 0;
+
 // Self-contained SVG marks, so they belong at module scope alongside the other
 // icons. They were declared inside LittleFiresApp and referenced by Task, which
 // only breaks once Task is hoisted - and only on the expanded task, since that
@@ -1028,7 +1035,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
   const clickTimeoutRef = React.useRef(null);
   // Holds the task in place briefly after checking it, so the checkmark is
   // visible before the task leaves the list.
-  const [isCompleting, setIsCompleting] = React.useState(false);
+  const [isExiting, setIsExiting] = React.useState(false);
+  // Whether the exit in progress should show the box ticked. Completing lights
+  // the tick and holds so it can be seen; a move to Backlog uses the identical
+  // fade and collapse but must NOT tick the box, or the card reads as having
+  // been completed on its way out.
+  const [exitTicksBox, setExitTicksBox] = React.useState(false);
   // Set when completion came from a swipe. The card then leaves by sliding
   // fully off to the right, uncovering the green panel, instead of shrinking
   // in place - two different exits fighting each other was what made it look
@@ -1228,25 +1240,57 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // collapses its own height so everything below slides up into the gap
   // rather than jumping. Un-completing is immediate - there's nothing to
   // celebrate and no reason to make it wait.
+  // Plays the exit - fade, drift, then collapse the row's own height - and
+  // commits the change at the end of it. Shared so that completing a task and
+  // moving one to Backlog animate identically rather than being two separate
+  // ideas of a task leaving its place.
+  const runExit = (commit, holdMs, { ticksBox = false } = {}) => {
+    setExitTicksBox(ticksBox);
+    // Measured before anything changes, because once the card starts fading
+    // its height is no longer the height the collapse needs to animate from.
+    if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
+    setIsExiting(true);
+    collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), holdMs);
+    completeTimeoutRef.current = setTimeout(() => {
+      commit();
+      // Cleared explicitly rather than left to a remount. Completing a task
+      // moves it to another section, so the card was rebuilt and its state
+      // reset for free - but that is a property of where the card happens to
+      // be rendered, not something this code should depend on. Any view that
+      // keeps the same element across the change would otherwise leave a card
+      // stranded at zero height and zero opacity.
+      setIsExiting(false);
+      setExitTicksBox(false);
+      setCollapsing(false);
+      setMeasuredHeight(null);
+    }, holdMs + COMPLETE_ANIM_MS + 50);
+  };
+
   const requestComplete = () => {
     if (task.isArchived) return;
     if (task.completed) {
       toggleTask(listName, task.id);
       return;
     }
-    if (isCompleting) return; // already on its way out
+    if (isExiting) return; // already on its way out
     if (!settings.completionDelay) {
       toggleTask(listName, task.id);
       return;
     }
-    // Measured before anything changes, because once the card starts fading
-    // its height is no longer the height the collapse needs to animate from.
-    if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
-    setIsCompleting(true);
-    collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), COMPLETE_HOLD_MS);
-    completeTimeoutRef.current = setTimeout(() => {
-      toggleTask(listName, task.id);
-    }, COMPLETE_TOTAL_MS);
+    runExit(() => toggleTask(listName, task.id), COMPLETE_HOLD_MS, { ticksBox: true });
+  };
+
+  // To Do <-> Backlog. Same exit, no hold - see MOVE_HOLD_MS. Honours the same
+  // App Behavior setting: someone who turned the pause off wants tasks to move
+  // the instant they say so, whichever button said it.
+  const requestSectionMove = (newSection) => {
+    if (task.isArchived) return;
+    if (isExiting) return;
+    if (!settings.completionDelay) {
+      moveTaskToSection(listName, task.id, newSection);
+      return;
+    }
+    runExit(() => moveTaskToSection(listName, task.id, newSection), MOVE_HOLD_MS);
   };
 
   // True while a native picker (date/select) is open. iOS presents these as a
@@ -2038,7 +2082,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
       className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${collapsing ? 'collapsing' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
       // Not while expanded: the details editor needs normal text selection,
       // and a draggable ancestor breaks it.
-      draggable={!isExpanded && !task.isArchived && !isCompleting}
+      draggable={!isExpanded && !task.isArchived && !isExiting}
       onDragStart={(e) => {
         draggingTaskRef.current = { id: task.id, listName };
         e.dataTransfer.effectAllowed = 'move';
@@ -2107,13 +2151,13 @@ const Task = ({ task, listName, showMoveButtons }) => {
         // left looking at is the full green panel and its checkmark. Ticked:
         // it fades in place as before.
         ...(swipedOut ? { '--swipe-progress': 1, '--swipe-dx': '110%' } : {}),
-        opacity: task.isArchived ? 0.7 : (isCompleting && !swipedOut ? 0 : 1),
+        opacity: task.isArchived ? 0.7 : (isExiting && !swipedOut ? 0 : 1),
         transform: swipedOut
           ? 'translateX(110%)'
-          : (isCompleting ? 'translateX(14px) scale(0.97)' : 'none'),
+          : (isExiting ? 'translateX(14px) scale(0.97)' : 'none'),
         // Height collapse: pinned to the measured value first, then driven to 0
         // once `collapsing` flips, which pulls the rows below up smoothly.
-        ...(isCompleting && measuredHeight != null ? {
+        ...(isExiting && measuredHeight != null ? {
           maxHeight: collapsing ? '0px' : `${measuredHeight}px`,
           marginBottom: collapsing ? '0px' : undefined,
           paddingTop: collapsing ? '0px' : undefined,
@@ -2130,7 +2174,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
         // Built from the same constants as the timers above. Opacity and
         // transform wait out the hold; the collapse needs no delay here
         // because its own timer already fires at that moment.
-        transition: isCompleting
+        transition: isExiting
           ? (swipedOut ? [
               // The slide-off happens immediately - it's the tail of the
               // gesture, not something to wait for. Only the collapse waits
@@ -2157,7 +2201,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
         <div className="checkbox-wrapper">
           <input
             type="checkbox"
-            checked={task.completed || isCompleting}
+            checked={task.completed || exitTicksBox}
             onChange={(e) => {
               e.stopPropagation();
               requestComplete();
@@ -3440,7 +3484,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
                     className="edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      moveTaskToSection(listName, task.id, 'backlog');
+                      requestSectionMove('backlog');
                     }}
                   >
                     → Backlog
@@ -3451,7 +3495,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
                     className="edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      moveTaskToSection(listName, task.id, 'todo');
+                      requestSectionMove('todo');
                     }}
                   >
                     → To Do

@@ -623,6 +623,34 @@ const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 // icons. They were declared inside LittleFiresApp and referenced by Task, which
 // only breaks once Task is hoisted - and only on the expanded task, since that
 // is the one place they render.
+// ---- Calendar day grouping -------------------------------------------------
+// The same three buckets the task list and the project detail already use, in
+// the same order.
+//
+// One deliberate difference: To Do is "not completed and not backlog" rather
+// than section === 'todo'. `section` is only set at creation and has never
+// been backfilled, so a task old enough to predate the field has no section at
+// all - and an equality test would put it in no bucket, silently dropping it
+// from the day. Defining the default bucket by exclusion means every task
+// lands somewhere.
+const CALENDAR_STATUS_GROUPS = [
+  { key: 'todo', label: 'To Do', match: (t) => !t.completed && t.section !== 'backlog' },
+  { key: 'backlog', label: 'Backlog', match: (t) => !t.completed && t.section === 'backlog' },
+  { key: 'complete', label: 'Complete', match: (t) => !!t.completed }
+];
+
+// Empty buckets are dropped so a day with only completed tasks doesn't render
+// two empty headings above them.
+function groupTasksByStatus(items, getTask) {
+  return CALENDAR_STATUS_GROUPS
+    .map(group => ({
+      key: group.key,
+      label: group.label,
+      items: (items || []).filter(item => group.match(getTask(item) || {}))
+    }))
+    .filter(group => group.items.length > 0);
+}
+
 // ---- Indent helpers --------------------------------------------------------
 // Indentation is represented two different ways, and both already existed
 // before the toolbar buttons did - the drag gesture and the Tab key use this
@@ -10374,6 +10402,43 @@ function LittleFiresApp() {
           border-bottom: 1px solid rgba(var(--accent-rgb), 0.15);
         }
 
+        /* Status heading inside a list group. Deliberately quieter than the
+           list heading above it - smaller, uppercase, no rule underneath - so
+           the two read as a hierarchy rather than as two competing headers. */
+        .day-status-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 4px 0 8px;
+          font-size: 0.7rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--text-soft);
+        }
+
+        .day-status-count {
+          font-size: 0.7rem;
+          font-weight: 600;
+          color: var(--text-muted);
+        }
+
+        /* The first status group sits directly under the list heading, which
+           already provides the separation. */
+        .day-status-group + .day-status-group .day-status-header {
+          margin-top: 14px;
+        }
+
+        /* Completed rows recede: the eye should land on what is still open.
+           Opacity rather than a colour change, so it works in both themes. */
+        .day-status-group.status-complete .calendar-item .item-text {
+          opacity: 0.62;
+        }
+
+        .day-status-group.status-complete .calendar-item .item-text .task-dot {
+          text-decoration: none;
+        }
+
         .calendar-item {
           background: rgba(var(--surface-deep-rgb), 0.6);
           border-radius: 12px;
@@ -14082,7 +14147,14 @@ function LittleFiresApp() {
                                 <span>{listLabel(listName)}</span>
                                 <span className={`badge ${listName}`}>{listTasks.length}</span>
                               </div>
-                          {!isCalendarSectionCollapsed(`list-${listName}`) && listTasks.map((item, idx) => {
+                          {!isCalendarSectionCollapsed(`list-${listName}`) &&
+                            groupTasksByStatus(listTasks, it => it.data).map(statusGroup => (
+                            <div key={statusGroup.key} className={`day-status-group status-${statusGroup.key}`}>
+                              <div className="day-status-header">
+                                <span>{statusGroup.label}</span>
+                                <span className="day-status-count">{statusGroup.items.length}</span>
+                              </div>
+                              {statusGroup.items.map((item, idx) => {
                             const project = item.data.projectId 
                               ? getAllProjects().find(p => p.id == item.data.projectId)
                               : null;
@@ -14097,19 +14169,25 @@ function LittleFiresApp() {
                                 onClick={() => setExpandedCalendarTaskId(isExpanded ? null : taskId)}
                                 style={{cursor: 'pointer'}}
                               >
-                                <div className="item-header">
-                                  <span className={`list-badge ${item.list}`}>{item.list}</span>
-                                  {project && (
-                                    <span className="project-badge">
-                                      {project.name}
-                                    </span>
-                                  )}
-                                  {item.data.priority === 'high' && <span className="priority-badge"><FlameIcon /></span>}
-                                </div>
+                                {/* The list badge and the Completed badge are gone: the
+                                    row now sits under a list heading and a status
+                                    heading that say the same thing. Project and
+                                    priority stay - neither is implied by where the row
+                                    sits - and the header is dropped entirely when it
+                                    would otherwise be an empty box above the text. */}
+                                {(project || item.data.priority === 'high') && (
+                                  <div className="item-header">
+                                    {project && (
+                                      <span className="project-badge">
+                                        {project.name}
+                                      </span>
+                                    )}
+                                    {item.data.priority === 'high' && <span className="priority-badge"><FlameIcon /></span>}
+                                  </div>
+                                )}
                                 <div className="item-text">
                                   <span className="task-dot">●</span> {item.data.text}
                                 </div>
-                                {item.data.completed && <span className="completed-badge">✓ Completed</span>}
                                 
                                 {isExpanded && (
                                   <div className="calendar-task-details" onClick={(e) => e.stopPropagation()}>
@@ -14165,6 +14243,8 @@ function LittleFiresApp() {
                               </div>
                             );
                           })}
+                            </div>
+                          ))}
                             </div>
                           );
                           })}

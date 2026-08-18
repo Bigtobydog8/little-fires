@@ -294,6 +294,31 @@ function FlameIcon({ size = 13 }) {
 // synced list means one person's edits land on the other's task.
 // randomUUID needs a secure context, which localhost and any https host are;
 // the fallback covers plain-http origins where it isn't exposed.
+// Bullet list and Follow Up, so every details-toolbar button has an icon to
+// fall back on when the labels are hidden on a narrow screen.
+function BulletsIcon(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="3" cy="4" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="3" cy="8" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="3" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <path d="M6.5 4h7.5" />
+      <path d="M6.5 8h7.5" />
+      <path d="M6.5 12h7.5" />
+    </IconBase>
+  );
+}
+
+// A flag: the section marks something to come back to.
+function FollowUpIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M3.5 14.5V2" />
+      <path d="M3.5 2.75h8.5l-2 2.75 2 2.75H3.5z" />
+    </IconBase>
+  );
+}
+
 // Indent / outdent for the details toolbar. Lines plus an arrow, matching the
 // stroke weight of their neighbours. currentColor throughout, so they inherit
 // the toolbar button's text colour in both themes and when active.
@@ -2561,8 +2586,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 }
               }}
               title="Insert Checkbox"
+              aria-label="Insert checkbox"
             >
-              <CheckboxIcon />Box
+              <CheckboxIcon /><span className="toolbar-btn-label">Box</span>
             </button>
             <button 
               className="toolbar-btn"
@@ -2678,8 +2704,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 document.execCommand('insertUnorderedList', false, null);
               }}
               title="Bullet List"
+              aria-label="Bullet list"
             >
-              • Bullets
+              <BulletsIcon /><span className="toolbar-btn-label">Bullets</span>
             </button>
             <button
               className={`toolbar-btn ${formatOn ? 'format-on' : ''}`}
@@ -2706,11 +2733,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 document.execCommand('underline', false, null);
               }}
               title="Bold + underline"
+              aria-label="Bold and underline"
             >
               {/* A span, not <strong>: the underline is the only cue this
                   button needs, and <strong> was overriding the toolbar's own
                   font weight so it sat heavier than its neighbours. */}
-              <span style={{ textDecoration: 'underline' }}>Bold</span>
+              <span style={{ textDecoration: 'underline' }}>B<span className="toolbar-btn-label">old</span></span>
             </button>
             <button 
               className="toolbar-btn"
@@ -2763,8 +2791,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 setTimeout(() => refreshListMarkers(detailsArea), 0);
               }}
               title="Add Follow Up section"
+              aria-label="Add Follow Up section"
             >
-              Follow Up
+              <span className="toolbar-btn-compact-icon"><FollowUpIcon /></span>
+              <span className="toolbar-btn-label">Follow Up</span>
             </button>
             {/* Indent / outdent. Icon-only, so the toolbar doesn't grow two
                 more word-width buttons - the pair reads as one control.
@@ -9176,6 +9206,13 @@ function LittleFiresApp() {
           transform: scale(0.95);
         }
 
+        /* Shown only where the labels are hidden. On a wide screen "Follow Up"
+           is its own best label and a flag beside it is noise - unlike Box and
+           Bullets, whose icons double as a preview of what they insert. */
+        .toolbar-btn-compact-icon {
+          display: none;
+        }
+
         /* Icon-only variant. Square-ish and gapless, so the pair reads as one
            control next to the worded buttons rather than two undersized ones.
            Padding is tuned to match its neighbours' rendered height: those are
@@ -10906,19 +10943,25 @@ function LittleFiresApp() {
             min-height: 25vh;
           }
 
-          /* Details toolbar (Box / Bullets / Follow Up): the global button rule
-             applies uppercase + 1px letter-spacing, which makes these overflow
-             onto a second row. Tighten them so they fit a single row. */
+          /* Details toolbar: tightened for the narrow screen, and allowed to
+             wrap.
+             
+             This deliberately reverses an earlier decision. The row used to be
+             nowrap + overflow-x: auto with shrinkable buttons, so that adding a
+             button shortened the others instead of pushing one off the edge.
+             That works while the labels still fit the shortened buttons. It
+             stopped working at five: a shrunk button does not reflow its label,
+             because .toolbar-btn is white-space: nowrap - so the text simply
+             rendered outside the button's border. Indent and Outdent made it
+             obvious, but Bullets and Bold were already overrunning.
+             
+             Wrapping to a second row costs a little height on a task that is
+             already expanded, and in exchange no button is ever distorted or
+             scrolled out of sight. */
           .richtext-toolbar {
             gap: 5px;
             padding: 4px;
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-          }
-
-          .richtext-toolbar::-webkit-scrollbar {
-            display: none;
+            flex-wrap: wrap;
           }
 
           .toolbar-btn {
@@ -10926,15 +10969,62 @@ function LittleFiresApp() {
             font-size: 0.62rem;
             letter-spacing: 0;
             border-radius: 6px;
-            /* Was flex-shrink: 0 from the base rule, which is what pushed the
-               fourth button off the edge once Bold was added - the row could
-               only scroll, never compress. Letting them share the width means
-               adding a button shortens the others rather than hiding one.
-               min-width: 0 is required as well: a flex item won't shrink below
-               its content width without it, so the padding change alone
-               wouldn't have been enough. */
-            flex-shrink: 1;
-            min-width: 0;
+            /* Never below the width of the label. flex-shrink: 1 with
+               min-width: 0 is precisely what let a button compress past its
+               own text, and with white-space: nowrap the text then rendered
+               outside the border rather than reflowing. */
+            flex-shrink: 0;
+          }
+
+          /* The labels come off on a narrow screen and each button becomes its
+             icon. Six labelled buttons need roughly 330px of a ~300px row, so
+             something had to give: shrinking distorted the text, wrapping cost
+             a whole extra row for one icon, and abbreviating only bought back
+             the one button while Bullets and Bold kept growing the row.
+             Icon-only is about 195px and leaves headroom for another button.
+             Desktop keeps every label - it has the width, and the words are
+             clearer than any icon. */
+          .toolbar-btn-label {
+            display: none;
+          }
+
+          .toolbar-btn {
+            gap: 0;
+            min-width: 34px;
+            justify-content: center;
+          }
+
+          .toolbar-btn-compact-icon {
+            display: inline-flex;
+          }
+
+          /* Sized for a finger now that the labels are gone. ~41px square:
+             comfortably above the ~30px these were, close to the 44px touch
+             guideline, and still six across a 390px screen with room to spare
+             (6 x 41 + gaps + padding is about 273px of roughly 300px).
+             
+             Scoped to the details toolbar on purpose. The Notes editor uses
+             .toolbar-btn too and still shows its labels, so a bare
+             .toolbar-btn rule here would grow those buttons by their text
+             width rather than to a square. */
+          .task-details-section .richtext-toolbar .toolbar-btn {
+            min-width: 41px;
+            min-height: 41px;
+            padding: 11px 12px;
+          }
+
+          .task-details-section .richtext-toolbar .toolbar-btn svg {
+            width: 17px;
+            height: 17px;
+          }
+
+          /* Bold degrades to "B" rather than to an icon, so it keeps the
+             underline that shows it applies bold AND underline together. The
+             letter is text where its neighbours are 17px icons, so it is
+             sized to match them optically rather than left at the label size
+             it no longer displays. */
+          .task-details-section .richtext-toolbar .toolbar-btn {
+            font-size: 0.95rem;
           }
 
           /* The icon must not be squeezed with the label - it has no text to

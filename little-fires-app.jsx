@@ -294,6 +294,33 @@ function FlameIcon({ size = 13 }) {
 // synced list means one person's edits land on the other's task.
 // randomUUID needs a secure context, which localhost and any https host are;
 // the fallback covers plain-http origins where it isn't exposed.
+// Indent / outdent for the details toolbar. Lines plus an arrow, matching the
+// stroke weight of their neighbours. currentColor throughout, so they inherit
+// the toolbar button's text colour in both themes and when active.
+function IndentIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M2 3h12" />
+      <path d="M7 6.5h7" />
+      <path d="M7 9.5h7" />
+      <path d="M2 13h12" />
+      <path d="M2 6.5l2.5 1.75L2 10z" fill="currentColor" stroke="none" />
+    </IconBase>
+  );
+}
+
+function OutdentIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M2 3h12" />
+      <path d="M7 6.5h7" />
+      <path d="M7 9.5h7" />
+      <path d="M2 13h12" />
+      <path d="M4.5 6.5L2 8.25 4.5 10z" fill="currentColor" stroke="none" />
+    </IconBase>
+  );
+}
+
 function makeId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -596,6 +623,108 @@ const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 // icons. They were declared inside LittleFiresApp and referenced by Task, which
 // only breaks once Task is hoisted - and only on the expanded task, since that
 // is the one place they render.
+// ---- Indent helpers --------------------------------------------------------
+// Indentation is represented two different ways, and both already existed
+// before the toolbar buttons did - the drag gesture and the Tab key use this
+// same split, so the buttons must too or the two would disagree about what an
+// indented line is.
+//
+//   bullets      - structural nesting (<ul> inside <li>). A bullet's depth has
+//                  to be real nesting or the markers all render at one level.
+//   everything   - marginLeft in fixed steps, on the line element itself
+//   else           (.checkbox-line, or a plain block).
+//
+// execCommand('indent') is used ONLY for bullets. On a non-list block some
+// browsers implement it by wrapping the line in <blockquote>, which the
+// sanitizer unwraps on save - the indent would appear to work and then vanish
+// when the task was reopened.
+const EDITOR_INDENT_STEP = 20;
+
+// The block the caret sits in, and how its indent is expressed.
+function indentTargetAt(area, node) {
+  if (!area || !node) return null;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  if (!el || !area.contains(el)) return null;
+  const li = el.closest ? el.closest('li') : null;
+  if (li && area.contains(li)) return { kind: 'bullet', line: li };
+  let line = el;
+  while (line && line.parentElement !== area && line !== area) line = line.parentElement;
+  if (!line || line === area) return null;
+  return { kind: 'block', line };
+}
+
+function blockIndent(line) {
+  return parseInt((line && line.style && line.style.marginLeft) || '0') || 0;
+}
+
+// A bullet is outdentable when it sits inside a nested list, i.e. its list has
+// a list ancestor still inside the editor.
+function bulletIsNested(area, li) {
+  const list = li && li.parentElement;
+  if (!list) return false;
+  const parent = list.parentElement;
+  return !!(parent && area.contains(parent) && parent.closest &&
+    parent.closest('ul, ol') && parent.closest('ul, ol') !== list);
+}
+
+// Text typed into an empty editor has no wrapping block - browsers leave it as
+// bare text nodes until the first Enter. That is the FIRST line of most tasks,
+// and indentTargetAt walks up to a direct child of the editor, so it found
+// nothing there and the line simply could not be indented. Wrapping the run
+// around the caret makes it an ordinary line. Mirrors the Box button, which
+// had to solve exactly this for the same reason.
+function wrapBareLineAt(area, node) {
+  if (!area || !node) return null;
+  let n = node;
+  if (n === area) n = area.childNodes[0] || null;
+  while (n && n.parentElement !== area) n = n.parentElement;
+  if (!n) return null;
+  const isBoundary = (x) => !x || (x.nodeType === Node.ELEMENT_NODE &&
+    ['BR', 'DIV', 'P', 'UL', 'OL'].includes(x.tagName));
+  if (isBoundary(n)) return null;
+  let first = n, last = n;
+  while (first.previousSibling && !isBoundary(first.previousSibling)) first = first.previousSibling;
+  while (last.nextSibling && !isBoundary(last.nextSibling)) last = last.nextSibling;
+  const wrapper = document.createElement('div');
+  area.insertBefore(wrapper, first);
+  let cur = first;
+  while (cur) {
+    const next = (cur === last) ? null : cur.nextSibling;
+    wrapper.appendChild(cur);
+    cur = next;
+  }
+  return wrapper;
+}
+
+// What indent/outdent should act on, wrapping a bare line first if that is
+// what the caret is sitting in. Shared by the toolbar buttons and the Tab key
+// so the two can never disagree about what a line is.
+function resolveIndentTarget(area, node) {
+  const found = indentTargetAt(area, node);
+  if (found) return found;
+  const wrapped = wrapBareLineAt(area, node);
+  return wrapped ? { kind: 'block', line: wrapped } : null;
+}
+
+// Can the line at the caret be outdented right now?
+function canOutdentAt(area, node) {
+  const target = indentTargetAt(area, node);
+  if (!target) return false;
+  return target.kind === 'bullet'
+    ? bulletIsNested(area, target.line)
+    : blockIndent(target.line) > 0;
+}
+
+// Does the editor contain any indented content at all? The outdent button
+// appears for either reason - the caret sitting on an indented line, or the
+// document simply having indented content somewhere.
+function hasAnyIndent(area) {
+  if (!area) return false;
+  const blocks = area.querySelectorAll('[style*="margin-left"]');
+  for (const el of blocks) if (blockIndent(el) > 0) return true;
+  return !!area.querySelector('ul ul, ul ol, ol ul, ol ol, li ul, li ol');
+}
+
 const UnlitFlame = () => (
   <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 1280.000000 1280.000000"
@@ -859,6 +988,41 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // the button was pressed would go stale immediately and show "engaged"
   // when nothing is.
   const [formatOn, setFormatOn] = React.useState(false);
+  // Whether the outdent button is showing. Driven by the editor's content and
+  // the caret, not by a click, so it survives a collapse and re-expand: a task
+  // saved with indented lines shows the button the moment it is reopened.
+  const [showOutdent, setShowOutdent] = React.useState(false);
+
+  // Recomputed on anything that can move the caret or change the content.
+  // Passing the same boolean back is free - React bails out of the re-render
+  // when the value is unchanged, which is the common case on every keystroke.
+  const refreshOutdentVisibility = React.useCallback((area) => {
+    if (!area) { setShowOutdent(false); return; }
+    let atCaret = false;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      const node = sel.getRangeAt(0).startContainer;
+      if (area.contains(node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement)) {
+        atCaret = canOutdentAt(area, node);
+      }
+    }
+    const next = atCaret || hasAnyIndent(area);
+    setShowOutdent(next);
+    return next;
+  }, []);
+
+  // Suppresses the one synthetic click that follows a press whose target this
+  // component removed. Self-clearing, so a press that turns out not to produce
+  // that click can never swallow a later, genuine tap on the card.
+  const guardTimerRef = React.useRef(null);
+  const armCollapseGuard = React.useCallback(() => {
+    collapseGuardRef.current = true;
+    if (guardTimerRef.current) clearTimeout(guardTimerRef.current);
+    guardTimerRef.current = setTimeout(() => {
+      collapseGuardRef.current = false;
+      guardTimerRef.current = null;
+    }, 400);
+  }, [collapseGuardRef]);
   const [projectDropdownOpen, setProjectDropdownOpen] = React.useState(false);
 
   // A native select closed itself on an outside tap; a div has to be told.
@@ -1283,6 +1447,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
           setTimeout(() => syncParentCheckboxes(area), 0);
           setTimeout(() => refreshListMarkers(area), 0);
           syncPlaceholder(area);
+          // A task saved with indented lines shows the outdent button as soon
+          // as it is reopened, without waiting for the caret to move.
+          refreshOutdentVisibility(area);
         }
       }
     }
@@ -1325,6 +1492,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
           return;
         }
       }
+
+      // The target was removed from the document before this listener ran -
+      // a conditionally rendered control that unmounted on its own press. It
+      // was inside the task when it was pressed, so it is not an outside tap,
+      // but contains() on a detached node says otherwise.
+      if (e.target && e.target.isConnected === false) return;
 
       if (!taskRef.current.contains(e.target)) {
         // Save details before collapsing when clicking outside. Through
@@ -1538,6 +1711,14 @@ const Task = ({ task, listName, showMoveButtons }) => {
         // Where the tap landed vertically, captured before the deferred work -
         // the event object is not safe to read from a timeout.
         const tapY = evt.clientY;
+        // The horizontal position matters as much as the vertical one. A line
+        // with no block wrapper - the first line of a task, until the first
+        // Enter - is a direct child of the editor, so clicks on its own text
+        // arrive here with the editor as the target, exactly like a click in
+        // the margin beside it. Without X, the two are indistinguishable and
+        // every click on the first line was read as "carry on from the end",
+        // which made it impossible to put the caret at the start of it.
+        const tapX = evt.clientX;
         setTimeout(() => {
           try {
             // Tapping to the right of a line also lands on detailsArea when that
@@ -1546,6 +1727,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
             // "below everything" and the caret was sent to the bottom of the
             // editor, past any checkboxes underneath.
             let alongside = null;
+            let alongsideRect = null;
             detailsArea.childNodes.forEach(node => {
               let rect = null;
               if (node.nodeType === Node.ELEMENT_NODE) {
@@ -1555,10 +1737,34 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 rr.selectNodeContents(node);
                 rect = rr.getBoundingClientRect();
               }
-              if (rect && rect.height && tapY >= rect.top && tapY <= rect.bottom) alongside = node;
+              if (rect && rect.height && tapY >= rect.top && tapY <= rect.bottom) {
+                alongside = node;
+                alongsideRect = rect;
+              }
             });
 
-            if (alongside) {
+            if (alongside && alongsideRect) {
+              // The tap was on the line's own text, not in the margin beside
+              // it. The browser has already placed the caret where the user
+              // aimed - anywhere in the line, including its very start - so
+              // the only correct thing to do is leave it alone.
+              if (tapX >= alongsideRect.left && tapX <= alongsideRect.right) return;
+
+              // To the LEFT of the text: that is a request for the start of
+              // the line, not the end of it.
+              if (tapX < alongsideRect.left) {
+                const rr = document.createRange();
+                const startHost = alongside.nodeType === Node.ELEMENT_NODE
+                  ? (alongside.querySelector('span') || alongside)
+                  : alongside;
+                rr.selectNodeContents(startHost);
+                rr.collapse(true);
+                const selStart = window.getSelection();
+                selStart.removeAllRanges();
+                selStart.addRange(rr);
+                return;
+              }
+
               // Same treatment as the end of a checkbox line: sit one space
               // clear of the last word, ready to keep writing.
               const host = alongside.nodeType === Node.ELEMENT_NODE
@@ -2153,6 +2359,63 @@ const Task = ({ task, listName, showMoveButtons }) => {
                     // else: leftover markup with no checkbox - fall through to convert it
                   }
                   
+                  // A bullet with text at the caret becomes a checkbox - the
+                  // marker is REPLACED. This has to be handled here because
+                  // currentLine above walks up to the direct child of the
+                  // details area, which for a bullet is the whole <ul>: the
+                  // generic path below would then convert the ENTIRE list
+                  // into a single checkbox line, silently swallowing every
+                  // other item in it.
+                  //
+                  // Converting an item from the middle splits the list, so
+                  // the items after it stay bullets in their own list.
+                  {
+                    const caretForLi = currentNode.nodeType === Node.ELEMENT_NODE
+                      ? currentNode : currentNode.parentElement;
+                    const liAtCaret = caretForLi && caretForLi.closest
+                      ? caretForLi.closest('li') : null;
+                    if (liAtCaret && detailsArea.contains(liAtCaret) &&
+                        (liAtCaret.textContent || '').replace(/\u00A0/g, '').trim() !== '') {
+                      const list = liAtCaret.parentElement;
+                      const { line, span } = buildCheckboxLine();
+                      span.innerHTML = '';
+                      while (liAtCaret.firstChild) span.appendChild(liAtCaret.firstChild);
+                      if (!span.textContent.trim()) span.innerHTML = '&nbsp;';
+                      // Indent lives on the <ul> for a bullet and on the line
+                      // itself for a checkbox, so it moves across explicitly.
+                      const indent = (list && list.style && list.style.marginLeft) ||
+                        (liAtCaret.style && liAtCaret.style.marginLeft) || '';
+                      if (indent) line.style.marginLeft = indent;
+
+                      const items = Array.from(list.children).filter(el => el.tagName === 'LI');
+                      const after = items.slice(items.indexOf(liAtCaret) + 1);
+                      liAtCaret.remove();
+                      if (after.length) {
+                        const rest = document.createElement('ul');
+                        if (indent) rest.style.marginLeft = indent;
+                        after.forEach(item => rest.appendChild(item));
+                        list.parentElement.insertBefore(rest, list.nextSibling);
+                        list.parentElement.insertBefore(line, rest);
+                      } else {
+                        list.parentElement.insertBefore(line, list.nextSibling);
+                      }
+                      // A list with nothing left in it is empty scaffolding.
+                      if (!list.querySelector('li')) list.remove();
+
+                      const caret = document.createRange();
+                      caret.selectNodeContents(span);
+                      caret.collapse(false);
+                      selection.removeAllRanges();
+                      selection.addRange(caret);
+
+                      setTimeout(() => {
+                        syncParentCheckboxes(detailsArea);
+                        refreshListMarkers(detailsArea);
+                      }, 0);
+                      return;
+                    }
+                  }
+
                   // An empty bullet at the caret is an intent, not content:
                   // you started a bullet and then chose a checkbox instead.
                   // It has to be handled separately because currentLine walks
@@ -2323,32 +2586,60 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   }
                 }
 
-                // An empty checkbox line at the caret is an intent, not
-                // content: you made a checkbox, then chose a bullet instead.
-                // The exact mirror of the empty-bullet case the Box button
-                // handles. Without this, execCommand wraps the line and you
-                // end up with a checkbox sitting inside a bullet.
+                // A checkbox line at the caret becomes a bullet - the marker
+                // is REPLACED, not added to. A line is one thing or the other,
+                // and execCommand would wrap the whole .checkbox-line in an
+                // <li>, leaving a dead box sitting inside the bullet. This
+                // applies whether the line has text or not; an empty one is
+                // just the case where you made a checkbox and immediately
+                // changed your mind.
                 const caretNode = range.startContainer;
                 const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
                   ? caretNode : caretNode.parentElement;
-                const emptyBox = caretEl && caretEl.closest
+                const boxLine = caretEl && caretEl.closest
                   ? caretEl.closest('.checkbox-line') : null;
-                if (emptyBox && detailsArea.contains(emptyBox) &&
-                    (emptyBox.textContent || '').replace(/\u00A0/g, '').trim() === '') {
-                  const list = document.createElement('ul');
+                if (boxLine && detailsArea.contains(boxLine)) {
+                  const hadText = (boxLine.textContent || '')
+                    .replace(/\u00A0/g, '').trim() !== '';
+                  // The box goes first, so it can't be carried into the <li>
+                  // along with the text.
+                  const box = boxLine.querySelector('.task-checkbox');
+                  if (box) box.remove();
+                  const source = boxLine.querySelector('span') || boxLine;
                   const li = document.createElement('li');
-                  li.innerHTML = '<br>';
-                  list.appendChild(li);
+                  while (source.firstChild) li.appendChild(source.firstChild);
+                  if (!(li.textContent || '').replace(/\u00A0/g, '').trim()) {
+                    li.innerHTML = '<br>';
+                  }
+
                   // Indent carries across so swapping the marker type doesn't
                   // silently promote the line back to the top level.
-                  if (emptyBox.style && emptyBox.style.marginLeft) {
-                    list.style.marginLeft = emptyBox.style.marginLeft;
+                  const indent = (boxLine.style && boxLine.style.marginLeft) || '';
+                  // Join an adjacent list at the same indent rather than
+                  // leaving two <ul>s abutting, which renders as a visible
+                  // break in what the user sees as one list.
+                  const isListAt = (el) => !!el && el.tagName === 'UL' &&
+                    ((el.style && el.style.marginLeft) || '') === indent;
+                  const prev = boxLine.previousElementSibling;
+                  const next = boxLine.nextElementSibling;
+                  if (isListAt(prev)) {
+                    prev.appendChild(li);
+                    boxLine.remove();
+                  } else if (isListAt(next)) {
+                    next.insertBefore(li, next.firstChild);
+                    boxLine.remove();
+                  } else {
+                    const list = document.createElement('ul');
+                    if (indent) list.style.marginLeft = indent;
+                    list.appendChild(li);
+                    boxLine.parentElement.replaceChild(list, boxLine);
                   }
-                  emptyBox.parentElement.replaceChild(list, emptyBox);
 
+                  // Caret to the end of text that was already there, to the
+                  // start of a line that is still empty.
                   const caret = document.createRange();
                   caret.selectNodeContents(li);
-                  caret.collapse(true);
+                  caret.collapse(!hadText);
                   selection.removeAllRanges();
                   selection.addRange(caret);
 
@@ -2447,6 +2738,88 @@ const Task = ({ task, listName, showMoveButtons }) => {
             >
               Follow Up
             </button>
+            {/* Indent / outdent. Icon-only, so the toolbar doesn't grow two
+                more word-width buttons - the pair reads as one control.
+                Both delegate to the same two representations the Tab key and
+                the drag gesture use: nesting for bullets, marginLeft for
+                everything else. */}
+            <button
+              className="toolbar-btn toolbar-btn-icon"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const detailsArea = e.target.closest('.task-details-section')
+                  .querySelector('.details-richtext');
+                if (!detailsArea) return;
+                detailsArea.focus();
+                const selection = window.getSelection();
+                if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+                  // Nothing to act on: put the caret somewhere sensible and
+                  // stop, rather than indenting a line the user can't see.
+                  const range = document.createRange();
+                  range.selectNodeContents(detailsArea);
+                  range.collapse(false);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  return;
+                }
+                const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
+                if (!target) return;
+                if (target.kind === 'bullet') {
+                  document.execCommand('indent', false, null);
+                } else {
+                  target.line.style.marginLeft =
+                    (blockIndent(target.line) + EDITOR_INDENT_STEP) + 'px';
+                }
+                refreshListMarkers(detailsArea);
+                refreshOutdentVisibility(detailsArea);
+              }}
+              title="Indent"
+              aria-label="Indent"
+            >
+              <IndentIcon />
+            </button>
+            {showOutdent && (
+              <button
+                className="toolbar-btn toolbar-btn-icon"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const detailsArea = e.target.closest('.task-details-section')
+                    .querySelector('.details-richtext');
+                  if (!detailsArea) return;
+                  detailsArea.focus();
+                  const selection = window.getSelection();
+                  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) return;
+                  const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
+                  if (!target) return;
+                  if (target.kind === 'bullet') {
+                    document.execCommand('outdent', false, null);
+                  } else {
+                    const next = Math.max(0, blockIndent(target.line) - EDITOR_INDENT_STEP);
+                    // Removed rather than set to 0px: an empty declaration is
+                    // what the rest of the app treats as "not indented", and
+                    // the sanitizer would keep a literal 0px around forever.
+                    if (next === 0) target.line.style.removeProperty('margin-left');
+                    else target.line.style.marginLeft = next + 'px';
+                  }
+                  refreshListMarkers(detailsArea);
+                  // Removing this button mid-press is what made the task
+                  // collapse. The press starts on the button; by the time the
+                  // browser dispatches the click, the button is gone, so the
+                  // click is delivered to the nearest surviving ancestor
+                  // instead - past the toolbar's stopPropagation and into the
+                  // card's tap-to-collapse. Same guard the outside-tap
+                  // collapse already uses for "this tap has done its job",
+                  // armed only when the button is actually going away.
+                  if (!refreshOutdentVisibility(detailsArea)) armCollapseGuard();
+                }}
+                title="Outdent"
+                aria-label="Outdent"
+              >
+                <OutdentIcon />
+              </button>
+            )}
           </div>
           <div 
             className="details-richtext"
@@ -2466,12 +2839,22 @@ const Task = ({ task, listName, showMoveButtons }) => {
             onInput={(e) => {
               refreshListMarkers(e.currentTarget);
               syncPlaceholder(e.currentTarget);
+              refreshOutdentVisibility(e.currentTarget);
             }}
+            // Caret moves that aren't edits: arrows, taps, and the selection
+            // landing here on focus. Without these the button would only
+            // update when the text changed, so moving onto an indented line
+            // would leave it hidden.
+            onKeyUp={(e) => refreshOutdentVisibility(e.currentTarget)}
+            onFocus={(e) => refreshOutdentVisibility(e.currentTarget)}
             onBlur={(e) => {
               e.stopPropagation();
               saveDetails(e.currentTarget);
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              refreshOutdentVisibility(e.currentTarget);
+            }}
             onCopy={(e) => {
               e.stopPropagation();
               writeClipboard(e);
@@ -2655,19 +3038,45 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 currentNode.closest('.checkbox-line') : 
                 currentNode.parentElement?.closest('.checkbox-line');
               
-              // Handle Tab key - indent checkbox
-              if (e.key === 'Tab' && checkboxLine) {
+              // Handle Tab key - indent the line at the caret.
+              //
+              // This used to be gated on `&& checkboxLine`, so Tab worked on a
+              // checkbox and nowhere else: a plain line, a bullet, and above
+              // all the FIRST line of a task - which is usually bare text with
+              // no block wrapper at all - fell through to the browser, which
+              // moved focus out of the editor instead of indenting.
+              //
+              // Routed through the same resolver the toolbar buttons use, so
+              // the key and the buttons cannot disagree: bullets nest, and
+              // everything else takes marginLeft.
+              if (e.key === 'Tab') {
                 e.preventDefault();
-                const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                const area = e.currentTarget;
+                const target = resolveIndentTarget(area, currentNode);
+                if (!target) return;
+
+                if (target.kind === 'bullet') {
+                  document.execCommand(e.shiftKey ? 'outdent' : 'indent', false, null);
+                  refreshListMarkers(area);
+                  refreshOutdentVisibility(area);
+                  return;
+                }
+
+                const line = target.line;
+                const currentIndent = parseInt(line.style.marginLeft || '0') || 0;
                 // Shift+Tab outdents. The handler used to ignore the modifier
                 // entirely, so Shift+Tab indented like a plain Tab and there
                 // was no way back out of a nesting level except backspacing
                 // from the start of the line.
                 const newIndent = e.shiftKey
-                  ? Math.max(0, currentIndent - 20)
-                  : currentIndent + 20;
+                  ? Math.max(0, currentIndent - EDITOR_INDENT_STEP)
+                  : currentIndent + EDITOR_INDENT_STEP;
                 if (newIndent === currentIndent) return;
-                checkboxLine.style.marginLeft = newIndent + 'px';
+                // Removed rather than set to 0px, matching the outdent button:
+                // an empty declaration is what the rest of the app reads as
+                // "not indented".
+                if (newIndent === 0) line.style.removeProperty('margin-left');
+                else line.style.marginLeft = newIndent + 'px';
 
                 // Parent and boundary marks are recomputed for the whole list
                 // rather than patched for this one line. Outdenting can orphan
@@ -2675,7 +3084,8 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 // the line you just moved could never notice - and this is
                 // the same function that runs on load, so the two can't
                 // disagree about what the list looks like.
-                refreshListMarkers(checkboxLine.closest('.details-richtext'));
+                refreshListMarkers(area);
+                refreshOutdentVisibility(area);
               }
               
               // Handle Backspace at the start of a checkbox line - remove the checkbox.
@@ -8736,6 +9146,20 @@ function LittleFiresApp() {
 
         .toolbar-btn:active {
           transform: scale(0.95);
+        }
+
+        /* Icon-only variant. Square-ish and gapless, so the pair reads as one
+           control next to the worded buttons rather than two undersized ones.
+           Padding is tuned to match its neighbours' rendered height: those are
+           6px + a 0.85rem line box, this is an SVG of a fixed size. */
+        .toolbar-btn-icon {
+          gap: 0;
+          padding: 6px 9px;
+          /* A 44px target is the accessibility floor for touch, and these are
+             the smallest controls in the editor. The button stays visually
+             small; the tappable area is grown around it. */
+          min-width: 34px;
+          justify-content: center;
         }
 
         .task-priority-selector {

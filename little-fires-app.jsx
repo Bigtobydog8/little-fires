@@ -524,6 +524,493 @@ function sanitizeRichText(html) {
   return doc.body.innerHTML;
 }
 
+// ---- AI credentials --------------------------------------------------------
+// The key lives in its own storage entry, NOT in the settings blob.
+//
+// That is not tidiness. buildBackup() puts `settings` into every exported
+// backup file, and the error boundary's raw dump reads the same key - so a key
+// stored there would be written into a JSON file the user is likely to email
+// to themselves or drop in cloud storage, and into a crash dump they might
+// paste into a bug report. Keeping it separate means "export a backup" can
+// never mean "export my API key".
+//
+// It is also never sent anywhere except Anthropic's own endpoint, and it is
+// deliberately not part of anything that will sync: a key belongs to a device
+// and a person, not to a household.
+const AI_KEY_STORAGE = 'little_fires_ai_key';
+
+function readAiKey() {
+  try {
+    return localStorage.getItem(AI_KEY_STORAGE) || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function writeAiKey(key) {
+  try {
+    const trimmed = (key || '').trim();
+    if (!trimmed) {
+      localStorage.removeItem(AI_KEY_STORAGE);
+      return false;
+    }
+    localStorage.setItem(AI_KEY_STORAGE, trimmed);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function clearAiKey() {
+  try { localStorage.removeItem(AI_KEY_STORAGE); } catch (err) {}
+}
+
+// Shown instead of the key itself once it is saved. The full value is never
+// rendered back into the field: it would sit in the DOM, in a screenshot, and
+// over the shoulder of anyone nearby, for no benefit - a key you cannot read
+// back is no harder to replace than one you can.
+function maskAiKey(key) {
+  const k = (key || '').trim();
+  if (!k) return '';
+  if (k.length <= 8) return '••••';
+  return k.slice(0, 7) + '…' + k.slice(-4);
+}
+
+// Anthropic keys start with sk-ant-. Advisory only: a wrong-looking key is
+// worth flagging, but refusing to store it would be guessing about a format
+// that is not ours to define.
+function looksLikeAnthropicKey(key) {
+  return /^sk-ant-/.test((key || '').trim());
+}
+
+// ---- Suggestion payload ----------------------------------------------------
+// What the model is told, and nothing beyond it.
+//
+// A compacted summary rather than a dump of the store, for two reasons. Cost is
+// the obvious one. The other is quality: a model handed 800 raw task objects
+// produces vaguer suggestions than one handed a tight, structured picture of
+// what someone is actually working on.
+//
+// Projects and goals are included because they state INTENT. Tasks say what you
+// did; a project called "Kitchen renovation" running to March, or a goal with a
+// stated challenge and outcome, says what you are trying to do - which is the
+// difference between suggesting plausible chores and suggesting the next step
+// on something real.
+//
+// Three exclusions are promises made to the user in Settings, so they are
+// enforced here rather than left to the caller:
+//   - shared lists never leave the device (a suggestion there would become a
+//     task someone else sees)
+//   - the details field is never sent (rich text, and where the private
+//     specifics live)
+//   - notes are never sent
+const SUGGEST_MAX_TEXT = 120;
+const SUGGEST_MAX_COMPLETED_PER_LIST = 30;
+const SUGGEST_MAX_OPEN_PER_LIST = 30;
+const SUGGEST_MAX_PROJECTS_PER_LIST = 10;
+const SUGGEST_MAX_GOALS_PER_LIST = 10;
+const SUGGEST_STALE_DAYS = 30;
+// Details are truncated harder than titles: they are prose, and the useful
+// part - what the next step is - is almost always near the top.
+const SUGGEST_MAX_DETAILS = 300;
+
+// Details are stored as sanitized HTML. Markup is never sent: it costs tokens,
+// says nothing a model needs, and would invite the model to reply in kind.
+//
+// Block boundaries become separators rather than being collapsed, so a
+// checklist reads as a list instead of a run-on sentence, and checkbox state is
+// spelled out - which sub-items are already done is exactly the signal that
+// makes a suggestion about the NEXT one worth having.
+function detailsToPlainText(html, doc) {
+  const source = String(html == null ? '' : html);
+  if (!source.trim()) return '';
+  const d = doc || (typeof document !== 'undefined' ? document : null);
+  if (!d) {
+    // No DOM (a non-browser caller): strip tags crudely rather than send markup.
+    return source.replace(/<[^>]*>/g, ' ');
+  }
+  const holder = d.createElement('div');
+  holder.innerHTML = source;
+  const parts = [];
+  const blocks = holder.querySelectorAll('div, li, p');
+  const walk = blocks.length ? Array.from(blocks) : [holder];
+  walk.forEach((el) => {
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    if (el.classList && el.classList.contains('checkbox-line')) {
+      const box = el.querySelector('input.task-checkbox');
+      const done = box && (box.checked || box.getAttribute('checked') !== null);
+      parts.push((done ? '[x] ' : '[ ] ') + text);
+    } else {
+      parts.push(text);
+    }
+  });
+  return parts.join(' · ');
+}
+
+function trimText(value, max = SUGGEST_MAX_TEXT) {
+  const v = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  if (!v) return '';
+  return v.length > max ? v.slice(0, max - 1) + '…' : v;
+}
+
+function daysBetween(fromIso, now) {
+  const then = fromIso ? new Date(fromIso).getTime() : NaN;
+  if (!isFinite(then)) return null;
+  return Math.floor((now - then) / 86400000);
+}
+
+// `sources` is passed in rather than read from the app, so this stays a pure
+// function that can be exercised with fabricated stores.
+function compactForSuggestions(sources, options) {
+  const opts = options || {};
+  const now = opts.now || Date.now();
+  const lists = Array.isArray(opts.lists) ? opts.lists : [];
+  const isShared = typeof opts.isSharedList === 'function' ? opts.isSharedList : () => false;
+  // Off unless the caller passes it. A default that widens what leaves the
+  // device is the wrong default.
+  const includeDetails = opts.includeDetails === true;
+  const allLists = (sources && sources.allLists) || {};
+  const archived = (sources && sources.archivedTasks) || {};
+  const projects = (sources && sources.projects) || {};
+  const goals = (sources && sources.goals) || {};
+
+  const out = { generatedAt: new Date(now).toISOString(), lists: [] };
+
+  lists.forEach((listName) => {
+    if (isShared(listName)) return;   // promise: shared lists never leave
+
+    const live = Array.isArray(allLists[listName]) ? allLists[listName] : [];
+    const done = Array.isArray(archived[listName]) ? archived[listName] : [];
+
+    const openTasks = [];
+    const backlogTasks = [];
+    const completedTasks = [];
+
+    // Only ever on a task that is still open. The details of something already
+    // finished are history, not a next step, and sending them would double the
+    // payload to say nothing.
+    const withDetails = (entry, task) => {
+      if (!includeDetails) return entry;
+      const plain = trimText(detailsToPlainText(task.details, opts.document), SUGGEST_MAX_DETAILS);
+      if (plain) entry.details = plain;
+      return entry;
+    };
+
+    // Archived tasks are completed history too - leaving them out would make a
+    // long-running list look inactive precisely because it has been tidied.
+    live.concat(done).forEach((task) => {
+      if (!task || !task.text) return;
+      const text = trimText(task.text);
+      if (!text) return;
+      if (task.completed) {
+        completedTasks.push({
+          text,
+          completedDaysAgo: daysBetween(task.completedAt || task.updatedAt, now)
+        });
+      } else if (task.section === 'backlog') {
+        backlogTasks.push(withDetails({
+          text,
+          ageDays: daysBetween(task.createdAt, now),
+          priority: task.priority || null
+        }, task));
+      } else {
+        openTasks.push(withDetails({
+          text,
+          ageDays: daysBetween(task.createdAt, now),
+          priority: task.priority || null,
+          hasDueDate: !!task.dueDate
+        }, task));
+      }
+    });
+
+    completedTasks.sort((a, b) => (a.completedDaysAgo ?? 1e9) - (b.completedDaysAgo ?? 1e9));
+
+    const listProjects = (Array.isArray(projects[listName]) ? projects[listName] : [])
+      .slice(0, SUGGEST_MAX_PROJECTS_PER_LIST)
+      .map((p) => ({
+        name: trimText(p.name),
+        description: trimText(p.description),
+        // Stated intent, and the most useful two fields on the object.
+        challenge: trimText(p.challenge),
+        outcome: trimText(p.outcome),
+        startDate: p.startDate || null,
+        endDate: p.endDate || null,
+        openTaskCount: live.filter(t => t && t.projectId === p.id && !t.completed).length
+      }))
+      .filter((p) => p.name);
+
+    const listGoals = (Array.isArray(goals[listName]) ? goals[listName] : [])
+      .slice(0, SUGGEST_MAX_GOALS_PER_LIST)
+      .map((g) => ({
+        name: trimText(g.name),
+        description: trimText(g.description),
+        challenge: trimText(g.challenge),
+        outcome: trimText(g.outcome),
+        startDate: g.startDate || null,
+        endDate: g.endDate || null
+      }))
+      .filter((g) => g.name);
+
+    const staleBacklog = backlogTasks.filter(
+      (t) => t.ageDays != null && t.ageDays >= SUGGEST_STALE_DAYS
+    ).length;
+
+    out.lists.push({
+      list: listName,
+      open: openTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
+      backlog: backlogTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
+      recentlyCompleted: completedTasks.slice(0, SUGGEST_MAX_COMPLETED_PER_LIST),
+      projects: listProjects,
+      goals: listGoals,
+      signals: {
+        openCount: openTasks.length,
+        backlogCount: backlogTasks.length,
+        completedCount: completedTasks.length,
+        staleBacklogCount: staleBacklog,
+        completedLast30Days: completedTasks.filter(
+          (t) => t.completedDaysAgo != null && t.completedDaysAgo <= 30
+        ).length
+      }
+    });
+  });
+
+  return out;
+}
+
+// ---- Suggestions: storage and shelf logic -----------------------------------
+// Suggestions are NOT a list. They live in their own side table, exactly like
+// deletedTaskIds, and for the same reason: TASK_LISTS is walked in ~18 places -
+// archive, calendar, reports, search, project cleanup, export, the flame goals,
+// the 10-list cap - and every one of them treats membership as "these are real
+// tasks". A suggestions list would light up a weekly goal because a model
+// proposed something, and would mirror to a partner's device once sync exists.
+//
+// Nothing that renders, counts or exports has to learn to skip these.
+const AI_SUGGESTIONS_STORAGE = 'little_fires_ai_suggestions';
+const AI_REJECTED_STORAGE = 'little_fires_ai_rejected';
+const SUGGESTIONS_PER_SHELF = 3;
+// A dismissal is remembered for this long. Not forever: what was irrelevant in
+// March may be exactly right in September, and a permanent veto list only grows.
+const REJECTED_TTL_DAYS = 60;
+
+function readJsonStore(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function writeJsonStore(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// The identity of a suggestion for dedupe purposes. "Call the plumber." and
+// "call plumber" are the same idea and must not both appear, so comparison is
+// on normalised text rather than on the string as written.
+function normalizeSuggestionText(text) {
+  return String(text == null ? '' : text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pruneRejected(rejected, now, ttlDays = REJECTED_TTL_DAYS) {
+  const cutoff = now - ttlDays * 86400000;
+  const out = {};
+  Object.keys(rejected || {}).forEach((hash) => {
+    const at = Date.parse(rejected[hash]);
+    if (isFinite(at) && at >= cutoff) out[hash] = rejected[hash];
+  });
+  return out;
+}
+
+// Anything a model returns is treated as hostile input, not as data. It will
+// invent list names, return markup, and occasionally return an essay.
+function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  raw.forEach((item) => {
+    if (out.length >= max) return;
+    if (!item || typeof item !== 'object') return;
+    const text = trimText(item.text, 120);
+    if (!text) return;
+    if (/[<>]/.test(text)) return;                       // no markup, ever
+    // Filler about the app itself, whether it came from a template or a model.
+    if (isAppHousekeeping(text)) return;
+    if (item.list && !allowedLists.includes(item.list)) return;
+    out.push({
+      text,
+      rationale: trimText(item.rationale, 140),
+      list: item.list || null
+    });
+  });
+  return out;
+}
+
+// Drops anything that already exists as a task, or that was dismissed inside
+// the TTL. Re-proposing what someone just swiped away is the fastest way to
+// make a feature like this feel broken.
+function filterSuggestions(candidates, { existingTexts = [], rejected = {}, max = SUGGESTIONS_PER_SHELF } = {}) {
+  const seen = new Set(existingTexts.map(normalizeSuggestionText).filter(Boolean));
+  const out = [];
+  (candidates || []).forEach((c) => {
+    if (out.length >= max) return;
+    const key = normalizeSuggestionText(c && c.text);
+    if (!key) return;
+    if (seen.has(key)) return;
+    if (rejected[key]) return;
+    seen.add(key);                                        // no duplicates within a batch
+    out.push(c);
+  });
+  return out;
+}
+
+// A suggestion has to be a thing you could go and DO. Not a thing you could do
+// to this app.
+//
+// "Review your work list", "set a due date on something", "clear one item" -
+// these are app housekeeping. They are the filler a model reaches for when it
+// has nothing real to say, they are what a template produces when it has no
+// world knowledge, and they are worthless: nobody needs a task manager to
+// suggest using the task manager.
+//
+// Matched narrowly, on references to the app's own machinery rather than on
+// verbs. "Review the contract with the lawyer" is a real task and must survive;
+// "review your backlog" is not.
+const APP_HOUSEKEEPING = [
+  // "your <list name> list" as well as "your list" - a list can be named, and
+  // "Review your work list" is the same filler as "review your list".
+  /\byour\s+(\w+\s+)?(task\s+)?(list|lists|tasks|backlog|app)\b/i,
+  /\b(review|check|tidy|clean\s*up|organi[sz]e|go\s+through)\s+(your|the)\s+(\w+\s+)?(task\s+)?(list|lists|tasks|backlog|app)\b/i,
+  /\b(set|add|update|assign)\s+(a\s+|the\s+)?(due\s*date|priority|reminder|deadline)\b/i,
+  /\b(clear|finish|complete|knock\s+out)\s+(one|a)\s+(thing|task|item)\b/i,
+  // Archiving is only housekeeping when it is THIS app's archive. "Archive the
+  // 2025 tax paperwork in the loft" is a real afternoon's work, so the match
+  // requires the app's own vocabulary right after it.
+  /\b(archive|declutter)\s+(your|the|old)\s+(task|tasks|list|lists|backlog|item|items)\b/i,
+  /\bbreak\s+(this|it)\s+down\b/i,
+  /\bin\s+the\s+app\b/i
+];
+
+function isAppHousekeeping(text) {
+  const t = String(text == null ? '' : text);
+  return APP_HOUSEKEEPING.some((re) => re.test(t));
+}
+
+// The instruction the model is given. Kept here beside the filter so the two
+// cannot drift: whatever the prompt forbids, the filter enforces, because a
+// model that is asked nicely will still produce filler when the data is thin.
+const SUGGESTION_PROMPT_RULES = [
+  'Suggest concrete actions the person could take in the real world.',
+  'Ground every suggestion in their projects, goals, or the specific tasks they have written down.',
+  'Name the thing. "Email Dana about the quote" beats "follow up with someone".',
+  'Never suggest managing this app: no reviewing lists, setting due dates, tidying backlogs, or archiving.',
+  'If a list has too little to go on, return fewer suggestions rather than filler.',
+  'One short sentence per suggestion, plus a one-line reason referring to what it came from.'
+].join(' ');
+
+// ---- A stand-in generator ---------------------------------------------------
+// Deliberately local and deterministic. The whole browse / accept / dismiss /
+// refresh interaction can be used and tested on a real device before any key is
+// entered or a single token is spent, and swapping this for a real call is one
+// function - the surrounding logic never learns where suggestions came from.
+function fakeSuggestionsFor(shelf, seed = 0) {
+  const projects = (shelf && shelf.projects) || [];
+  const goals = (shelf && shelf.goals) || [];
+  const backlog = (shelf && shelf.backlog) || [];
+  const open = (shelf && shelf.open) || [];
+  const pool = [];
+
+  // Everything below is built from the person's OWN nouns - a project name, a
+  // stated challenge, the wording of a task they wrote. A local template has no
+  // world knowledge, so this is the closest it can get to a real action: it can
+  // name the right subject even though only the model can supply the insight.
+  //
+  // That limit is the point of the exercise. If these read as thin, the fix is
+  // the prompt, not more templates.
+  const first = (text) => String(text || '').split(/[,.;:]/)[0].trim();
+
+  projects.forEach((p) => {
+    if (p.challenge) {
+      pool.push({
+        text: first(p.challenge),
+        rationale: 'The challenge you wrote on "' + p.name + '".'
+      });
+    }
+    if (p.outcome) {
+      pool.push({
+        text: 'Work out what "' + first(p.outcome) + '" needs next',
+        rationale: 'The outcome you want from "' + p.name + '".'
+      });
+    }
+    if (p.endDate) {
+      pool.push({
+        text: 'Line up the next piece of ' + p.name,
+        rationale: '"' + p.name + '" is meant to land by ' + p.endDate + '.'
+      });
+    }
+    if (!p.openTaskCount) {
+      pool.push({
+        text: 'Decide the first step for ' + p.name,
+        rationale: 'That project has nothing open against it.'
+      });
+    }
+  });
+
+  goals.forEach((g) => {
+    if (g.challenge) {
+      pool.push({
+        text: first(g.challenge),
+        rationale: 'The hard part of "' + g.name + '", in your words.'
+      });
+    }
+    pool.push({
+      text: 'Do one thing towards ' + g.name + ' this week',
+      rationale: 'A goal with nothing scheduled against it.'
+    });
+  });
+
+  // Something abandoned in the backlog is a real decision waiting to be made,
+  // so the suggestion is the underlying thing - not "look at your backlog".
+  backlog.forEach((b) => {
+    if (b.ageDays != null && b.ageDays >= SUGGEST_STALE_DAYS) {
+      pool.push({
+        text: b.text,
+        rationale: 'You wrote this ' + b.ageDays + ' days ago and it has not moved.'
+      });
+    }
+  });
+
+  // An open task with no due date and some age is usually blocked on a smaller
+  // thing that was never written down.
+  open.forEach((o) => {
+    if (!o.hasDueDate && o.ageDays != null && o.ageDays >= 14) {
+      pool.push({
+        text: 'What is stopping ' + first(o.text) + '?',
+        rationale: 'Open for ' + o.ageDays + ' days with no date on it.'
+      });
+    }
+  });
+
+  // Deliberately no generic fallback. A list with nothing to go on gets fewer
+  // suggestions - which is the honest answer, and the same rule the prompt
+  // gives the model.
+  if (!pool.length) return [];
+  const offset = seed % pool.length;
+  return pool.slice(offset).concat(pool.slice(0, offset));
+}
+
 // ---- Editor crash journal --------------------------------------------------
 // The debounced-write flush on pagehide can only persist state that has
 // already been captured into React. Content typed into the details editor
@@ -3990,6 +4477,13 @@ function LittleFiresApp() {
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
     fontChoice: 'serif',      // Lora & Inter
+    // AI suggestions. Off until switched on deliberately: it is the one
+    // feature that sends task text off the device.
+    aiSuggestions: false,
+    // Details are where the specifics live - notes about people, numbers,
+    // medical things - so they are excluded unless asked for, separately from
+    // the feature itself. Someone who never opens this card sends titles only.
+    aiIncludeDetails: false,
     // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
     // default for a fresh install - see the loader below, which keeps everyone
     // who was already using the app on what they had.
@@ -4033,6 +4527,25 @@ function LittleFiresApp() {
   // Set synchronously inside the settings initializer just below, before
   // anything else reads it.
   const batterySaverUserChoiceRef = React.useRef(false);
+
+  // The saved API key, read once at mount. Held in state only so the Settings
+  // card can re-render when it changes - the value of record is the storage
+  // entry, never this. The draft is what is being typed and is cleared the
+  // moment it is saved.
+  // Suggestions, held in state and mirrored to the side table. Shaped as
+  // { [listKey]: { generatedAt, seed, items: [{ id, text, rationale }] } }.
+  const [aiShelves, setAiShelves] = useState(() =>
+    readJsonStore(AI_SUGGESTIONS_STORAGE, {}));
+  const [aiRejected, setAiRejected] = useState(() =>
+    pruneRejected(readJsonStore(AI_REJECTED_STORAGE, {}), Date.now()));
+
+  // { id, text } while a suggestion is being edited before it is added.
+  // window.prompt is unavailable here for the same reason window.confirm is -
+  // a sandboxed iframe blocks it - so editing happens inline.
+  const [aiEditing, setAiEditing] = useState(null);
+
+  const [aiKeySaved, setAiKeySaved] = useState(() => readAiKey());
+  const [aiKeyDraft, setAiKeyDraft] = useState('');
 
   const [settings, setSettings] = useState(() => {
     try {
@@ -4843,6 +5356,106 @@ function LittleFiresApp() {
   ];
   const TASK_LISTS = [...personalListKeys, ...sharedListKeys];
   const isSharedList = (key) => sharedListKeys.includes(key);
+
+  // Lists that get a shelf: the ones on display, minus shared ones. Shared is
+  // excluded because a suggestion there would become a task another person
+  // sees, and because their content never leaves the device to be reasoned
+  // about in the first place.
+  const suggestionLists = () => visibleTaskLists.filter(k => !isSharedList(k));
+
+  // Everything already written down in a list, so a suggestion can't repeat it.
+  const existingTextsFor = (listName) => [
+    ...(allLists[listName] || []),
+    ...(archivedTasks[listName] || [])
+  ].map(t => t && t.text).filter(Boolean);
+
+  // Fills one shelf. The generator is the only part that will change when this
+  // talks to the API - what surrounds it is already the real thing.
+  const refreshShelf = (listName) => {
+    const payload = compactForSuggestions(
+      { allLists, archivedTasks, projects, goals },
+      {
+        lists: [listName],
+        isSharedList,
+        includeDetails: !!settings.aiIncludeDetails,
+        now: Date.now()
+      }
+    );
+    const shelfData = payload.lists[0];
+    if (!shelfData) return;
+
+    const seed = ((aiShelves[listName] && aiShelves[listName].seed) || 0) + 1;
+    const candidates = validateSuggestions(
+      fakeSuggestionsFor(shelfData, seed),
+      TASK_LISTS
+    );
+    const items = filterSuggestions(candidates, {
+      existingTexts: existingTextsFor(listName),
+      rejected: aiRejected,
+      max: SUGGESTIONS_PER_SHELF
+    }).map(c => ({ id: makeId(), text: c.text, rationale: c.rationale }));
+
+    setAiShelves(prev => {
+      const next = {
+        ...prev,
+        [listName]: { generatedAt: new Date().toISOString(), seed, items }
+      };
+      writeJsonStore(AI_SUGGESTIONS_STORAGE, next);
+      return next;
+    });
+  };
+
+  const removeSuggestion = (listName, id) => {
+    setAiShelves(prev => {
+      const shelf = prev[listName];
+      if (!shelf) return prev;
+      const next = {
+        ...prev,
+        [listName]: { ...shelf, items: shelf.items.filter(i => i.id !== id) }
+      };
+      writeJsonStore(AI_SUGGESTIONS_STORAGE, next);
+      return next;
+    });
+  };
+
+  // Dismissing remembers the text so the next refresh doesn't propose it again.
+  const dismissSuggestion = (listName, item) => {
+    const key = normalizeSuggestionText(item.text);
+    if (key) {
+      setAiRejected(prev => {
+        const next = { ...prev, [key]: new Date().toISOString() };
+        writeJsonStore(AI_REJECTED_STORAGE, next);
+        return next;
+      });
+    }
+    removeSuggestion(listName, item.id);
+  };
+
+  // Accepting builds the same task object addTask does - same fields, same
+  // stamps, same id generator. A suggestion becomes an ordinary task with
+  // nothing marking it as having been suggested.
+  const acceptSuggestion = (listName, item, textOverride) => {
+    const text = (textOverride != null ? textOverride : item.text).trim();
+    if (!text) return;
+    const newTask = {
+      text,
+      completed: false,
+      priority: 'low',
+      section: 'todo',
+      dueDate: null,
+      dueTime: null,
+      details: '',
+      id: makeId(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      projectId: null
+    };
+    setAllLists(prev => ({
+      ...prev,
+      [listName]: [newTask, ...(prev[listName] || [])]
+    }));
+    removeSuggestion(listName, item.id);
+  };
 
   // Colour for a list - built-ins are fixed, custom ones carry their own.
   const BUILT_IN_LIST_COLORS = {
@@ -11849,6 +12462,18 @@ function LittleFiresApp() {
                     Notes
                   </div>
                 )}
+                {/* Only present once suggestions are switched on in Settings.
+                    In the menu rather than among the list tabs on purpose: it
+                    is a view, not a list, and putting it in TASK_LISTS is what
+                    would make every count in the app treat proposals as work. */}
+                {settings.aiSuggestions && (
+                  <div
+                    className={`menu-item ${appMode === 'ai' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('ai'); setMenuOpen(false); }}
+                  >
+                    AI Tasks
+                  </div>
+                )}
                 <div className="menu-divider"></div>
                 <div 
                   className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
@@ -12075,6 +12700,162 @@ function LittleFiresApp() {
               {renderTasks()}
             </div>
           </>
+        )}
+
+        {appMode === 'ai' && (
+          <div className="tasks-container">
+            <div style={{
+              color: 'var(--text-muted)', fontSize: '0.85rem',
+              fontFamily: 'var(--font-ui)', lineHeight: 1.5, marginBottom: '18px'
+            }}>
+              Proposals based on what you've been doing. Nothing here is a task until
+              you add it.
+            </div>
+
+            {suggestionLists().map(listName => {
+              const shelf = aiShelves[listName];
+              const items = (shelf && shelf.items) || [];
+              return (
+                <div key={listName} className="day-list-group" style={{ marginBottom: '22px' }}>
+                  <div className="list-section-header day-list-header" style={{ cursor: 'default' }}>
+                    <span>{listLabel(listName)}</span>
+                    <button
+                      onClick={() => refreshShelf(listName)}
+                      title={`Refresh ${listLabel(listName)} suggestions`}
+                      style={{
+                        padding: '6px 12px', borderRadius: '8px',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                        background: 'rgba(var(--surface-rgb), 0.8)',
+                        color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                        fontSize: '0.72rem', cursor: 'pointer', letterSpacing: '0.04em'
+                      }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {items.length === 0 ? (
+                    <div style={{
+                      color: 'var(--text-soft)', fontSize: '0.85rem',
+                      fontFamily: 'var(--font-ui)', padding: '10px 2px'
+                    }}>
+                      {!shelf
+                        ? 'No suggestions yet. Tap Refresh.'
+                        : 'Nothing to suggest for this list yet — suggestions are '
+                          + 'built from your projects, goals and the tasks you\'ve '
+                          + 'written down, so a thin list gets fewer of them rather '
+                          + 'than filler.'}
+                    </div>
+                  ) : items.map(item => (
+                    <div key={item.id} className="calendar-item" style={{ marginBottom: '10px' }}>
+                      {aiEditing && aiEditing.id === item.id ? (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <input
+                            value={aiEditing.text}
+                            autoFocus
+                            onChange={(e) => setAiEditing({ id: item.id, text: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                acceptSuggestion(listName, item, aiEditing.text);
+                                setAiEditing(null);
+                              } else if (e.key === 'Escape') {
+                                setAiEditing(null);
+                              }
+                            }}
+                            style={{
+                              flex: 1, minWidth: '160px', padding: '8px 12px',
+                              borderRadius: '8px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.35)',
+                              background: 'rgba(var(--surface-rgb), 0.9)',
+                              color: 'var(--text)', fontFamily: 'var(--font-body)',
+                              fontSize: '0.95rem', outline: 'none'
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              acceptSuggestion(listName, item, aiEditing.text);
+                              setAiEditing(null);
+                            }}
+                            disabled={!aiEditing.text.trim()}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                              background: aiEditing.text.trim()
+                                ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                                : 'rgba(var(--surface-rgb), 1)',
+                              color: aiEditing.text.trim() ? '#fff' : 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
+                              cursor: aiEditing.text.trim() ? 'pointer' : 'default'
+                            }}
+                          >
+                            Add
+                          </button>
+                          <button
+                            onClick={() => setAiEditing(null)}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--border-rgb), 0.3)',
+                              background: 'transparent', color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (<>
+                      <div className="item-text">
+                        <span className="item-dot" style={{ color: 'var(--accent)' }}>●</span>
+                        {item.text}
+                      </div>
+                      {item.rationale && (
+                        <div className="item-project">{item.rationale}</div>
+                      )}
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => acceptSuggestion(listName, item)}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                            color: '#fff', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Add to {listLabel(listName)}
+                        </button>
+                        <button
+                          onClick={() => setAiEditing({ id: item.id, text: item.text })}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => dismissSuggestion(listName, item)}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--border-rgb), 0.3)',
+                            background: 'transparent',
+                            color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                      </>)}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
         )}
 
         {appMode === 'notes' && (
@@ -19741,6 +20522,152 @@ function LittleFiresApp() {
                       <span style={{ ...hint, marginTop: 0 }}>
                         Not linked — syncing isn't available yet.
                       </span>
+                    </div>
+                  </div>
+
+                  {/* ---- AI Tasks ---- */}
+                  <div style={card}>
+                    <div style={heading}>AI Tasks</div>
+                    <div style={sub}>
+                      Suggests tasks based on what you've been creating, completing and
+                      leaving in your backlog. Suggestions are proposals only — nothing
+                      is added to a list until you accept it.
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Enable suggestions</div>
+                        <div style={hint}>
+                          Off by default. This is the only feature that sends the text of
+                          your tasks off this device.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.aiSuggestions}
+                        onChange={(v) => updateSetting('aiSuggestions', v)}
+                      />
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Include task details</div>
+                        <div style={hint}>
+                          Off by default, and separate from the switch above. Details are
+                          often where the next step actually is — a checklist inside a
+                          task says more than its title does. They're also where the
+                          specifics live, so this is a deliberate choice rather than part
+                          of turning the feature on.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.aiIncludeDetails}
+                        onChange={(v) => updateSetting('aiIncludeDetails', v)}
+                      />
+                    </div>
+
+                    <div style={divider} />
+
+                    <div style={subheading}>Anthropic API key</div>
+                    <div style={hint}>
+                      Your own key, from console.anthropic.com. Usage is billed to your
+                      account.
+                    </div>
+
+                    {aiKeySaved ? (
+                      <div style={{ ...row, marginTop: '12px' }}>
+                        <div style={{ flex: 1, minWidth: '180px' }}>
+                          <div style={{
+                            fontFamily: 'var(--font-body)', fontSize: '0.9rem',
+                            color: 'var(--text)', wordBreak: 'break-all'
+                          }}>
+                            {maskAiKey(aiKeySaved)}
+                          </div>
+                          <div style={hint}>
+                            Stored on this device only. Never included in backups or
+                            exports.
+                          </div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            const ok = await confirmAction('Remove the stored API key?');
+                            if (!ok) return;
+                            clearAiKey();
+                            setAiKeySaved('');
+                            setAiKeyDraft('');
+                          }}
+                          style={{
+                            padding: '10px 16px', borderRadius: '10px',
+                            border: '2px solid rgba(220, 90, 90, 0.4)',
+                            background: 'rgba(220, 90, 90, 0.12)',
+                            color: '#d15a5a', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.85rem', cursor: 'pointer', flexShrink: 0
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ ...row, marginTop: '12px', alignItems: 'flex-start' }}>
+                        <input
+                          type="password"
+                          value={aiKeyDraft}
+                          onChange={(e) => setAiKeyDraft(e.target.value)}
+                          placeholder="sk-ant-…"
+                          autoComplete="off"
+                          spellCheck={false}
+                          style={{
+                            flex: 1, minWidth: '180px', padding: '10px 14px',
+                            borderRadius: '10px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', fontFamily: 'var(--font-body)',
+                            fontSize: '0.9rem', outline: 'none'
+                          }}
+                        />
+                        <button
+                          onClick={() => {
+                            if (!aiKeyDraft.trim()) return;
+                            if (writeAiKey(aiKeyDraft)) {
+                              setAiKeySaved(aiKeyDraft.trim());
+                              // Cleared so the value doesn't linger in a field
+                              // anyone can reveal with devtools or a screenshot.
+                              setAiKeyDraft('');
+                            }
+                          }}
+                          disabled={!aiKeyDraft.trim()}
+                          style={{
+                            padding: '10px 18px', borderRadius: '10px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                            background: aiKeyDraft.trim()
+                              ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                              : 'rgba(var(--surface-rgb), 1)',
+                            color: aiKeyDraft.trim() ? '#fff' : 'var(--text-muted)',
+                            fontFamily: 'var(--font-ui)', fontSize: '0.85rem',
+                            cursor: aiKeyDraft.trim() ? 'pointer' : 'default',
+                            flexShrink: 0
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
+
+                    {!aiKeySaved && aiKeyDraft.trim() && !looksLikeAnthropicKey(aiKeyDraft) && (
+                      <div style={{ ...hint, color: '#d19a5a' }}>
+                        That doesn't look like an Anthropic key — they start with
+                        "sk-ant-". It will still be saved if you go ahead.
+                      </div>
+                    )}
+
+                    <div style={{ ...hint, marginTop: '12px' }}>
+                      What gets sent: the text of your tasks and when they were created
+                      and completed, plus the name, description, challenge, outcome and
+                      dates of your projects and goals — what you're working towards is
+                      what makes a suggestion worth having.
+                      {settings.aiIncludeDetails
+                        ? ' Also the details of tasks that are still open, as plain text, shortened — never of completed ones.'
+                        : ' Not sent: the details field on a task.'}
+                      {' '}Never sent: your notes, or anything from a shared list.
                     </div>
                   </div>
 

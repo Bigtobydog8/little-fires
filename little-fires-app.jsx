@@ -583,6 +583,45 @@ function looksLikeAnthropicKey(key) {
   return /^sk-ant-/.test((key || '').trim());
 }
 
+// ---- Suggestion profile ----------------------------------------------------
+// A short free-text note about circumstances the app cannot infer: young kids,
+// no car, a bad knee, Thursdays gone. Everything else in the payload is
+// deduced from behaviour; this is the one thing that can only be stated.
+//
+// Free text rather than fields on purpose. A structured profile - occupation,
+// household, working hours - rots the moment life changes and nobody returns
+// to update it, and each field reads as an interrogation. The best material
+// already in the payload is the challenge and outcome someone typed into a
+// project, which is the same kind of writing.
+//
+// Stored beside the API key rather than in settings, and for the same reason:
+// settings go into every exported backup and into the crash dump, and this is
+// precisely where people write about their family and their health.
+const AI_PROFILE_STORAGE = 'little_fires_ai_profile';
+const AI_PROFILE_MAX = 400;
+
+function readAiProfile() {
+  try {
+    return localStorage.getItem(AI_PROFILE_STORAGE) || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function writeAiProfile(text) {
+  try {
+    const trimmed = String(text == null ? '' : text).trim().slice(0, AI_PROFILE_MAX);
+    if (!trimmed) {
+      localStorage.removeItem(AI_PROFILE_STORAGE);
+      return '';
+    }
+    localStorage.setItem(AI_PROFILE_STORAGE, trimmed);
+    return trimmed;
+  } catch (err) {
+    return '';
+  }
+}
+
 // ---- Suggestion payload ----------------------------------------------------
 // What the model is told, and nothing beyond it.
 //
@@ -728,7 +767,17 @@ function compactForSuggestions(sources, options) {
   const projects = (sources && sources.projects) || {};
   const goals = (sources && sources.goals) || {};
 
-  const out = { generatedAt: new Date(now).toISOString(), lists: [] };
+  const out = { generatedAt: new Date(now).toISOString() };
+  // Sent once for the whole request rather than repeated per list: it is the
+  // same for every shelf, and repeating it would be paying for it five times.
+  //
+  // Assigned BEFORE lists so it serialises before them. The same argument that
+  // put intent ahead of evidence inside each shelf applies to the request as a
+  // whole - and object key order follows assignment order, so this is not
+  // cosmetic.
+  const profile = trimText(opts.profile, AI_PROFILE_MAX);
+  if (profile) out.about = profile;
+  out.lists = [];
 
   lists.forEach((listName) => {
     if (isShared(listName)) return;   // promise: shared lists never leave
@@ -917,6 +966,8 @@ function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
     if (/[<>]/.test(text)) return;                       // no markup, ever
     // Filler about the app itself, whether it came from a template or a model.
     if (isAppHousekeeping(text)) return;
+    // Commentary on what is already on the list, rather than something new.
+    if (isMetaCommentary(text)) return;
     if (item.list && !allowedLists.includes(item.list)) return;
     // Every suggestion has to declare what it came from. This is what makes
     // the balance rule below enforceable rather than hoped for - and the
@@ -1031,6 +1082,28 @@ function filterSuggestions(candidates, { existingTexts = [], rejected = {}, max 
 // Matched narrowly, on references to the app's own machinery rather than on
 // verbs. "Review the contract with the lawyer" is a real task and must survive;
 // "review your backlog" is not.
+// A suggestion must ADD something. Commentary on what is already written down
+// adds nothing: the person can see their own list, and being asked why they
+// have not done something is a worse experience than being asked nothing.
+//
+// This catches the shapes that reflect rather than propose - questions about
+// progress, prompts to decide about an existing item, nudges to revisit. What
+// survives is a new action.
+const META_COMMENTARY = [
+  /^\s*(what|why|when|how)\b[^?]*\?\s*$/i,          // any question back at them
+  /\bwhat(?:'s| is| are)\s+(stopping|blocking|holding)\b/i,
+  /\b(why|what)\s+(haven'?t|hasn'?t|didn'?t)\b/i,
+  /\b(decide|make a decision)\s+(about|on)\b/i,
+  /\b(revisit|reconsider|think about|reflect on)\b/i,
+  /\bstill\s+(relevant|needed|worth)\b/i,
+  /\b(unblock|get moving on|make progress on)\b/i
+];
+
+function isMetaCommentary(text) {
+  const t = String(text == null ? '' : text);
+  return META_COMMENTARY.some((re) => re.test(t));
+}
+
 const APP_HOUSEKEEPING = [
   // "your <list name> list" as well as "your list" - a list can be named, and
   // "Review your work list" is the same filler as "review your list".
@@ -1055,12 +1128,19 @@ function isAppHousekeeping(text) {
 // cannot drift: whatever the prompt forbids, the filter enforces, because a
 // model that is asked nicely will still produce filler when the data is thin.
 const SUGGESTION_PROMPT_RULES = [
-  'Suggest concrete actions the person could take in the real world.',
+  'Suggest NET NEW actions - things not already on their lists - that add something',
+  'to their life or their work: a next step, an experience, an option they may not',
+  'have considered. Real actions in the world, not commentary on what they have written.',
+  'Never ask them about their own tasks: no "what is stopping X", no "decide about Y",',
+  'no prompts to revisit or reconsider something. They can already see their list.',
   'Each list is given as "intent" (their goals and projects - what they are trying to do)',
   'and "evidence" (what they actually do, at what pace, and what recurs).',
   'Where intent exists, anchor most suggestions to a specific goal or project;',
   'use the evidence to judge what is realistic for them and what they have already handled.',
   'Return an anchor on every suggestion saying which goal, project or pattern it came from.',
+  'If an "about" note is present, treat it as constraints on what to suggest -',
+  'let it rule things out and shape what fits, but do not make it the stated reason:',
+  'the reason should still point at the goal, project or pattern the suggestion came from.',
   'Name the thing. "Email Dana about the quote" beats "follow up with someone".',
   'Never suggest managing this app: no reviewing lists, setting due dates, tidying backlogs, or archiving.',
   'If a list has too little to go on, return fewer suggestions rather than filler.',
@@ -1077,8 +1157,6 @@ function fakeSuggestionsFor(shelf, seed = 0) {
   const evidence = (shelf && shelf.evidence) || {};
   const projects = intent.projects || [];
   const goals = intent.goals || [];
-  const backlog = evidence.backlog || [];
-  const open = evidence.open || [];
   const patterns = evidence.patterns;
   const pool = [];
 
@@ -1133,20 +1211,19 @@ function fakeSuggestionsFor(shelf, seed = 0) {
     });
   }
 
-  backlog.forEach((b) => {
-    if (b.ageDays != null && b.ageDays >= SUGGEST_STALE_DAYS) {
-      pool.push({ text: b.text, anchor: { type: 'task', ref: b.text },
-        rationale: 'You wrote this ' + b.ageDays + ' days ago and it has not moved.' });
-    }
-  });
-
-  open.forEach((o) => {
-    if (!o.hasDueDate && o.ageDays != null && o.ageDays >= 14) {
-      pool.push({ text: 'What is stopping ' + first(o.text) + '?',
-        anchor: { type: 'task', ref: o.text },
-        rationale: 'Open for ' + o.ageDays + ' days with no date on it.' });
-    }
-  });
+  // Two things used to be generated here and both were wrong.
+  //
+  // "What is stopping <task>?" was commentary, not a suggestion - the app
+  // asking about the person's own list rather than adding anything to it.
+  //
+  // Re-proposing a stale backlog item was worse: it is already written down,
+  // so at best it is a duplicate the dedupe pass removes, and at worst it is
+  // the app reading someone's own abandoned task back to them. Neither is a
+  // net new action, which is the whole point of a suggestion.
+  //
+  // What remains is anchored to intent - projects and goals - plus the one
+  // pattern that is genuinely new information: a rhythm the person keeps but
+  // has not written down this time.
 
   // No generic fallback: a list with nothing to go on gets nothing, which is
   // the honest answer and the same rule the prompt gives the model.
@@ -4689,6 +4766,9 @@ function LittleFiresApp() {
   const [aiEditing, setAiEditing] = useState(null);
 
   const [aiKeySaved, setAiKeySaved] = useState(() => readAiKey());
+  // Free text, saved as it is typed via the same debounce the rest of the app
+  // uses for storage, so there is no Save button to forget to press.
+  const [aiProfile, setAiProfile] = useState(() => readAiProfile());
   const [aiKeyDraft, setAiKeyDraft] = useState('');
 
   const [settings, setSettings] = useState(() => {
@@ -5522,6 +5602,7 @@ function LittleFiresApp() {
         lists: [listName],
         isSharedList,
         includeDetails: !!settings.aiIncludeDetails,
+        profile: aiProfile,
         now: Date.now()
       }
     );
@@ -20702,6 +20783,56 @@ function LittleFiresApp() {
                       />
                     </div>
 
+                    <div style={{ marginTop: '4px' }}>
+                      <div style={label}>About you</div>
+                      <div style={hint}>
+                        Anything worth knowing when suggesting tasks — constraints matter
+                        more than interests. "Two young kids, no car, evenings only" rules
+                        more out than a list of hobbies rules in. Optional, and sent with
+                        every request.
+                      </div>
+                      <textarea
+                        value={aiProfile}
+                        onChange={(e) => {
+                          const v = e.target.value.slice(0, AI_PROFILE_MAX);
+                          setAiProfile(v);
+                          writeAiProfile(v);
+                        }}
+                        rows={3}
+                        placeholder="e.g. Two kids under 6. No car during the week. Knee injury — nothing running."
+                        style={{
+                          width: '100%', boxSizing: 'border-box', marginTop: '8px',
+                          padding: '10px 14px', borderRadius: '10px',
+                          border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                          background: 'rgba(var(--surface-rgb), 0.8)',
+                          color: 'var(--text)', fontFamily: 'var(--font-body)',
+                          fontSize: '0.9rem', outline: 'none', resize: 'vertical'
+                        }}
+                      />
+                      <div style={{
+                        ...hint, display: 'flex', justifyContent: 'space-between',
+                        alignItems: 'center', gap: '10px'
+                      }}>
+                        <span>{aiProfile.length}/{AI_PROFILE_MAX}</span>
+                        {aiProfile && (
+                          <button
+                            onClick={() => { setAiProfile(''); writeAiProfile(''); }}
+                            style={{
+                              padding: '4px 10px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--border-rgb), 0.3)',
+                              background: 'transparent', color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.72rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={divider} />
+
                     <div style={row}>
                       <div style={{ flex: 1, minWidth: '180px' }}>
                         <div style={label}>Include task details</div>
@@ -20821,6 +20952,7 @@ function LittleFiresApp() {
                       {settings.aiIncludeDetails
                         ? ' Also the details of tasks that are still open, as plain text, shortened — never of completed ones.'
                         : ' Not sent: the details field on a task.'}
+                      {aiProfile ? ' Your "about you" note is sent with every request.' : ''}
                       {' '}Never sent: your notes, or anything from a shared list.
                     </div>
                   </div>

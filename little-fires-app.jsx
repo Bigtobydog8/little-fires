@@ -605,7 +605,11 @@ function looksLikeAnthropicKey(key) {
 //     specifics live)
 //   - notes are never sent
 const SUGGEST_MAX_TEXT = 120;
-const SUGGEST_MAX_COMPLETED_PER_LIST = 30;
+// Cut hard on purpose. Completed titles used to dominate the payload by sheer
+// count, and volume is what actually decides where a model looks - a stated
+// weighting does not. The pattern summary now carries that signal, so only a
+// short recent sample is sent as raw examples.
+const SUGGEST_MAX_COMPLETED_PER_LIST = 12;
 const SUGGEST_MAX_OPEN_PER_LIST = 30;
 const SUGGEST_MAX_PROJECTS_PER_LIST = 10;
 const SUGGEST_MAX_GOALS_PER_LIST = 10;
@@ -648,6 +652,55 @@ function detailsToPlainText(html, doc) {
   return parts.join(' · ');
 }
 
+// What someone actually gets done, derived locally from completed tasks.
+//
+// A list of 60 completed titles is the weakest possible form of this signal:
+// it is bulky, it says nothing about pace, and its sheer volume drags a model
+// towards tasks and away from the goals and projects that state intent. Two
+// numbers and a short recurrence list say more in a fraction of the space.
+function deriveCompletionPatterns(completed, now) {
+  const done = (completed || [])
+    .map(t => ({ text: t.text, at: Date.parse(t.completedAt || t.updatedAt || '') }))
+    .filter(t => t.text && isFinite(t.at));
+  if (!done.length) return null;
+
+  const EIGHT_WEEKS = 56 * 86400000;
+  const recent = done.filter(t => now - t.at <= EIGHT_WEEKS);
+  const weekend = recent.filter(t => {
+    const d = new Date(t.at).getDay();
+    return d === 0 || d === 6;
+  }).length;
+
+  // Anything finished more than once is a rhythm, not an event. The average gap
+  // is what makes "due again" answerable without asking the person.
+  const byText = {};
+  done.forEach(t => {
+    const key = normalizeSuggestionText(t.text);
+    if (!key) return;
+    (byText[key] = byText[key] || { text: t.text, times: [] }).times.push(t.at);
+  });
+
+  const recurring = Object.values(byText)
+    .filter(g => g.times.length >= 2)
+    .map(g => {
+      const times = g.times.slice().sort((a, b) => a - b);
+      let total = 0;
+      for (let i = 1; i < times.length; i++) total += times[i] - times[i - 1];
+      const avgGapDays = Math.round(total / (times.length - 1) / 86400000);
+      const lastDaysAgo = Math.floor((now - times[times.length - 1]) / 86400000);
+      return { text: trimText(g.text), times: times.length, avgGapDays, lastDaysAgo,
+               overdueBy: avgGapDays > 0 ? lastDaysAgo - avgGapDays : null };
+    })
+    .sort((a, b) => b.times - a.times)
+    .slice(0, 8);
+
+  return {
+    completedPerWeek: Math.round((recent.length / 8) * 10) / 10,
+    weekendShare: recent.length ? Math.round((weekend / recent.length) * 100) / 100 : null,
+    recurring
+  };
+}
+
 function trimText(value, max = SUGGEST_MAX_TEXT) {
   const v = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
   if (!v) return '';
@@ -686,6 +739,9 @@ function compactForSuggestions(sources, options) {
     const openTasks = [];
     const backlogTasks = [];
     const completedTasks = [];
+    // Kept unreduced for the pattern pass, which needs real timestamps to work
+    // out cadence and day-of-week. Never sent - only what it derives is.
+    const rawCompleted = [];
 
     // Only ever on a task that is still open. The details of something already
     // finished are history, not a next step, and sending them would double the
@@ -704,6 +760,7 @@ function compactForSuggestions(sources, options) {
       const text = trimText(task.text);
       if (!text) return;
       if (task.completed) {
+        rawCompleted.push({ text, completedAt: task.completedAt || task.updatedAt });
         completedTasks.push({
           text,
           completedDaysAgo: daysBetween(task.completedAt || task.updatedAt, now)
@@ -756,21 +813,33 @@ function compactForSuggestions(sources, options) {
       (t) => t.ageDays != null && t.ageDays >= SUGGEST_STALE_DAYS
     ).length;
 
+    // Two named halves, in this order, on purpose.
+    //
+    // What a model attends to is decided by position, labelling and volume -
+    // not by any weighting you write down. So intent comes first and is small
+    // and dense; evidence comes second and is capped and summarised. The names
+    // are part of the signal: one says what this person is trying to do, the
+    // other says what they actually do and at what pace.
     out.lists.push({
       list: listName,
-      open: openTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
-      backlog: backlogTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
-      recentlyCompleted: completedTasks.slice(0, SUGGEST_MAX_COMPLETED_PER_LIST),
-      projects: listProjects,
-      goals: listGoals,
-      signals: {
-        openCount: openTasks.length,
-        backlogCount: backlogTasks.length,
-        completedCount: completedTasks.length,
-        staleBacklogCount: staleBacklog,
-        completedLast30Days: completedTasks.filter(
-          (t) => t.completedDaysAgo != null && t.completedDaysAgo <= 30
-        ).length
+      intent: {
+        projects: listProjects,
+        goals: listGoals
+      },
+      evidence: {
+        open: openTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
+        backlog: backlogTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
+        recentlyCompleted: completedTasks.slice(0, SUGGEST_MAX_COMPLETED_PER_LIST),
+        patterns: deriveCompletionPatterns(rawCompleted, now),
+        signals: {
+          openCount: openTasks.length,
+          backlogCount: backlogTasks.length,
+          completedCount: completedTasks.length,
+          staleBacklogCount: staleBacklog,
+          completedLast30Days: completedTasks.filter(
+            (t) => t.completedDaysAgo != null && t.completedDaysAgo <= 30
+          ).length
+        }
       }
     });
   });
@@ -849,11 +918,85 @@ function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
     // Filler about the app itself, whether it came from a template or a model.
     if (isAppHousekeeping(text)) return;
     if (item.list && !allowedLists.includes(item.list)) return;
+    // Every suggestion has to declare what it came from. This is what makes
+    // the balance rule below enforceable rather than hoped for - and the
+    // anchor doubles as the rationale's subject, so a suggestion that cannot
+    // say where it came from is one that was invented from nothing.
+    const anchorType = item.anchor && item.anchor.type;
     out.push({
       text,
       rationale: trimText(item.rationale, 140),
-      list: item.list || null
+      list: item.list || null,
+      anchor: {
+        type: ['project', 'goal', 'pattern', 'task'].includes(anchorType) ? anchorType : 'none',
+        ref: trimText(item.anchor && item.anchor.ref, 60)
+      }
     });
+  });
+  return out;
+}
+
+// Goals and projects state intent; tasks are evidence of habit. When a list has
+// intent to work from, most of what is suggested should be anchored to it.
+//
+// A stated weighting in the prompt does not achieve this - a model reads 40
+// task rows and 2 projects and follows the volume. A count enforced here does,
+// and it fails visibly instead of drifting.
+const INTENT_ANCHORS = ['project', 'goal'];
+
+// Takes one suggestion from each distinct anchor in turn, keeping the original
+// order within each group. Three angles on one project become one angle on
+// three things.
+function interleaveByAnchor(items) {
+  const groups = [];
+  const index = {};
+  (items || []).forEach((item) => {
+    const key = (item.anchor && (item.anchor.ref || item.anchor.type)) || 'none';
+    if (index[key] == null) {
+      index[key] = groups.length;
+      groups.push([]);
+    }
+    groups[index[key]].push(item);
+  });
+  const out = [];
+  let round = 0;
+  let added = true;
+  while (added) {
+    added = false;
+    groups.forEach((g) => {
+      if (g[round]) {
+        out.push(g[round]);
+        added = true;
+      }
+    });
+    round++;
+  }
+  return out;
+}
+
+function balanceByAnchor(items, { hasIntent, max = SUGGESTIONS_PER_SHELF, minIntent = 2 } = {}) {
+  const list = items || [];
+  if (!hasIntent) return list.slice(0, max);
+  const intentCount = list.filter(i => i.anchor && INTENT_ANCHORS.includes(i.anchor.type)).length;
+  // Seats held for intent-anchored suggestions, but never more than exist -
+  // a list with one project should not end up with two empty slots.
+  const reserved = Math.min(intentCount, minIntent);
+  const othersAllowed = Math.max(0, max - reserved);
+  const out = [];
+  let othersUsed = 0;
+  // Round-robin across anchors before counting. Without it a single project
+  // with four angles fills the whole shelf and a goal sitting right beside it
+  // never appears - technically obeying the intent rule while ignoring half of
+  // what the rule was for.
+  interleaveByAnchor(list).forEach((item) => {
+    if (out.length >= max) return;
+    const isIntent = item.anchor && INTENT_ANCHORS.includes(item.anchor.type);
+    if (isIntent) {
+      out.push(item);
+    } else if (othersUsed < othersAllowed) {
+      out.push(item);
+      othersUsed++;
+    }
   });
   return out;
 }
@@ -913,7 +1056,11 @@ function isAppHousekeeping(text) {
 // model that is asked nicely will still produce filler when the data is thin.
 const SUGGESTION_PROMPT_RULES = [
   'Suggest concrete actions the person could take in the real world.',
-  'Ground every suggestion in their projects, goals, or the specific tasks they have written down.',
+  'Each list is given as "intent" (their goals and projects - what they are trying to do)',
+  'and "evidence" (what they actually do, at what pace, and what recurs).',
+  'Where intent exists, anchor most suggestions to a specific goal or project;',
+  'use the evidence to judge what is realistic for them and what they have already handled.',
+  'Return an anchor on every suggestion saying which goal, project or pattern it came from.',
   'Name the thing. "Email Dana about the quote" beats "follow up with someone".',
   'Never suggest managing this app: no reviewing lists, setting due dates, tidying backlogs, or archiving.',
   'If a list has too little to go on, return fewer suggestions rather than filler.',
@@ -926,86 +1073,83 @@ const SUGGESTION_PROMPT_RULES = [
 // entered or a single token is spent, and swapping this for a real call is one
 // function - the surrounding logic never learns where suggestions came from.
 function fakeSuggestionsFor(shelf, seed = 0) {
-  const projects = (shelf && shelf.projects) || [];
-  const goals = (shelf && shelf.goals) || [];
-  const backlog = (shelf && shelf.backlog) || [];
-  const open = (shelf && shelf.open) || [];
+  const intent = (shelf && shelf.intent) || {};
+  const evidence = (shelf && shelf.evidence) || {};
+  const projects = intent.projects || [];
+  const goals = intent.goals || [];
+  const backlog = evidence.backlog || [];
+  const open = evidence.open || [];
+  const patterns = evidence.patterns;
   const pool = [];
 
-  // Everything below is built from the person's OWN nouns - a project name, a
-  // stated challenge, the wording of a task they wrote. A local template has no
-  // world knowledge, so this is the closest it can get to a real action: it can
-  // name the right subject even though only the model can supply the insight.
-  //
-  // That limit is the point of the exercise. If these read as thin, the fix is
-  // the prompt, not more templates.
+  // Built from the person's own nouns, and every entry declares its anchor.
+  // A local template has no world knowledge, so it can name the right subject
+  // but not supply the insight - that is the gap the real model closes. If
+  // these read thin, the fix is the prompt, not more templates.
   const first = (text) => String(text || '').split(/[,.;:]/)[0].trim();
 
   projects.forEach((p) => {
+    const anchor = { type: 'project', ref: p.name };
     if (p.challenge) {
-      pool.push({
-        text: first(p.challenge),
-        rationale: 'The challenge you wrote on "' + p.name + '".'
-      });
+      pool.push({ text: first(p.challenge), anchor,
+        rationale: 'The challenge you wrote on "' + p.name + '".' });
     }
     if (p.outcome) {
-      pool.push({
-        text: 'Work out what "' + first(p.outcome) + '" needs next',
-        rationale: 'The outcome you want from "' + p.name + '".'
-      });
+      pool.push({ text: 'Work out what "' + first(p.outcome) + '" needs next', anchor,
+        rationale: 'The outcome you want from "' + p.name + '".' });
     }
     if (p.endDate) {
-      pool.push({
-        text: 'Line up the next piece of ' + p.name,
-        rationale: '"' + p.name + '" is meant to land by ' + p.endDate + '.'
-      });
+      pool.push({ text: 'Line up the next piece of ' + p.name, anchor,
+        rationale: '"' + p.name + '" is meant to land by ' + p.endDate + '.' });
     }
     if (!p.openTaskCount) {
-      pool.push({
-        text: 'Decide the first step for ' + p.name,
-        rationale: 'That project has nothing open against it.'
-      });
+      pool.push({ text: 'Decide the first step for ' + p.name, anchor,
+        rationale: 'That project has nothing open against it.' });
     }
   });
 
   goals.forEach((g) => {
+    const anchor = { type: 'goal', ref: g.name };
     if (g.challenge) {
-      pool.push({
-        text: first(g.challenge),
-        rationale: 'The hard part of "' + g.name + '", in your words.'
-      });
+      pool.push({ text: first(g.challenge), anchor,
+        rationale: 'The hard part of "' + g.name + '", in your words.' });
     }
-    pool.push({
-      text: 'Do one thing towards ' + g.name + ' this week',
-      rationale: 'A goal with nothing scheduled against it.'
-    });
+    pool.push({ text: 'Do one thing towards ' + g.name + ' this week', anchor,
+      rationale: 'A goal with nothing scheduled against it.' });
   });
 
-  // Something abandoned in the backlog is a real decision waiting to be made,
-  // so the suggestion is the underlying thing - not "look at your backlog".
+  // Something you finish on a rhythm and have not done for longer than that
+  // rhythm is the most reliable suggestion available without world knowledge.
+  if (patterns && patterns.recurring) {
+    patterns.recurring.forEach((r) => {
+      if (r.overdueBy != null && r.overdueBy > 0) {
+        pool.push({
+          text: r.text,
+          anchor: { type: 'pattern', ref: r.text },
+          rationale: 'You do this about every ' + r.avgGapDays +
+            ' days; it has been ' + r.lastDaysAgo + '.'
+        });
+      }
+    });
+  }
+
   backlog.forEach((b) => {
     if (b.ageDays != null && b.ageDays >= SUGGEST_STALE_DAYS) {
-      pool.push({
-        text: b.text,
-        rationale: 'You wrote this ' + b.ageDays + ' days ago and it has not moved.'
-      });
+      pool.push({ text: b.text, anchor: { type: 'task', ref: b.text },
+        rationale: 'You wrote this ' + b.ageDays + ' days ago and it has not moved.' });
     }
   });
 
-  // An open task with no due date and some age is usually blocked on a smaller
-  // thing that was never written down.
   open.forEach((o) => {
     if (!o.hasDueDate && o.ageDays != null && o.ageDays >= 14) {
-      pool.push({
-        text: 'What is stopping ' + first(o.text) + '?',
-        rationale: 'Open for ' + o.ageDays + ' days with no date on it.'
-      });
+      pool.push({ text: 'What is stopping ' + first(o.text) + '?',
+        anchor: { type: 'task', ref: o.text },
+        rationale: 'Open for ' + o.ageDays + ' days with no date on it.' });
     }
   });
 
-  // Deliberately no generic fallback. A list with nothing to go on gets fewer
-  // suggestions - which is the honest answer, and the same rule the prompt
-  // gives the model.
+  // No generic fallback: a list with nothing to go on gets nothing, which is
+  // the honest answer and the same rule the prompt gives the model.
   if (!pool.length) return [];
   const offset = seed % pool.length;
   return pool.slice(offset).concat(pool.slice(0, offset));
@@ -5389,11 +5533,21 @@ function LittleFiresApp() {
       fakeSuggestionsFor(shelfData, seed),
       TASK_LISTS
     );
-    const items = filterSuggestions(candidates, {
-      existingTexts: existingTextsFor(listName),
-      rejected: aiRejected,
-      max: SUGGESTIONS_PER_SHELF
-    }).map(c => ({ id: makeId(), text: c.text, rationale: c.rationale }));
+    // Balance before capping: filtering first would let three task-anchored
+    // suggestions fill the shelf and leave the goals and projects unused.
+    const hasIntent =
+      (shelfData.intent.projects.length + shelfData.intent.goals.length) > 0;
+    const balanced = balanceByAnchor(
+      filterSuggestions(candidates, {
+        existingTexts: existingTextsFor(listName),
+        rejected: aiRejected,
+        max: 20                       // wide here; the shelf cap is applied below
+      }),
+      { hasIntent, max: SUGGESTIONS_PER_SHELF }
+    );
+    const items = balanced.map(c => ({
+      id: makeId(), text: c.text, rationale: c.rationale, anchor: c.anchor
+    }));
 
     setAiShelves(prev => {
       const next = {

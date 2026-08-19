@@ -8,8 +8,31 @@ import React, { useState, useEffect } from 'react';
 // highlighted value (today) as it tears the sheet down. A React-rendered
 // calendar has no overlay to lose: worst case it simply closes, and it can
 // never write a date the user didn't tap.
-function InlineDatePicker({ value, onChange, style }) {
+function InlineDatePicker({ value, onChange, style, onOpenChange }) {
   const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef(null);
+
+  // The card above needs to know a popup is open inside it, so the tap that
+  // dismisses this calendar isn't also read as a tap on the card.
+  React.useEffect(() => {
+    if (onOpenChange) onOpenChange(open);
+  }, [open, onOpenChange]);
+
+  // There was no outside-tap close at all: the only ways out were the Close
+  // button and picking a date. Tapping anywhere else went straight through to
+  // the card, which collapsed the task and took the open calendar with it.
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('touchstart', onDown);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('touchstart', onDown);
+    };
+  }, [open]);
   const parse = (v) => {
     if (!v) return null;
     const [y, m, d] = String(v).split('-').map(Number);
@@ -76,7 +99,7 @@ function InlineDatePicker({ value, onChange, style }) {
   };
 
   return (
-    <span style={{
+    <span ref={rootRef} style={{
       position: 'relative',
       // inline-flex, not inline-block. The clear button is a sibling of the
       // trigger, and as inline content it wrapped onto a second line once the
@@ -651,6 +674,12 @@ const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 // button press reads as the app having hung rather than as a flourish.
 const MOVE_HOLD_MS = 0;
 
+// How long the details take to slide shut. Shorter than the task exit above:
+// that one has a story to tell (the tick, then the row leaving), while this is
+// just a panel getting out of the way, and a slow close makes the app feel
+// like it is thinking.
+const DETAILS_CLOSE_MS = 220;
+
 // Self-contained SVG marks, so they belong at module scope alongside the other
 // icons. They were declared inside LittleFiresApp and referenced by Task, which
 // only breaks once Task is hoisted - and only on the expanded task, since that
@@ -667,6 +696,33 @@ function formatProjectSpan(item, parseLocalDate) {
   const end = item && item.endDate ? fmt(item.endDate) : null;
   if (start && end) return start === end ? start : start + ' – ' + end;
   return start || end || '';
+}
+
+// The element that actually scrolls around a card. On mobile that is
+// .tasks-container (capped at 68vh), not the window - scrolling the window
+// would move the page while the card stayed exactly where it was.
+function scrollPortFor(el) {
+  let node = el && el.parentElement;
+  while (node && node !== document.body) {
+    const style = window.getComputedStyle(node);
+    if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+// Should an expanded card be brought into view, given where it sits?
+//
+// Only when it isn't already comfortably in the scrollport: either its top is
+// above the top edge, or it runs past the bottom. A card that already fits is
+// left alone - scrolling something the user can already see reads as the app
+// moving on its own.
+const EXPAND_SCROLL_MARGIN = 12;
+function needsScrollIntoView(cardRect, portRect, margin = EXPAND_SCROLL_MARGIN) {
+  if (!cardRect || !portRect) return false;
+  if (cardRect.top < portRect.top + margin) return true;
+  if (cardRect.bottom > portRect.bottom) return true;
+  return false;
 }
 
 // ---- Calendar day grouping -------------------------------------------------
@@ -1103,6 +1159,48 @@ const Task = ({ task, listName, showMoveButtons }) => {
     }, 400);
   }, [collapseGuardRef]);
   const [projectDropdownOpen, setProjectDropdownOpen] = React.useState(false);
+  const [datePickerOpen, setDatePickerOpen] = React.useState(false);
+
+  // The details stay mounted for the length of the closing animation, so the
+  // panel can be seen sliding shut instead of vanishing between frames.
+  //
+  // Adjusted during render rather than in an effect, deliberately. An effect
+  // runs after the commit, and by then React has already removed the section
+  // from the DOM - setting the flag there would tear it out and put it back,
+  // which flashes, and puts back an EMPTY editor because the content-load
+  // guard has been reset by its own cleanup. Reacting to the change while
+  // rendering means the section is never removed in the first place.
+  const [detailsClosing, setDetailsClosing] = React.useState(false);
+  const prevExpandedRef = React.useRef(isExpanded);
+  if (prevExpandedRef.current !== isExpanded) {
+    prevExpandedRef.current = isExpanded;
+    // Re-expanding mid-close: drop the closing state so the panel is simply
+    // open again rather than finishing an animation nobody is waiting for.
+    setDetailsClosing(!isExpanded);
+  }
+
+  // Unmount once the animation has run. Keyed on the flag, not on isExpanded,
+  // so a re-expand cancels the pending unmount through the cleanup.
+  React.useEffect(() => {
+    if (!detailsClosing) return;
+    const timer = setTimeout(() => setDetailsClosing(false), DETAILS_CLOSE_MS);
+    return () => clearTimeout(timer);
+  }, [detailsClosing]);
+
+  // Whether the gesture in progress STARTED while a popup was open inside this
+  // task. Recorded at pointer-down, before any handler has had a chance to
+  // close anything, and read on the click that follows.
+  //
+  // This replaces relying on the shared collapseGuardRef for the job. That
+  // guard is a single app-wide flag consumed by whichever card click happens
+  // first, so it only works if exactly one click follows - and here the tap
+  // that dismisses a popup may be swallowed by an element that stops
+  // propagation, leaving the flag armed for the next, unrelated tap. Reading
+  // the state at the start of the gesture needs no such coordination.
+  const popupOpenAtGestureRef = React.useRef(false);
+  const noteGestureStart = React.useCallback(() => {
+    popupOpenAtGestureRef.current = projectDropdownOpen || datePickerOpen;
+  }, [projectDropdownOpen, datePickerOpen]);
 
   // A native select closed itself on an outside tap; a div has to be told.
   // Without this the list stays open until something else re-renders, and
@@ -1113,9 +1211,17 @@ const Task = ({ task, listName, showMoveButtons }) => {
       if (taskRef.current && taskRef.current.contains(e.target)) {
         // Inside the card: the dropdown's own handlers stopPropagation, so
         // reaching here means the tap was somewhere else in the card.
+        //
+        // The tap that dismisses this list must not also collapse the task.
+        // That is handled by popupOpenAtGestureRef, recorded on the card at
+        // pointer-down - not here - because a tap on something that stops
+        // propagation never reaches the card at all, and a flag armed here
+        // would then still be waiting when the next, unrelated tap arrived.
         setProjectDropdownOpen(false);
         return;
       }
+      // Outside the card entirely: that genuinely is a tap out of the task
+      // details, so closing the list and collapsing the task are both right.
       setProjectDropdownOpen(false);
     };
     document.addEventListener('mousedown', close);
@@ -2063,6 +2169,52 @@ const Task = ({ task, listName, showMoveButtons }) => {
     // rewritten externally while expanded.
   }, [isExpanded, listName, task.id, task.details]);
 
+  // Bring a freshly expanded task into view.
+  //
+  // The card can expand from anywhere in a 68vh scroller, and if it was near
+  // the bottom the details opened below the fold - the task appeared to vanish
+  // and had to be hunted for. Aligning the top of the card to the top of the
+  // scrollport puts the name and the start of the details on screen together,
+  // which is what someone who just tapped a task is looking for.
+  //
+  // Two frames, not one: the first commit adds the details section, and its
+  // height only exists after layout. Measuring on the same frame reads the
+  // collapsed height and scrolls to the wrong place.
+  //
+  // Touch only. On a desktop the list is a 600px pane on a page that rarely
+  // needs moving, and yanking it under a mouse the user is already aiming with
+  // is worse than leaving it be.
+  React.useEffect(() => {
+    if (!isExpanded || !IS_TOUCH_DEVICE) return;
+    const card = taskRef.current;
+    if (!card || typeof card.scrollIntoView !== 'function') return;
+
+    let inner = null;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        const port = scrollPortFor(card);
+        const portRect = port
+          ? port.getBoundingClientRect()
+          : { top: 0, bottom: window.innerHeight || 0 };
+        if (!needsScrollIntoView(card.getBoundingClientRect(), portRect)) return;
+        try {
+          card.scrollIntoView({
+            block: 'start',
+            behavior: settings.reduceMotion ? 'auto' : 'smooth'
+          });
+        } catch (err) {
+          // Older WebKit rejects the options object; the bare call still works.
+          card.scrollIntoView(true);
+        }
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(outer);
+      if (inner) cancelAnimationFrame(inner);
+    };
+  }, [isExpanded, settings.reduceMotion]);
+
   // Save the open editor the moment the app is hidden or torn down. Saves
   // otherwise happen on blur, cut, indent-end and collapse - but iOS does not
   // reliably blur the focused element when a home-screen app is backgrounded,
@@ -2144,8 +2296,20 @@ const Task = ({ task, listName, showMoveButtons }) => {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
+      // Capture phase, so this runs before the dismiss handlers that close a
+      // popup on the very same press. By the click that follows, the popup is
+      // already gone and there would be nothing left to tell.
+      onMouseDownCapture={noteGestureStart}
+      onTouchStartCapture={noteGestureStart}
       onClick={() => {
         if (task.isArchived) return;
+        // This gesture began with a dropdown or the date calendar open, so it
+        // was a dismissal, not a tap on the card. One gesture, one effect: the
+        // popup closed, and the task stays open until a later tap.
+        if (popupOpenAtGestureRef.current) {
+          popupOpenAtGestureRef.current = false;
+          return;
+        }
         // A completed swipe is followed by a click; ignore it so the card
         // doesn't expand as a side effect of being completed.
         if (swipe.current.justSwiped) return;
@@ -2345,7 +2509,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
         )}
       </div>
 
-      {isExpanded && (
+      {(isExpanded || detailsClosing) && (
+        <div className={`details-shell${detailsClosing ? ' closing' : ''}`}>
+          <div className="details-shell-inner">
         <div className="task-details-section">
           {/* First field in the expanded view: on a shared list, who owns
               this task is the thing you want to see before the notes. */}
@@ -3370,6 +3536,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
               <InlineDatePicker
                 value={task.dueDate || ''}
                 onChange={(v) => updateTaskDueDate(listName, task.id, v)}
+                onOpenChange={setDatePickerOpen}
               />
             </div>
 
@@ -3412,6 +3579,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
                         setProjectDropdownOpen(o => !o);
                       }}
                       onTouchStart={(e) => e.stopPropagation()}
+                      // The click as well as the mousedown. Stopping only the
+                      // mousedown left the click to bubble on to the card,
+                      // whose tap-to-collapse then shut the whole task on the
+                      // same press that opened this list. The date field's
+                      // wrapper already stops all three; this one stopped two.
+                      onClick={(e) => e.stopPropagation()}
                       className="project-selector"
                       style={{
                         display: 'flex', alignItems: 'center',
@@ -3422,13 +3595,34 @@ const Task = ({ task, listName, showMoveButtons }) => {
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         color: chosen ? 'var(--text)' : 'var(--text-muted)'
                       }}>
-                        {chosen ? chosen.name : 'No project'}
+                        {/* Blank when nothing is chosen, rather than "No project".
+                            The label beside it already says Project, so the words
+                            only restated the field's own name - and a task with no
+                            project is the common case, so this was the loudest
+                            thing on a row that had nothing to say. The dropdown
+                            still offers "No project" as the way to clear one.
+
+                            A non-breaking space, not an empty string: with the
+                            caret also hidden while empty, the row had no content
+                            at all and collapsed to the height of its padding,
+                            leaving a sliver next to the full-height Due Date
+                            field above it. Same fix, for the same reason, as the
+                            date trigger's own empty state. */}
+                        {chosen ? chosen.name : '\u00A0'}
                       </span>
-                      <span style={{
-                        transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                        transition: 'transform 0.2s ease',
-                        fontSize: '0.7rem', flexShrink: 0
-                      }}>▼</span>
+                      {/* The caret only appears once there is something to point
+                          at - a chosen project - or while the list is actually
+                          open. An empty field with an arrow beside it was two
+                          pieces of furniture saying nothing; the row now reads as
+                          blank until you engage with it. The whole field stays
+                          tappable either way, so nothing is harder to reach. */}
+                      {(chosen || projectDropdownOpen) && (
+                        <span style={{
+                          transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.2s ease',
+                          fontSize: '0.7rem', flexShrink: 0
+                        }}>▼</span>
+                      )}
                     </div>
 
                     {projectDropdownOpen && (
@@ -3546,6 +3740,8 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 Delete
               </button>
             )}
+          </div>
+        </div>
           </div>
         </div>
       )}
@@ -3783,12 +3979,12 @@ function LittleFiresApp() {
     defaultTimerDuration: '', // '' = open-ended "Timer"
     defaultReportTimeframe: 'thisWeek',
     completionDelay: true,    // pause so the checkmark is visible before a task moves
-    // Fresh-install defaults: Ember accent, Lora & Inter, light theme.
+    // Fresh-install defaults: light theme, Matcha accent, Lora & Inter.
     // Existing installs are held on the previous defaults by the pins in the
     // loader below - changing a default normally reaches everyone who never
     // overrode it, which is right for most keys but would silently restyle an
     // app somebody is already using.
-    accentId: 'ember',        // preset id, or 'custom'
+    accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
     fontChoice: 'serif',      // Lora & Inter
     // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
@@ -3858,6 +4054,11 @@ function LittleFiresApp() {
       // fresh-install look. Current code writes both keys unconditionally, so
       // a blob missing them predates that change and belongs to someone
       // already using the app: hold them on what they had.
+      // Matcha is both the pin and the current default, so this line changes
+      // nothing today. It stays because the two are separate facts: the pin
+      // says what an install that predates the key already looked like, and
+      // the default says what a new install gets. Deleting it would make the
+      // next change to the default silently restyle every old install.
       if (parsed.accentId === undefined) parsed.accentId = 'matcha';
       if (parsed.fontChoice === undefined) parsed.fontChoice = 'default';
       // Same reasoning as theme, and it matters more here: someone already
@@ -8455,7 +8656,12 @@ function LittleFiresApp() {
              the only input in the app doing that. */
           color: var(--text);
           font-family: var(--font-body);
-          font-size: 0.9rem;
+          /* Matched to InlineDatePicker's trigger, which sits directly above
+             this in the task details. Everything else already agreed -
+             background, 20px radius, 2px border, 10px vertical padding - so
+             the type size was the last thing making the two rows look like
+             different kinds of control. */
+          font-size: 0.95rem;
           cursor: pointer;
           transition: all 0.3s ease;
           outline: none;
@@ -8751,6 +8957,10 @@ function LittleFiresApp() {
         }
 
         .task {
+          /* Breathing room when an expanded card is scrolled to the top of the
+             list - scrollIntoView({block:'start'}) pins the edge exactly, which
+             looks like the card is jammed against the rim. */
+          scroll-margin-top: 12px;
           background: rgba(var(--surface-raised-rgb), 0.6);
           backdrop-filter: blur(10px);
           border: 2px solid rgba(var(--accent-rgb), 0.15);
@@ -9011,6 +9221,41 @@ function LittleFiresApp() {
           background: rgba(var(--partner-rgb), 0.2);
           color: var(--partner);
           border-color: rgba(var(--partner-rgb), 0.45);
+        }
+
+        /* Wrapper that lets the details animate shut.
+        
+           grid-template-rows 1fr -> 0fr is the one way to transition to and
+           from an automatic height without measuring it in JavaScript. The
+           inner element carries overflow: hidden and min-height: 0, which is
+           what actually clips the content as the row shrinks.
+        
+           Only the CLOSING state carries a transition. Opening stays instant:
+           the expand already has a scroll-into-view that measures the card two
+           frames later, and animating the height at the same time would mean
+           measuring a card still on its way to full size. */
+        .details-shell {
+          display: grid;
+          grid-template-rows: 1fr;
+        }
+
+        .details-shell-inner {
+          overflow: hidden;
+          min-height: 0;
+        }
+
+        .details-shell.closing {
+          grid-template-rows: 0fr;
+          opacity: 0;
+          transition: grid-template-rows 220ms ease, opacity 200ms ease;
+          /* Nothing in a panel on its way out should be tappable. */
+          pointer-events: none;
+        }
+
+        /* Browsers that can't interpolate grid-template-rows simply snap shut,
+           which is what happened before this existed. */
+        body.reduce-motion .details-shell.closing {
+          transition: none;
         }
 
         .task-details-section {
@@ -10822,6 +11067,10 @@ function LittleFiresApp() {
 
         .project-dot {
           color: #9333EA;
+        }
+
+        .goal-dot {
+          color: #0EA5E9;
         }
 
         .project-date-badge {
@@ -14551,21 +14800,42 @@ function LittleFiresApp() {
                             <span className="day-section-count">{goalItems.length}</span>
                           </h4>
                           {!isCalendarSectionCollapsed('goals') && (<>
-                          {goalItems.map((item, idx) => (
-                            <div key={`goal-${item.data.id}-${idx}`} className="calendar-item goal-item">
-                              <div className="item-header">
-                                <span className={`list-badge ${item.list}`}>{item.list}</span>
-                                {/* Which end of the goal this day is - the same
-                                    marking projects carry, since a goal can start
-                                    and finish on the same day. */}
-                                <span className="project-date-badge">
-                                  {item.dateType === 'start' && 'Start'}
-                                  {item.dateType === 'end' && 'End'}
-                                  {item.dateType === 'both' && 'Start & End'}
-                                </span>
+                          {/* Grouped by list exactly as the tasks and projects are,
+                              in the same Settings order, with only the lists that
+                              have a goal on this day getting a header. */}
+                          {orderedTaskLists
+                            .filter(listName => goalItems.some(g => g.list === listName))
+                            .map(listName => {
+                          const listGoals = goalItems.filter(g => g.list === listName);
+                          return (
+                            <div key={listName} className="day-list-group">
+                              <div
+                                className="list-section-header day-list-header day-section-toggle"
+                                onClick={() => toggleCalendarSection(`goal-list-${listName}`)}
+                              >
+                                <span>{listLabel(listName)}</span>
+                                <span className={`badge ${listName}`}>{listGoals.length}</span>
                               </div>
+                              {!isCalendarSectionCollapsed(`goal-list-${listName}`) &&
+                                listGoals.map((item, idx) => (
+                            <div key={`goal-${item.data.id}-${idx}`} className="calendar-item goal-item">
+                              {/* Name first, at task weight, with a bullet in the
+                                  colour this goal carries on the month grid. The
+                                  list pill is gone - the row sits under a list
+                                  heading that says the same thing. */}
                               <div className="item-text">
+                                <span className="item-dot goal-dot">●</span>
                                 {item.data.name}
+                              </div>
+                              {/* Dates as a subtitle under the name, same as the
+                                  project rows. Still says which end of the goal this
+                                  day is, because a goal can start and finish on the
+                                  same one. */}
+                              <div className="item-project">
+                                {item.dateType === 'start' && 'Starts '}
+                                {item.dateType === 'end' && 'Ends '}
+                                {item.dateType === 'both' && 'Starts & ends '}
+                                {formatProjectSpan(item.data, parseLocalDate)}
                               </div>
                               {item.data.description && (
                                 <div className="project-description-preview">
@@ -14574,6 +14844,9 @@ function LittleFiresApp() {
                               )}
                             </div>
                           ))}
+                            </div>
+                          );
+                          })}
                           </>)}
                         </div>
                       )}

@@ -2181,11 +2181,14 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // height only exists after layout. Measuring on the same frame reads the
   // collapsed height and scrolls to the wrong place.
   //
-  // Touch only. On a desktop the list is a 600px pane on a page that rarely
-  // needs moving, and yanking it under a mouse the user is already aiming with
-  // is worse than leaving it be.
+  // Both platforms. This was touch-only at first, on the theory that yanking a
+  // 600px pane under a mouse would be worse than leaving it be - but the pane
+  // is a scroller like any other, and a task expanded near its bottom edge
+  // runs off the end there for exactly the same reason it does on a phone.
+  // The "already comfortable" test below is what keeps it from moving anything
+  // the user can already see, and that test is device-independent.
   React.useEffect(() => {
-    if (!isExpanded || !IS_TOUCH_DEVICE) return;
+    if (!isExpanded) return;
     const card = taskRef.current;
     if (!card || typeof card.scrollIntoView !== 'function') return;
 

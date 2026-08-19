@@ -1182,6 +1182,111 @@ const SUGGESTION_PROMPT_RULES = [
   'One short sentence per suggestion, plus a one-line reason referring to what it came from.'
 ].join(' ');
 
+// ---- The real call ----------------------------------------------------------
+// Called straight from the browser, which the API allows when the request
+// carries the anthropic-dangerous-direct-browser-access header. The "dangerous"
+// in that name is about shipping YOUR key in client code, where anyone can read
+// it. This is the other pattern it exists for: the key belongs to the person
+// typing it, on their own device, and never leaves it except to Anthropic.
+const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_VERSION = '2023-06-01';
+// Verified current in August 2026. Model strings are exact and do get retired,
+// so this is a setting rather than a constant - a deprecated string fails the
+// whole feature, and the user can move on without waiting for a code change.
+const SUGGESTION_MODELS = [
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku', note: 'Fastest and cheapest' },
+  { id: 'claude-sonnet-5', label: 'Sonnet', note: 'Better suggestions' }
+];
+const SUGGESTION_TIMEOUT_MS = 30000;
+
+// Models wrap JSON in prose and fences no matter how firmly they are asked not
+// to. Rather than fail on that, take the first array in the response - and if
+// there is not one, fail cleanly so the caller can keep what it already had.
+function parseSuggestionJson(text) {
+  const raw = String(text == null ? '' : text);
+  const fenced = raw.replace(/```(?:json)?/gi, '');
+  const start = fenced.indexOf('[');
+  const end = fenced.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(fenced.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function buildSuggestionRequest(payload, count, model) {
+  return {
+    model,
+    max_tokens: 1000,
+    system: SUGGESTION_PROMPT_RULES +
+      ' Return ONLY a JSON array of at most ' + count + ' objects, no prose, no code fences. ' +
+      'Each object: {"text": string, "rationale": string, "anchor": {"type": "project"|"goal"|"pattern", "ref": string}}. ' +
+      'Return fewer than ' + count + ', or an empty array, rather than padding with anything generic.',
+    messages: [{
+      role: 'user',
+      content: 'Here is what I am working on. Suggest tasks for the list "' +
+        payload.lists[0].list + '".\n\n' + JSON.stringify(payload)
+    }]
+  };
+}
+
+// Resolves to { ok, items, error }. Never throws: a suggestion shelf failing is
+// not worth taking any other part of the app down for, and the caller keeps
+// whatever it was already showing.
+async function requestSuggestions({ apiKey, model, payload, count }) {
+  if (!apiKey) return { ok: false, error: 'No API key saved.' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUGGESTION_TIMEOUT_MS);
+  try {
+    const res = await fetch(ANTHROPIC_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildSuggestionRequest(payload, count, model)),
+      signal: controller.signal
+    });
+
+    if (!res.ok) {
+      // The API's own message is more useful than anything invented here -
+      // "credit balance too low" and "invalid x-api-key" are both actionable,
+      // and a generic "something went wrong" would hide them.
+      let detail = 'HTTP ' + res.status;
+      try {
+        const body = await res.json();
+        if (body && body.error && body.error.message) detail = body.error.message;
+      } catch (err) { /* keep the status */ }
+      return { ok: false, error: detail };
+    }
+
+    const data = await res.json();
+    const text = (data.content || [])
+      .filter(b => b && b.type === 'text')
+      .map(b => b.text)
+      .join('\n');
+    const items = parseSuggestionJson(text);
+    if (!items) return { ok: false, error: 'The response was not usable JSON.' };
+    return { ok: true, items };
+  } catch (err) {
+    if (err && err.name === 'AbortError') return { ok: false, error: 'Timed out.' };
+    // A network failure in a browser throws TypeError. Anything else thrown
+    // here is a bug in this code, and reporting it as "could not reach the
+    // API" would send someone to check their wifi over a programming error -
+    // which is exactly what happened while this was being written.
+    if (err instanceof TypeError) {
+      return { ok: false, error: 'Could not reach the API.' };
+    }
+    return { ok: false, error: 'Suggestion request failed: ' + (err && err.message ? err.message : 'unknown error') };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---- A stand-in generator ---------------------------------------------------
 // Deliberately local and deterministic. The whole browse / accept / dismiss /
 // refresh interaction can be used and tested on a real device before any key is
@@ -4744,6 +4849,10 @@ function LittleFiresApp() {
     // medical things - so they are excluded unless asked for, separately from
     // the feature itself. Someone who never opens this card sends titles only.
     aiIncludeDetails: false,
+    // Exact model strings are retired over time, and a stale one fails the
+    // whole feature - so this is a setting the user can change without a code
+    // release, not a constant.
+    aiModel: 'claude-haiku-4-5-20251001',
     // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
     // default for a fresh install - see the loader below, which keeps everyone
     // who was already using the app on what they had.
@@ -4803,6 +4912,9 @@ function LittleFiresApp() {
   // window.prompt is unavailable here for the same reason window.confirm is -
   // a sandboxed iframe blocks it - so editing happens inline.
   const [aiEditing, setAiEditing] = useState(null);
+  // Per-shelf, so one list refreshing or failing says nothing about the others.
+  const [aiBusy, setAiBusy] = useState({});
+  const [aiErrors, setAiErrors] = useState({});
 
   const [aiKeySaved, setAiKeySaved] = useState(() => readAiKey());
   // Free text, saved as it is typed via the same debounce the rest of the app
@@ -5634,7 +5746,8 @@ function LittleFiresApp() {
 
   // Fills one shelf. The generator is the only part that will change when this
   // talks to the API - what surrounds it is already the real thing.
-  const refreshShelf = (listName) => {
+  const refreshShelf = async (listName) => {
+    if (aiBusy[listName]) return;
     const payload = compactForSuggestions(
       { allLists, archivedTasks, projects, goals },
       {
@@ -5648,20 +5761,46 @@ function LittleFiresApp() {
     const shelfData = payload.lists[0];
     if (!shelfData) return;
 
-    const seed = ((aiShelves[listName] && aiShelves[listName].seed) || 0) + 1;
-    const candidates = validateSuggestions(
-      fakeSuggestionsFor(shelfData, seed),
-      TASK_LISTS
-    );
-    // Balance before capping: filtering first would let three task-anchored
-    // suggestions fill the shelf and leave the goals and projects unused.
+    setAiBusy(prev => ({ ...prev, [listName]: true }));
+    setAiErrors(prev => {
+      const next = { ...prev };
+      delete next[listName];
+      return next;
+    });
+
+    // Ask for more than fit on the shelf: the filters below drop duplicates,
+    // dismissals and anything vague, and a request for exactly three would
+    // leave the shelf short every time one is rejected.
+    const ASK_FOR = SUGGESTIONS_PER_SHELF * 2;
+    let raw;
+    let failure = null;
+    if (aiKeySaved) {
+      const result = await requestSuggestions({
+        apiKey: aiKeySaved,
+        model: settings.aiModel || SUGGESTION_MODELS[0].id,
+        payload,
+        count: ASK_FOR
+      });
+      if (result.ok) {
+        raw = result.items;
+      } else {
+        failure = result.error;
+        raw = [];
+      }
+    } else {
+      // No key: the local stand-in, which can only echo what the person wrote.
+      // Enough to use the feature, not enough to be the feature.
+      raw = fakeSuggestionsFor(shelfData, ((aiShelves[listName] || {}).seed || 0) + 1);
+    }
+
+    const candidates = validateSuggestions(raw, TASK_LISTS, ASK_FOR);
     const hasIntent =
       (shelfData.intent.projects.length + shelfData.intent.goals.length) > 0;
     const balanced = balanceByAnchor(
       filterSuggestions(candidates, {
         existingTexts: existingTextsFor(listName),
         rejected: aiRejected,
-        max: 20                       // wide here; the shelf cap is applied below
+        max: 20
       }),
       { hasIntent, max: SUGGESTIONS_PER_SHELF }
     );
@@ -5669,6 +5808,20 @@ function LittleFiresApp() {
       id: makeId(), text: c.text, rationale: c.rationale, anchor: c.anchor
     }));
 
+    setAiBusy(prev => {
+      const next = { ...prev };
+      delete next[listName];
+      return next;
+    });
+
+    if (failure) {
+      // Keep whatever was on the shelf. Emptying it because the network was
+      // down would lose suggestions the person had not decided about yet.
+      setAiErrors(prev => ({ ...prev, [listName]: failure }));
+      return;
+    }
+
+    const seed = ((aiShelves[listName] && aiShelves[listName].seed) || 0) + 1;
     setAiShelves(prev => {
       const next = {
         ...prev,
@@ -12984,6 +13137,13 @@ function LittleFiresApp() {
             }}>
               Proposals based on what you've been doing. Nothing here is a task until
               you add it.
+              {!aiKeySaved && (
+                <div style={{ marginTop: '8px' }}>
+                  No API key saved, so these are generated on this device and can only
+                  echo what you've already written. Add a key in Settings → AI Tasks for
+                  suggestions that propose something new.
+                </div>
+              )}
             </div>
 
             {suggestionLists().map(listName => {
@@ -12995,6 +13155,7 @@ function LittleFiresApp() {
                     <span>{listLabel(listName)}</span>
                     <button
                       onClick={() => refreshShelf(listName)}
+                      disabled={!!aiBusy[listName]}
                       title={`Refresh ${listLabel(listName)} suggestions`}
                       style={{
                         padding: '6px 12px', borderRadius: '8px',
@@ -13004,9 +13165,18 @@ function LittleFiresApp() {
                         fontSize: '0.72rem', cursor: 'pointer', letterSpacing: '0.04em'
                       }}
                     >
-                      Refresh
+                      {aiBusy[listName] ? 'Thinking…' : 'Refresh'}
                     </button>
                   </div>
+
+                  {aiErrors[listName] && (
+                    <div style={{
+                      color: '#d15a5a', fontSize: '0.8rem', fontFamily: 'var(--font-ui)',
+                      padding: '8px 2px', lineHeight: 1.4
+                    }}>
+                      {aiErrors[listName]}
+                    </div>
+                  )}
 
                   {items.length === 0 ? (
                     <div style={{
@@ -20887,6 +21057,39 @@ function LittleFiresApp() {
                         on={settings.aiIncludeDetails}
                         onChange={(v) => updateSetting('aiIncludeDetails', v)}
                       />
+                    </div>
+
+                    <div style={divider} />
+
+                    <div style={subheading}>Model</div>
+                    <div style={hint}>
+                      Haiku is cheap enough to refresh freely; Sonnet thinks harder about
+                      what to suggest. Either costs a fraction of a cent per refresh.
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                      {SUGGESTION_MODELS.map(m => {
+                        const on = (settings.aiModel || SUGGESTION_MODELS[0].id) === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => updateSetting('aiModel', m.id)}
+                            style={{
+                              padding: '8px 14px', borderRadius: '10px',
+                              border: '2px solid rgba(var(--accent-rgb), ' + (on ? '0.5' : '0.2') + ')',
+                              background: on
+                                ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                                : 'rgba(var(--surface-rgb), 0.8)',
+                              color: on ? '#fff' : 'var(--text)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.8rem', cursor: 'pointer'
+                            }}
+                          >
+                            {m.label}
+                            <span style={{ opacity: 0.75, fontSize: '0.72rem', marginLeft: '6px' }}>
+                              {m.note}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
 
                     <div style={divider} />

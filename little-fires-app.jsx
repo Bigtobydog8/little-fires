@@ -968,6 +968,8 @@ function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
     if (isAppHousekeeping(text)) return;
     // Commentary on what is already on the list, rather than something new.
     if (isMetaCommentary(text)) return;
+    // Names the subject, proposes no action.
+    if (isVagueScaffolding(text)) return;
     if (item.list && !allowedLists.includes(item.list)) return;
     // Every suggestion has to declare what it came from. This is what makes
     // the balance rule below enforceable rather than hoped for - and the
@@ -1104,6 +1106,35 @@ function isMetaCommentary(text) {
   return META_COMMENTARY.some((re) => re.test(t));
 }
 
+// A suggestion that names the subject but proposes no action is a placeholder.
+// "Do one thing towards Salesforce this week" tells you nothing you did not
+// already know; the work of deciding what that thing IS - the only part with
+// any value - has been handed straight back.
+//
+// This is the shape a model produces when it has no real idea, and the shape a
+// template produces always, because a template has no world knowledge. Either
+// way it does not belong on a shelf.
+const VAGUE_SCAFFOLDING = [
+  /\bdo (one|a|some)\s+(thing|things)\b/i,
+  /\b(something|anything)\s+(towards|toward|about|on)\b/i,
+  /\b(decide|work out|figure out|identify|determine)\s+(the\s+)?(first|next)\s+step\b/i,
+  /\b(work out|figure out)\s+what\b.*\bneeds?\b/i,
+  /\bline up the next (piece|bit|part)\b/i,
+  /\b(plan|map out|outline)\s+(the\s+)?next\s+(step|steps|piece)\b/i,
+  /\bspend (some )?time (on|with)\b/i,
+  // Anchored at the end on purpose. "Move the project forward" is scaffolding;
+  // "Move the sofa forward to reach the socket" is an afternoon's work. What
+  // separates them is that a real one says where or why.
+  /\b(move|push|carry|take)\s+[\w'"\- ]{1,30}?\s*forward(\s+(this|next)\s+\w+)?\s*[.!]?\s*$/i,
+  /\bmake\s+(a\s+)?start\b/i,
+  /\btake (the|a) next step\b/i
+];
+
+function isVagueScaffolding(text) {
+  const t = String(text == null ? '' : text);
+  return VAGUE_SCAFFOLDING.some((re) => re.test(t));
+}
+
 const APP_HOUSEKEEPING = [
   // "your <list name> list" as well as "your list" - a list can be named, and
   // "Review your work list" is the same filler as "review your list".
@@ -1133,6 +1164,10 @@ const SUGGESTION_PROMPT_RULES = [
   'have considered. Real actions in the world, not commentary on what they have written.',
   'Never ask them about their own tasks: no "what is stopping X", no "decide about Y",',
   'no prompts to revisit or reconsider something. They can already see their list.',
+  'Never hand the thinking back: no "do one thing towards X", no "decide the first step",',
+  'no "spend time on Y". Name the actual action - who to contact, what to draft,',
+  'what to book, what to compare, what to try. If you do not know enough about the',
+  'subject to name a real action, say nothing about it rather than filling the slot.',
   'Each list is given as "intent" (their goals and projects - what they are trying to do)',
   'and "evidence" (what they actually do, at what pace, and what recurs).',
   'Where intent exists, anchor most suggestions to a specific goal or project;',
@@ -1166,6 +1201,16 @@ function fakeSuggestionsFor(shelf, seed = 0) {
   // these read thin, the fix is the prompt, not more templates.
   const first = (text) => String(text || '').split(/[,.;:]/)[0].trim();
 
+  // Only the person's OWN words are proposed as actions. A challenge or an
+  // outcome someone typed is a real, specific thing; anything this function
+  // could compose around a project name is not, because it has no idea what a
+  // "WF Unified Approval Migration" actually involves.
+  //
+  // Every generated-phrase branch that used to live here - "do one thing
+  // towards X", "decide the first step for X", "line up the next piece of X",
+  // "work out what X needs next" - named the subject and proposed nothing,
+  // handing the only valuable part back to the reader. They are gone, and the
+  // filter above now rejects that shape wherever it comes from.
   projects.forEach((p) => {
     const anchor = { type: 'project', ref: p.name };
     if (p.challenge) {
@@ -1173,16 +1218,8 @@ function fakeSuggestionsFor(shelf, seed = 0) {
         rationale: 'The challenge you wrote on "' + p.name + '".' });
     }
     if (p.outcome) {
-      pool.push({ text: 'Work out what "' + first(p.outcome) + '" needs next', anchor,
-        rationale: 'The outcome you want from "' + p.name + '".' });
-    }
-    if (p.endDate) {
-      pool.push({ text: 'Line up the next piece of ' + p.name, anchor,
-        rationale: '"' + p.name + '" is meant to land by ' + p.endDate + '.' });
-    }
-    if (!p.openTaskCount) {
-      pool.push({ text: 'Decide the first step for ' + p.name, anchor,
-        rationale: 'That project has nothing open against it.' });
+      pool.push({ text: first(p.outcome), anchor,
+        rationale: 'The outcome you wrote for "' + p.name + '".' });
     }
   });
 
@@ -1192,8 +1229,10 @@ function fakeSuggestionsFor(shelf, seed = 0) {
       pool.push({ text: first(g.challenge), anchor,
         rationale: 'The hard part of "' + g.name + '", in your words.' });
     }
-    pool.push({ text: 'Do one thing towards ' + g.name + ' this week', anchor,
-      rationale: 'A goal with nothing scheduled against it.' });
+    if (g.outcome) {
+      pool.push({ text: first(g.outcome), anchor,
+        rationale: 'The outcome you wrote for "' + g.name + '".' });
+    }
   });
 
   // Something you finish on a rhythm and have not done for longer than that

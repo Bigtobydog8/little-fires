@@ -8,8 +8,31 @@ import React, { useState, useEffect } from 'react';
 // highlighted value (today) as it tears the sheet down. A React-rendered
 // calendar has no overlay to lose: worst case it simply closes, and it can
 // never write a date the user didn't tap.
-function InlineDatePicker({ value, onChange, style }) {
+function InlineDatePicker({ value, onChange, style, onOpenChange }) {
   const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef(null);
+
+  // The card above needs to know a popup is open inside it, so the tap that
+  // dismisses this calendar isn't also read as a tap on the card.
+  React.useEffect(() => {
+    if (onOpenChange) onOpenChange(open);
+  }, [open, onOpenChange]);
+
+  // There was no outside-tap close at all: the only ways out were the Close
+  // button and picking a date. Tapping anywhere else went straight through to
+  // the card, which collapsed the task and took the open calendar with it.
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('touchstart', onDown);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('touchstart', onDown);
+    };
+  }, [open]);
   const parse = (v) => {
     if (!v) return null;
     const [y, m, d] = String(v).split('-').map(Number);
@@ -76,7 +99,7 @@ function InlineDatePicker({ value, onChange, style }) {
   };
 
   return (
-    <span style={{
+    <span ref={rootRef} style={{
       position: 'relative',
       // inline-flex, not inline-block. The clear button is a sibling of the
       // trigger, and as inline content it wrapped onto a second line once the
@@ -294,6 +317,58 @@ function FlameIcon({ size = 13 }) {
 // synced list means one person's edits land on the other's task.
 // randomUUID needs a secure context, which localhost and any https host are;
 // the fallback covers plain-http origins where it isn't exposed.
+// Bullet list and Follow Up, so every details-toolbar button has an icon to
+// fall back on when the labels are hidden on a narrow screen.
+function BulletsIcon(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="3" cy="4" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="3" cy="8" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="3" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <path d="M6.5 4h7.5" />
+      <path d="M6.5 8h7.5" />
+      <path d="M6.5 12h7.5" />
+    </IconBase>
+  );
+}
+
+// A flag: the section marks something to come back to.
+function FollowUpIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M3.5 14.5V2" />
+      <path d="M3.5 2.75h8.5l-2 2.75 2 2.75H3.5z" />
+    </IconBase>
+  );
+}
+
+// Indent / outdent for the details toolbar. Lines plus an arrow, matching the
+// stroke weight of their neighbours. currentColor throughout, so they inherit
+// the toolbar button's text colour in both themes and when active.
+function IndentIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M2 3h12" />
+      <path d="M7 6.5h7" />
+      <path d="M7 9.5h7" />
+      <path d="M2 13h12" />
+      <path d="M2 6.5l2.5 1.75L2 10z" fill="currentColor" stroke="none" />
+    </IconBase>
+  );
+}
+
+function OutdentIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M2 3h12" />
+      <path d="M7 6.5h7" />
+      <path d="M7 9.5h7" />
+      <path d="M2 13h12" />
+      <path d="M4.5 6.5L2 8.25 4.5 10z" fill="currentColor" stroke="none" />
+    </IconBase>
+  );
+}
+
 function makeId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -449,6 +524,914 @@ function sanitizeRichText(html) {
   return doc.body.innerHTML;
 }
 
+// ---- AI credentials --------------------------------------------------------
+// The key lives in its own storage entry, NOT in the settings blob.
+//
+// That is not tidiness. buildBackup() puts `settings` into every exported
+// backup file, and the error boundary's raw dump reads the same key - so a key
+// stored there would be written into a JSON file the user is likely to email
+// to themselves or drop in cloud storage, and into a crash dump they might
+// paste into a bug report. Keeping it separate means "export a backup" can
+// never mean "export my API key".
+//
+// It is also never sent anywhere except Anthropic's own endpoint, and it is
+// deliberately not part of anything that will sync: a key belongs to a device
+// and a person, not to a household.
+const AI_KEY_STORAGE = 'little_fires_ai_key';
+
+function readAiKey() {
+  try {
+    return localStorage.getItem(AI_KEY_STORAGE) || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function writeAiKey(key) {
+  try {
+    const trimmed = (key || '').trim();
+    if (!trimmed) {
+      localStorage.removeItem(AI_KEY_STORAGE);
+      return false;
+    }
+    localStorage.setItem(AI_KEY_STORAGE, trimmed);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function clearAiKey() {
+  try { localStorage.removeItem(AI_KEY_STORAGE); } catch (err) {}
+}
+
+// Shown instead of the key itself once it is saved. The full value is never
+// rendered back into the field: it would sit in the DOM, in a screenshot, and
+// over the shoulder of anyone nearby, for no benefit - a key you cannot read
+// back is no harder to replace than one you can.
+function maskAiKey(key) {
+  const k = (key || '').trim();
+  if (!k) return '';
+  if (k.length <= 8) return '••••';
+  return k.slice(0, 7) + '…' + k.slice(-4);
+}
+
+// Anthropic keys start with sk-ant-. Advisory only: a wrong-looking key is
+// worth flagging, but refusing to store it would be guessing about a format
+// that is not ours to define.
+function looksLikeAnthropicKey(key) {
+  return /^sk-ant-/.test((key || '').trim());
+}
+
+// ---- Suggestion profile ----------------------------------------------------
+// A short free-text note about circumstances the app cannot infer: young kids,
+// no car, a bad knee, Thursdays gone. Everything else in the payload is
+// deduced from behaviour; this is the one thing that can only be stated.
+//
+// Free text rather than fields on purpose. A structured profile - occupation,
+// household, working hours - rots the moment life changes and nobody returns
+// to update it, and each field reads as an interrogation. The best material
+// already in the payload is the challenge and outcome someone typed into a
+// project, which is the same kind of writing.
+//
+// Stored beside the API key rather than in settings, and for the same reason:
+// settings go into every exported backup and into the crash dump, and this is
+// precisely where people write about their family and their health.
+const AI_PROFILE_STORAGE = 'little_fires_ai_profile';
+const AI_PROFILE_MAX = 400;
+
+function readAiProfile() {
+  try {
+    return localStorage.getItem(AI_PROFILE_STORAGE) || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function writeAiProfile(text) {
+  try {
+    const trimmed = String(text == null ? '' : text).trim().slice(0, AI_PROFILE_MAX);
+    if (!trimmed) {
+      localStorage.removeItem(AI_PROFILE_STORAGE);
+      return '';
+    }
+    localStorage.setItem(AI_PROFILE_STORAGE, trimmed);
+    return trimmed;
+  } catch (err) {
+    return '';
+  }
+}
+
+// ---- Suggestion payload ----------------------------------------------------
+// What the model is told, and nothing beyond it.
+//
+// A compacted summary rather than a dump of the store, for two reasons. Cost is
+// the obvious one. The other is quality: a model handed 800 raw task objects
+// produces vaguer suggestions than one handed a tight, structured picture of
+// what someone is actually working on.
+//
+// Projects and goals are included because they state INTENT. Tasks say what you
+// did; a project called "Kitchen renovation" running to March, or a goal with a
+// stated challenge and outcome, says what you are trying to do - which is the
+// difference between suggesting plausible chores and suggesting the next step
+// on something real.
+//
+// Three exclusions are promises made to the user in Settings, so they are
+// enforced here rather than left to the caller:
+//   - shared lists never leave the device (a suggestion there would become a
+//     task someone else sees)
+//   - the details field is never sent (rich text, and where the private
+//     specifics live)
+//   - notes are never sent
+const SUGGEST_MAX_TEXT = 120;
+// Cut hard on purpose. Completed titles used to dominate the payload by sheer
+// count, and volume is what actually decides where a model looks - a stated
+// weighting does not. The pattern summary now carries that signal, so only a
+// short recent sample is sent as raw examples.
+const SUGGEST_MAX_COMPLETED_PER_LIST = 12;
+const SUGGEST_MAX_OPEN_PER_LIST = 30;
+const SUGGEST_MAX_PROJECTS_PER_LIST = 10;
+const SUGGEST_MAX_GOALS_PER_LIST = 10;
+const SUGGEST_STALE_DAYS = 30;
+// Details are truncated harder than titles: they are prose, and the useful
+// part - what the next step is - is almost always near the top.
+const SUGGEST_MAX_DETAILS = 300;
+
+// Details are stored as sanitized HTML. Markup is never sent: it costs tokens,
+// says nothing a model needs, and would invite the model to reply in kind.
+//
+// Block boundaries become separators rather than being collapsed, so a
+// checklist reads as a list instead of a run-on sentence, and checkbox state is
+// spelled out - which sub-items are already done is exactly the signal that
+// makes a suggestion about the NEXT one worth having.
+function detailsToPlainText(html, doc) {
+  const source = String(html == null ? '' : html);
+  if (!source.trim()) return '';
+  const d = doc || (typeof document !== 'undefined' ? document : null);
+  if (!d) {
+    // No DOM (a non-browser caller): strip tags crudely rather than send markup.
+    return source.replace(/<[^>]*>/g, ' ');
+  }
+  const holder = d.createElement('div');
+  holder.innerHTML = source;
+  const parts = [];
+  const blocks = holder.querySelectorAll('div, li, p');
+  const walk = blocks.length ? Array.from(blocks) : [holder];
+  walk.forEach((el) => {
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    if (el.classList && el.classList.contains('checkbox-line')) {
+      const box = el.querySelector('input.task-checkbox');
+      const done = box && (box.checked || box.getAttribute('checked') !== null);
+      parts.push((done ? '[x] ' : '[ ] ') + text);
+    } else {
+      parts.push(text);
+    }
+  });
+  return parts.join(' · ');
+}
+
+// What someone actually gets done, derived locally from completed tasks.
+//
+// A list of 60 completed titles is the weakest possible form of this signal:
+// it is bulky, it says nothing about pace, and its sheer volume drags a model
+// towards tasks and away from the goals and projects that state intent. Two
+// numbers and a short recurrence list say more in a fraction of the space.
+function deriveCompletionPatterns(completed, now) {
+  const done = (completed || [])
+    .map(t => ({ text: t.text, at: Date.parse(t.completedAt || t.updatedAt || '') }))
+    .filter(t => t.text && isFinite(t.at));
+  if (!done.length) return null;
+
+  const EIGHT_WEEKS = 56 * 86400000;
+  const recent = done.filter(t => now - t.at <= EIGHT_WEEKS);
+  const weekend = recent.filter(t => {
+    const d = new Date(t.at).getDay();
+    return d === 0 || d === 6;
+  }).length;
+
+  // Anything finished more than once is a rhythm, not an event. The average gap
+  // is what makes "due again" answerable without asking the person.
+  const byText = {};
+  done.forEach(t => {
+    const key = normalizeSuggestionText(t.text);
+    if (!key) return;
+    (byText[key] = byText[key] || { text: t.text, times: [] }).times.push(t.at);
+  });
+
+  const recurring = Object.values(byText)
+    .filter(g => g.times.length >= 2)
+    .map(g => {
+      const times = g.times.slice().sort((a, b) => a - b);
+      let total = 0;
+      for (let i = 1; i < times.length; i++) total += times[i] - times[i - 1];
+      const avgGapDays = Math.round(total / (times.length - 1) / 86400000);
+      const lastDaysAgo = Math.floor((now - times[times.length - 1]) / 86400000);
+      return { text: trimText(g.text), times: times.length, avgGapDays, lastDaysAgo,
+               overdueBy: avgGapDays > 0 ? lastDaysAgo - avgGapDays : null };
+    })
+    .sort((a, b) => b.times - a.times)
+    .slice(0, 8);
+
+  return {
+    completedPerWeek: Math.round((recent.length / 8) * 10) / 10,
+    weekendShare: recent.length ? Math.round((weekend / recent.length) * 100) / 100 : null,
+    recurring
+  };
+}
+
+function trimText(value, max = SUGGEST_MAX_TEXT) {
+  const v = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  if (!v) return '';
+  return v.length > max ? v.slice(0, max - 1) + '…' : v;
+}
+
+function daysBetween(fromIso, now) {
+  const then = fromIso ? new Date(fromIso).getTime() : NaN;
+  if (!isFinite(then)) return null;
+  return Math.floor((now - then) / 86400000);
+}
+
+// `sources` is passed in rather than read from the app, so this stays a pure
+// function that can be exercised with fabricated stores.
+function compactForSuggestions(sources, options) {
+  const opts = options || {};
+  const now = opts.now || Date.now();
+  const lists = Array.isArray(opts.lists) ? opts.lists : [];
+  const isShared = typeof opts.isSharedList === 'function' ? opts.isSharedList : () => false;
+  // Off unless the caller passes it. A default that widens what leaves the
+  // device is the wrong default.
+  const includeDetails = opts.includeDetails === true;
+  const allLists = (sources && sources.allLists) || {};
+  const archived = (sources && sources.archivedTasks) || {};
+  const projects = (sources && sources.projects) || {};
+  const goals = (sources && sources.goals) || {};
+
+  const out = { generatedAt: new Date(now).toISOString() };
+  // Sent once for the whole request rather than repeated per list: it is the
+  // same for every shelf, and repeating it would be paying for it five times.
+  //
+  // Assigned BEFORE lists so it serialises before them. The same argument that
+  // put intent ahead of evidence inside each shelf applies to the request as a
+  // whole - and object key order follows assignment order, so this is not
+  // cosmetic.
+  const profile = trimText(opts.profile, AI_PROFILE_MAX);
+  if (profile) out.about = profile;
+  out.lists = [];
+
+  lists.forEach((listName) => {
+    if (isShared(listName)) return;   // promise: shared lists never leave
+
+    const live = Array.isArray(allLists[listName]) ? allLists[listName] : [];
+    const done = Array.isArray(archived[listName]) ? archived[listName] : [];
+
+    const openTasks = [];
+    const backlogTasks = [];
+    const completedTasks = [];
+    // Kept unreduced for the pattern pass, which needs real timestamps to work
+    // out cadence and day-of-week. Never sent - only what it derives is.
+    const rawCompleted = [];
+
+    // Only ever on a task that is still open. The details of something already
+    // finished are history, not a next step, and sending them would double the
+    // payload to say nothing.
+    const withDetails = (entry, task) => {
+      if (!includeDetails) return entry;
+      const plain = trimText(detailsToPlainText(task.details, opts.document), SUGGEST_MAX_DETAILS);
+      if (plain) entry.details = plain;
+      return entry;
+    };
+
+    // Archived tasks are completed history too - leaving them out would make a
+    // long-running list look inactive precisely because it has been tidied.
+    live.concat(done).forEach((task) => {
+      if (!task || !task.text) return;
+      const text = trimText(task.text);
+      if (!text) return;
+      if (task.completed) {
+        rawCompleted.push({ text, completedAt: task.completedAt || task.updatedAt });
+        completedTasks.push({
+          text,
+          completedDaysAgo: daysBetween(task.completedAt || task.updatedAt, now)
+        });
+      } else if (task.section === 'backlog') {
+        backlogTasks.push(withDetails({
+          text,
+          ageDays: daysBetween(task.createdAt, now),
+          priority: task.priority || null
+        }, task));
+      } else {
+        openTasks.push(withDetails({
+          text,
+          ageDays: daysBetween(task.createdAt, now),
+          priority: task.priority || null,
+          hasDueDate: !!task.dueDate
+        }, task));
+      }
+    });
+
+    completedTasks.sort((a, b) => (a.completedDaysAgo ?? 1e9) - (b.completedDaysAgo ?? 1e9));
+
+    const listProjects = (Array.isArray(projects[listName]) ? projects[listName] : [])
+      .slice(0, SUGGEST_MAX_PROJECTS_PER_LIST)
+      .map((p) => ({
+        name: trimText(p.name),
+        description: trimText(p.description),
+        // Stated intent, and the most useful two fields on the object.
+        challenge: trimText(p.challenge),
+        outcome: trimText(p.outcome),
+        startDate: p.startDate || null,
+        endDate: p.endDate || null,
+        openTaskCount: live.filter(t => t && t.projectId === p.id && !t.completed).length
+      }))
+      .filter((p) => p.name);
+
+    const listGoals = (Array.isArray(goals[listName]) ? goals[listName] : [])
+      .slice(0, SUGGEST_MAX_GOALS_PER_LIST)
+      .map((g) => ({
+        name: trimText(g.name),
+        description: trimText(g.description),
+        challenge: trimText(g.challenge),
+        outcome: trimText(g.outcome),
+        startDate: g.startDate || null,
+        endDate: g.endDate || null
+      }))
+      .filter((g) => g.name);
+
+    const staleBacklog = backlogTasks.filter(
+      (t) => t.ageDays != null && t.ageDays >= SUGGEST_STALE_DAYS
+    ).length;
+
+    // Two named halves, in this order, on purpose.
+    //
+    // What a model attends to is decided by position, labelling and volume -
+    // not by any weighting you write down. So intent comes first and is small
+    // and dense; evidence comes second and is capped and summarised. The names
+    // are part of the signal: one says what this person is trying to do, the
+    // other says what they actually do and at what pace.
+    out.lists.push({
+      list: listName,
+      intent: {
+        projects: listProjects,
+        goals: listGoals
+      },
+      evidence: {
+        open: openTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
+        backlog: backlogTasks.slice(0, SUGGEST_MAX_OPEN_PER_LIST),
+        recentlyCompleted: completedTasks.slice(0, SUGGEST_MAX_COMPLETED_PER_LIST),
+        patterns: deriveCompletionPatterns(rawCompleted, now),
+        signals: {
+          openCount: openTasks.length,
+          backlogCount: backlogTasks.length,
+          completedCount: completedTasks.length,
+          staleBacklogCount: staleBacklog,
+          completedLast30Days: completedTasks.filter(
+            (t) => t.completedDaysAgo != null && t.completedDaysAgo <= 30
+          ).length
+        }
+      }
+    });
+  });
+
+  return out;
+}
+
+// ---- Suggestions: storage and shelf logic -----------------------------------
+// Suggestions are NOT a list. They live in their own side table, exactly like
+// deletedTaskIds, and for the same reason: TASK_LISTS is walked in ~18 places -
+// archive, calendar, reports, search, project cleanup, export, the flame goals,
+// the 10-list cap - and every one of them treats membership as "these are real
+// tasks". A suggestions list would light up a weekly goal because a model
+// proposed something, and would mirror to a partner's device once sync exists.
+//
+// Nothing that renders, counts or exports has to learn to skip these.
+const AI_SUGGESTIONS_STORAGE = 'little_fires_ai_suggestions';
+const AI_REJECTED_STORAGE = 'little_fires_ai_rejected';
+const SUGGESTIONS_PER_SHELF = 3;
+// A dismissal is remembered for this long. Not forever: what was irrelevant in
+// March may be exactly right in September, and a permanent veto list only grows.
+const REJECTED_TTL_DAYS = 60;
+
+function readJsonStore(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function writeJsonStore(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// The identity of a suggestion for dedupe purposes. "Call the plumber." and
+// "call plumber" are the same idea and must not both appear, so comparison is
+// on normalised text rather than on the string as written.
+function normalizeSuggestionText(text) {
+  return String(text == null ? '' : text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pruneRejected(rejected, now, ttlDays = REJECTED_TTL_DAYS) {
+  const cutoff = now - ttlDays * 86400000;
+  const out = {};
+  Object.keys(rejected || {}).forEach((hash) => {
+    const at = Date.parse(rejected[hash]);
+    if (isFinite(at) && at >= cutoff) out[hash] = rejected[hash];
+  });
+  return out;
+}
+
+// Anything a model returns is treated as hostile input, not as data. It will
+// invent list names, return markup, and occasionally return an essay.
+function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  raw.forEach((item) => {
+    if (out.length >= max) return;
+    if (!item || typeof item !== 'object') return;
+    const text = trimText(item.text, 120);
+    if (!text) return;
+    if (/[<>]/.test(text)) return;                       // no markup, ever
+    // Filler about the app itself, whether it came from a template or a model.
+    if (isAppHousekeeping(text)) return;
+    // Commentary on what is already on the list, rather than something new.
+    if (isMetaCommentary(text)) return;
+    // Names the subject, proposes no action.
+    if (isVagueScaffolding(text)) return;
+    if (item.list && !allowedLists.includes(item.list)) return;
+    // Every suggestion has to declare what it came from. This is what makes
+    // the balance rule below enforceable rather than hoped for - and the
+    // anchor doubles as the rationale's subject, so a suggestion that cannot
+    // say where it came from is one that was invented from nothing.
+    const anchorType = item.anchor && item.anchor.type;
+    out.push({
+      text,
+      rationale: trimText(item.rationale, 140),
+      list: item.list || null,
+      anchor: {
+        type: ['project', 'goal', 'pattern', 'task'].includes(anchorType) ? anchorType : 'none',
+        ref: trimText(item.anchor && item.anchor.ref, 60)
+      }
+    });
+  });
+  return out;
+}
+
+// Goals and projects state intent; tasks are evidence of habit. When a list has
+// intent to work from, most of what is suggested should be anchored to it.
+//
+// A stated weighting in the prompt does not achieve this - a model reads 40
+// task rows and 2 projects and follows the volume. A count enforced here does,
+// and it fails visibly instead of drifting.
+const INTENT_ANCHORS = ['project', 'goal'];
+
+// Takes one suggestion from each distinct anchor in turn, keeping the original
+// order within each group. Three angles on one project become one angle on
+// three things.
+function interleaveByAnchor(items) {
+  const groups = [];
+  const index = {};
+  (items || []).forEach((item) => {
+    const key = (item.anchor && (item.anchor.ref || item.anchor.type)) || 'none';
+    if (index[key] == null) {
+      index[key] = groups.length;
+      groups.push([]);
+    }
+    groups[index[key]].push(item);
+  });
+  const out = [];
+  let round = 0;
+  let added = true;
+  while (added) {
+    added = false;
+    groups.forEach((g) => {
+      if (g[round]) {
+        out.push(g[round]);
+        added = true;
+      }
+    });
+    round++;
+  }
+  return out;
+}
+
+function balanceByAnchor(items, { hasIntent, max = SUGGESTIONS_PER_SHELF, minIntent = 2 } = {}) {
+  const list = items || [];
+  if (!hasIntent) return list.slice(0, max);
+  const intentCount = list.filter(i => i.anchor && INTENT_ANCHORS.includes(i.anchor.type)).length;
+  // Seats held for intent-anchored suggestions, but never more than exist -
+  // a list with one project should not end up with two empty slots.
+  const reserved = Math.min(intentCount, minIntent);
+  const othersAllowed = Math.max(0, max - reserved);
+  const out = [];
+  let othersUsed = 0;
+  // Round-robin across anchors before counting. Without it a single project
+  // with four angles fills the whole shelf and a goal sitting right beside it
+  // never appears - technically obeying the intent rule while ignoring half of
+  // what the rule was for.
+  interleaveByAnchor(list).forEach((item) => {
+    if (out.length >= max) return;
+    const isIntent = item.anchor && INTENT_ANCHORS.includes(item.anchor.type);
+    if (isIntent) {
+      out.push(item);
+    } else if (othersUsed < othersAllowed) {
+      out.push(item);
+      othersUsed++;
+    }
+  });
+  return out;
+}
+
+// Drops anything that already exists as a task, or that was dismissed inside
+// the TTL. Re-proposing what someone just swiped away is the fastest way to
+// make a feature like this feel broken.
+function filterSuggestions(candidates, { existingTexts = [], rejected = {}, max = SUGGESTIONS_PER_SHELF } = {}) {
+  const seen = new Set(existingTexts.map(normalizeSuggestionText).filter(Boolean));
+  const out = [];
+  (candidates || []).forEach((c) => {
+    if (out.length >= max) return;
+    const key = normalizeSuggestionText(c && c.text);
+    if (!key) return;
+    if (seen.has(key)) return;
+    if (rejected[key]) return;
+    seen.add(key);                                        // no duplicates within a batch
+    out.push(c);
+  });
+  return out;
+}
+
+// A suggestion has to be a thing you could go and DO. Not a thing you could do
+// to this app.
+//
+// "Review your work list", "set a due date on something", "clear one item" -
+// these are app housekeeping. They are the filler a model reaches for when it
+// has nothing real to say, they are what a template produces when it has no
+// world knowledge, and they are worthless: nobody needs a task manager to
+// suggest using the task manager.
+//
+// Matched narrowly, on references to the app's own machinery rather than on
+// verbs. "Review the contract with the lawyer" is a real task and must survive;
+// "review your backlog" is not.
+// A suggestion must ADD something. Commentary on what is already written down
+// adds nothing: the person can see their own list, and being asked why they
+// have not done something is a worse experience than being asked nothing.
+//
+// This catches the shapes that reflect rather than propose - questions about
+// progress, prompts to decide about an existing item, nudges to revisit. What
+// survives is a new action.
+const META_COMMENTARY = [
+  /^\s*(what|why|when|how)\b[^?]*\?\s*$/i,          // any question back at them
+  /\bwhat(?:'s| is| are)\s+(stopping|blocking|holding)\b/i,
+  /\b(why|what)\s+(haven'?t|hasn'?t|didn'?t)\b/i,
+  /\b(decide|make a decision)\s+(about|on)\b/i,
+  /\b(revisit|reconsider|think about|reflect on)\b/i,
+  /\bstill\s+(relevant|needed|worth)\b/i,
+  /\b(unblock|get moving on|make progress on)\b/i
+];
+
+function isMetaCommentary(text) {
+  const t = String(text == null ? '' : text);
+  return META_COMMENTARY.some((re) => re.test(t));
+}
+
+// A suggestion that names the subject but proposes no action is a placeholder.
+// "Do one thing towards Salesforce this week" tells you nothing you did not
+// already know; the work of deciding what that thing IS - the only part with
+// any value - has been handed straight back.
+//
+// This is the shape a model produces when it has no real idea, and the shape a
+// template produces always, because a template has no world knowledge. Either
+// way it does not belong on a shelf.
+const VAGUE_SCAFFOLDING = [
+  /\bdo (one|a|some)\s+(thing|things)\b/i,
+  /\b(something|anything)\s+(towards|toward|about|on)\b/i,
+  /\b(decide|work out|figure out|identify|determine)\s+(the\s+)?(first|next)\s+step\b/i,
+  /\b(work out|figure out)\s+what\b.*\bneeds?\b/i,
+  /\bline up the next (piece|bit|part)\b/i,
+  /\b(plan|map out|outline)\s+(the\s+)?next\s+(step|steps|piece)\b/i,
+  /\bspend (some )?time (on|with)\b/i,
+  // Anchored at the end on purpose. "Move the project forward" is scaffolding;
+  // "Move the sofa forward to reach the socket" is an afternoon's work. What
+  // separates them is that a real one says where or why.
+  /\b(move|push|carry|take)\s+[\w'"\- ]{1,30}?\s*forward(\s+(this|next)\s+\w+)?\s*[.!]?\s*$/i,
+  /\bmake\s+(a\s+)?start\b/i,
+  /\btake (the|a) next step\b/i
+];
+
+function isVagueScaffolding(text) {
+  const t = String(text == null ? '' : text);
+  return VAGUE_SCAFFOLDING.some((re) => re.test(t));
+}
+
+const APP_HOUSEKEEPING = [
+  // "your <list name> list" as well as "your list" - a list can be named, and
+  // "Review your work list" is the same filler as "review your list".
+  /\byour\s+(\w+\s+)?(task\s+)?(list|lists|tasks|backlog|app)\b/i,
+  /\b(review|check|tidy|clean\s*up|organi[sz]e|go\s+through)\s+(your|the)\s+(\w+\s+)?(task\s+)?(list|lists|tasks|backlog|app)\b/i,
+  /\b(set|add|update|assign)\s+(a\s+|the\s+)?(due\s*date|priority|reminder|deadline)\b/i,
+  /\b(clear|finish|complete|knock\s+out)\s+(one|a)\s+(thing|task|item)\b/i,
+  // Archiving is only housekeeping when it is THIS app's archive. "Archive the
+  // 2025 tax paperwork in the loft" is a real afternoon's work, so the match
+  // requires the app's own vocabulary right after it.
+  /\b(archive|declutter)\s+(your|the|old)\s+(task|tasks|list|lists|backlog|item|items)\b/i,
+  /\bbreak\s+(this|it)\s+down\b/i,
+  /\bin\s+the\s+app\b/i
+];
+
+function isAppHousekeeping(text) {
+  const t = String(text == null ? '' : text);
+  return APP_HOUSEKEEPING.some((re) => re.test(t));
+}
+
+// The instruction the model is given. Kept here beside the filter so the two
+// cannot drift: whatever the prompt forbids, the filter enforces, because a
+// model that is asked nicely will still produce filler when the data is thin.
+const SUGGESTION_PROMPT_RULES = [
+  'Suggest NET NEW actions - things not already on their lists - that add something',
+  'to their life or their work: a next step, an experience, an option they may not',
+  'have considered. Real actions in the world, not commentary on what they have written.',
+  'Never ask them about their own tasks: no "what is stopping X", no "decide about Y",',
+  'no prompts to revisit or reconsider something. They can already see their list.',
+  'Never hand the thinking back: no "do one thing towards X", no "decide the first step",',
+  'no "spend time on Y". Name the actual action - who to contact, what to draft,',
+  'what to book, what to compare, what to try. If you do not know enough about the',
+  'subject to name a real action, say nothing about it rather than filling the slot.',
+  'Each list is given as "intent" (their goals and projects - what they are trying to do)',
+  'and "evidence" (what they actually do, at what pace, and what recurs).',
+  'Where intent exists, anchor most suggestions to a specific goal or project;',
+  'use the evidence to judge what is realistic for them and what they have already handled.',
+  'Return an anchor on every suggestion saying which goal, project or pattern it came from.',
+  'If an "about" note is present, treat it as constraints on what to suggest -',
+  'let it rule things out and shape what fits, but do not make it the stated reason:',
+  'the reason should still point at the goal, project or pattern the suggestion came from.',
+  'Name the thing. "Email Dana about the quote" beats "follow up with someone".',
+  'Never suggest managing this app: no reviewing lists, setting due dates, tidying backlogs, or archiving.',
+  'If a list has too little to go on, return fewer suggestions rather than filler.',
+  'One short sentence per suggestion, plus a one-line reason referring to what it came from.'
+].join(' ');
+
+// ---- The real call ----------------------------------------------------------
+// Called straight from the browser, which the API allows when the request
+// carries the anthropic-dangerous-direct-browser-access header. The "dangerous"
+// in that name is about shipping YOUR key in client code, where anyone can read
+// it. This is the other pattern it exists for: the key belongs to the person
+// typing it, on their own device, and never leaves it except to Anthropic.
+const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_VERSION = '2023-06-01';
+// Verified current in August 2026. Model strings are exact and do get retired,
+// so this is a setting rather than a constant - a deprecated string fails the
+// whole feature, and the user can move on without waiting for a code change.
+const SUGGESTION_MODELS = [
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku', note: 'Fastest and cheapest' },
+  { id: 'claude-sonnet-5', label: 'Sonnet', note: 'Better suggestions' }
+];
+const SUGGESTION_TIMEOUT_MS = 30000;
+
+// Models wrap JSON in prose and fences no matter how firmly they are asked not
+// to. Rather than fail on that, take the first array in the response - and if
+// there is not one, fail cleanly so the caller can keep what it already had.
+function parseSuggestionJson(text) {
+  const raw = String(text == null ? '' : text);
+  const fenced = raw.replace(/```(?:json)?/gi, '');
+  const start = fenced.indexOf('[');
+  const end = fenced.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(fenced.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function buildSuggestionRequest(payload, count, model) {
+  return {
+    model,
+    max_tokens: 1000,
+    system: SUGGESTION_PROMPT_RULES +
+      ' Return ONLY a JSON array of at most ' + count + ' objects, no prose, no code fences. ' +
+      'Each object: {"text": string, "rationale": string, "anchor": {"type": "project"|"goal"|"pattern", "ref": string}}. ' +
+      'Return fewer than ' + count + ', or an empty array, rather than padding with anything generic.',
+    messages: [{
+      role: 'user',
+      content: 'Here is what I am working on. Suggest tasks for the list "' +
+        payload.lists[0].list + '".\n\n' + JSON.stringify(payload)
+    }]
+  };
+}
+
+// Resolves to { ok, items, error }. Never throws: a suggestion shelf failing is
+// not worth taking any other part of the app down for, and the caller keeps
+// whatever it was already showing.
+async function requestSuggestions({ apiKey, model, payload, count }) {
+  if (!apiKey) return { ok: false, error: 'No API key saved.' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUGGESTION_TIMEOUT_MS);
+  try {
+    const res = await fetch(ANTHROPIC_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(buildSuggestionRequest(payload, count, model)),
+      signal: controller.signal
+    });
+
+    if (!res.ok) {
+      // The API's own message is more useful than anything invented here -
+      // "credit balance too low" and "invalid x-api-key" are both actionable,
+      // and a generic "something went wrong" would hide them.
+      let detail = 'HTTP ' + res.status;
+      try {
+        const body = await res.json();
+        if (body && body.error && body.error.message) detail = body.error.message;
+      } catch (err) { /* keep the status */ }
+      return { ok: false, error: detail };
+    }
+
+    const data = await res.json();
+    const text = (data.content || [])
+      .filter(b => b && b.type === 'text')
+      .map(b => b.text)
+      .join('\n');
+    const items = parseSuggestionJson(text);
+    if (!items) return { ok: false, error: 'The response was not usable JSON.' };
+    return { ok: true, items };
+  } catch (err) {
+    if (err && err.name === 'AbortError') return { ok: false, error: 'Timed out.' };
+    // A network failure in a browser throws TypeError. Anything else thrown
+    // here is a bug in this code, and reporting it as "could not reach the
+    // API" would send someone to check their wifi over a programming error -
+    // which is exactly what happened while this was being written.
+    if (err instanceof TypeError) {
+      return { ok: false, error: 'Could not reach the API.' };
+    }
+    return { ok: false, error: 'Suggestion request failed: ' + (err && err.message ? err.message : 'unknown error') };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---- A stand-in generator ---------------------------------------------------
+// Deliberately local and deterministic. The whole browse / accept / dismiss /
+// refresh interaction can be used and tested on a real device before any key is
+// entered or a single token is spent, and swapping this for a real call is one
+// function - the surrounding logic never learns where suggestions came from.
+function fakeSuggestionsFor(shelf, seed = 0) {
+  const intent = (shelf && shelf.intent) || {};
+  const evidence = (shelf && shelf.evidence) || {};
+  const projects = intent.projects || [];
+  const goals = intent.goals || [];
+  const patterns = evidence.patterns;
+  const pool = [];
+
+  // Built from the person's own nouns, and every entry declares its anchor.
+  // A local template has no world knowledge, so it can name the right subject
+  // but not supply the insight - that is the gap the real model closes. If
+  // these read thin, the fix is the prompt, not more templates.
+  const first = (text) => String(text || '').split(/[,.;:]/)[0].trim();
+
+  // Only the person's OWN words are proposed as actions. A challenge or an
+  // outcome someone typed is a real, specific thing; anything this function
+  // could compose around a project name is not, because it has no idea what a
+  // "WF Unified Approval Migration" actually involves.
+  //
+  // Every generated-phrase branch that used to live here - "do one thing
+  // towards X", "decide the first step for X", "line up the next piece of X",
+  // "work out what X needs next" - named the subject and proposed nothing,
+  // handing the only valuable part back to the reader. They are gone, and the
+  // filter above now rejects that shape wherever it comes from.
+  projects.forEach((p) => {
+    const anchor = { type: 'project', ref: p.name };
+    if (p.challenge) {
+      pool.push({ text: first(p.challenge), anchor,
+        rationale: 'The challenge you wrote on "' + p.name + '".' });
+    }
+    if (p.outcome) {
+      pool.push({ text: first(p.outcome), anchor,
+        rationale: 'The outcome you wrote for "' + p.name + '".' });
+    }
+  });
+
+  goals.forEach((g) => {
+    const anchor = { type: 'goal', ref: g.name };
+    if (g.challenge) {
+      pool.push({ text: first(g.challenge), anchor,
+        rationale: 'The hard part of "' + g.name + '", in your words.' });
+    }
+    if (g.outcome) {
+      pool.push({ text: first(g.outcome), anchor,
+        rationale: 'The outcome you wrote for "' + g.name + '".' });
+    }
+  });
+
+  // Something you finish on a rhythm and have not done for longer than that
+  // rhythm is the most reliable suggestion available without world knowledge.
+  if (patterns && patterns.recurring) {
+    patterns.recurring.forEach((r) => {
+      if (r.overdueBy != null && r.overdueBy > 0) {
+        pool.push({
+          text: r.text,
+          anchor: { type: 'pattern', ref: r.text },
+          rationale: 'You do this about every ' + r.avgGapDays +
+            ' days; it has been ' + r.lastDaysAgo + '.'
+        });
+      }
+    });
+  }
+
+  // Two things used to be generated here and both were wrong.
+  //
+  // "What is stopping <task>?" was commentary, not a suggestion - the app
+  // asking about the person's own list rather than adding anything to it.
+  //
+  // Re-proposing a stale backlog item was worse: it is already written down,
+  // so at best it is a duplicate the dedupe pass removes, and at worst it is
+  // the app reading someone's own abandoned task back to them. Neither is a
+  // net new action, which is the whole point of a suggestion.
+  //
+  // What remains is anchored to intent - projects and goals - plus the one
+  // pattern that is genuinely new information: a rhythm the person keeps but
+  // has not written down this time.
+
+  // No generic fallback: a list with nothing to go on gets nothing, which is
+  // the honest answer and the same rule the prompt gives the model.
+  if (!pool.length) return [];
+  const offset = seed % pool.length;
+  return pool.slice(offset).concat(pool.slice(0, offset));
+}
+
+// ---- Editor crash journal --------------------------------------------------
+// The debounced-write flush on pagehide can only persist state that has
+// already been captured into React. Content typed into the details editor
+// since the last blur exists only in the DOM - and a save dispatched during
+// pagehide cannot reach localStorage through the normal path, because the
+// state update and its debounced write never run if iOS kills the suspended
+// PWA (or an auth redirect navigates away). So a hide-time save is also
+// journalled here, synchronously, and applied on the next load only if it is
+// strictly newer than what the stored task already carries.
+//
+// The draft holds the SANITIZED form (what saveDetails computed), so applying
+// it is equivalent to the save that would have landed.
+const EDITOR_DRAFT_KEY = 'little_fires_editor_draft';
+
+function writeEditorDraft(listName, taskId, details) {
+  try {
+    localStorage.setItem(EDITOR_DRAFT_KEY, JSON.stringify({
+      listName, taskId, details, savedAt: new Date().toISOString()
+    }));
+  } catch (err) {
+    // Storage full or unavailable. The normal save path was still dispatched;
+    // only the crash journal is lost, which is the pre-journal behaviour.
+  }
+}
+
+function clearEditorDraft() {
+  try { localStorage.removeItem(EDITOR_DRAFT_KEY); } catch (err) {}
+}
+
+// Read-only: called from a useState initializer, which StrictMode invokes
+// twice in development - so this must not consume the draft. The mount effect
+// next to the allLists state is what clears it.
+function applyEditorDraft(lists) {
+  try {
+    const raw = localStorage.getItem(EDITOR_DRAFT_KEY);
+    if (!raw) return lists;
+    const draft = JSON.parse(raw);
+    if (!draft || typeof draft.details !== 'string') return lists;
+    const list = lists && lists[draft.listName];
+    if (!Array.isArray(list)) return lists;
+    const idx = list.findIndex(t => t && t.id === draft.taskId);
+    if (idx === -1) return lists;
+    const task = list[idx];
+    // Strictly newer only. If the app survived the hide, the normal save (or
+    // a later edit) stamped updatedAt at or after savedAt, and the stored
+    // value wins - a stale draft must never overwrite newer content.
+    if (task.updatedAt && draft.savedAt && draft.savedAt <= task.updatedAt) return lists;
+    if ((task.details || '') === draft.details) return lists;
+    const nextList = [...list];
+    nextList[idx] = { ...task, details: draft.details, updatedAt: draft.savedAt || new Date().toISOString() };
+    return { ...lists, [draft.listName]: nextList };
+  } catch (err) {
+    return lists;
+  }
+}
+
 // Battery saver defaults on for touch devices. Phones and tablets run on a
 // battery and pay the real cost of backdrop blur and a full-screen gradient
 // layer; a desktop plugged into the wall does not. Deliberately tests the
@@ -536,10 +1519,233 @@ const COMPLETE_HOLD_MS = 900;   // tick lit, nothing moving yet
 const COMPLETE_ANIM_MS = 400;   // fade and collapse, run together
 const COMPLETE_TOTAL_MS = COMPLETE_HOLD_MS + COMPLETE_ANIM_MS + 50;
 
+// Moving a task between To Do and Backlog reuses the same fade-and-collapse,
+// so rows below slide up into the gap instead of jumping - but with no hold.
+// The 900ms above buys time to SEE the tick light up; a section move has no
+// such moment, and a card that sits motionless for most of a second after a
+// button press reads as the app having hung rather than as a flourish.
+const MOVE_HOLD_MS = 0;
+
+// How long the details take to slide shut. Shorter than the task exit above:
+// that one has a story to tell (the tick, then the row leaving), while this is
+// just a panel getting out of the way, and a slow close makes the app feel
+// like it is thinking.
+const DETAILS_CLOSE_MS = 220;
+
 // Self-contained SVG marks, so they belong at module scope alongside the other
 // icons. They were declared inside LittleFiresApp and referenced by Task, which
 // only breaks once Task is hoisted - and only on the expanded task, since that
 // is the one place they render.
+// Start and end of a project or goal as one short line. Both fields are
+// date-only strings, so they go through parseLocalDate - new Date() would read
+// them as UTC and show the day before for anyone behind it.
+function formatProjectSpan(item, parseLocalDate) {
+  const fmt = (value) => {
+    const d = parseLocalDate(value);
+    return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null;
+  };
+  const start = item && item.startDate ? fmt(item.startDate) : null;
+  const end = item && item.endDate ? fmt(item.endDate) : null;
+  if (start && end) return start === end ? start : start + ' – ' + end;
+  return start || end || '';
+}
+
+// The element that actually scrolls around a card. On mobile that is
+// .tasks-container (capped at 68vh), not the window - scrolling the window
+// would move the page while the card stayed exactly where it was.
+function scrollPortFor(el) {
+  let node = el && el.parentElement;
+  while (node && node !== document.body) {
+    const style = window.getComputedStyle(node);
+    if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+// Reading and writing the scroll position of whatever is actually scrolling -
+// an element on mobile, the window on a page that scrolls itself.
+function readScrollTop(port) {
+  if (port) return port.scrollTop;
+  return window.scrollY || window.pageYOffset || 0;
+}
+
+function writeScrollTop(port, top, smooth) {
+  const target = { top: Math.max(0, top), behavior: smooth ? 'smooth' : 'auto' };
+  try {
+    if (port) port.scrollTo(target); else window.scrollTo(target);
+  } catch (err) {
+    // Older WebKit rejects the options object.
+    if (port) port.scrollTop = Math.max(0, top);
+    else window.scrollTo(0, Math.max(0, top));
+  }
+}
+
+// Expanding a task scrolls it into view; collapsing it should put the page back
+// where it was, so opening something at the bottom of a long list does not
+// leave you somewhere you never chose to be.
+//
+// Not unconditionally, though. If the person scrolled somewhere else while the
+// task was open - reading further down, going back up to check something - then
+// yanking them to a position from before is the app overruling a deliberate
+// action. So the return only happens if they are still where the expand scroll
+// put them.
+const SCROLL_RESTORE_TOLERANCE = 48;
+
+function shouldRestoreScroll(info, currentTop, tolerance = SCROLL_RESTORE_TOLERANCE) {
+  if (!info) return false;
+  // Nothing moved on expand, so there is nothing to undo.
+  if (info.from == null) return false;
+  // The expand scroll had not settled yet, so the person cannot have chosen a
+  // position of their own - restoring is safe.
+  if (info.landed == null) return true;
+  return Math.abs(currentTop - info.landed) <= tolerance;
+}
+
+// Should an expanded card be brought into view, given where it sits?
+//
+// Only when it isn't already comfortably in the scrollport: either its top is
+// above the top edge, or it runs past the bottom. A card that already fits is
+// left alone - scrolling something the user can already see reads as the app
+// moving on its own.
+const EXPAND_SCROLL_MARGIN = 12;
+function needsScrollIntoView(cardRect, portRect, margin = EXPAND_SCROLL_MARGIN) {
+  if (!cardRect || !portRect) return false;
+  if (cardRect.top < portRect.top + margin) return true;
+  if (cardRect.bottom > portRect.bottom) return true;
+  return false;
+}
+
+// ---- Calendar day grouping -------------------------------------------------
+// The same three buckets the task list and the project detail already use, in
+// the same order.
+//
+// One deliberate difference: To Do is "not completed and not backlog" rather
+// than section === 'todo'. `section` is only set at creation and has never
+// been backfilled, so a task old enough to predate the field has no section at
+// all - and an equality test would put it in no bucket, silently dropping it
+// from the day. Defining the default bucket by exclusion means every task
+// lands somewhere.
+const CALENDAR_STATUS_GROUPS = [
+  { key: 'todo', label: 'To Do', match: (t) => !t.completed && t.section !== 'backlog' },
+  { key: 'backlog', label: 'Backlog', match: (t) => !t.completed && t.section === 'backlog' },
+  { key: 'complete', label: 'Complete', match: (t) => !!t.completed }
+];
+
+// Empty buckets are dropped so a day with only completed tasks doesn't render
+// two empty headings above them.
+function groupTasksByStatus(items, getTask) {
+  return CALENDAR_STATUS_GROUPS
+    .map(group => ({
+      key: group.key,
+      label: group.label,
+      items: (items || []).filter(item => group.match(getTask(item) || {}))
+    }))
+    .filter(group => group.items.length > 0);
+}
+
+// ---- Indent helpers --------------------------------------------------------
+// Indentation is represented two different ways, and both already existed
+// before the toolbar buttons did - the drag gesture and the Tab key use this
+// same split, so the buttons must too or the two would disagree about what an
+// indented line is.
+//
+//   bullets      - structural nesting (<ul> inside <li>). A bullet's depth has
+//                  to be real nesting or the markers all render at one level.
+//   everything   - marginLeft in fixed steps, on the line element itself
+//   else           (.checkbox-line, or a plain block).
+//
+// execCommand('indent') is used ONLY for bullets. On a non-list block some
+// browsers implement it by wrapping the line in <blockquote>, which the
+// sanitizer unwraps on save - the indent would appear to work and then vanish
+// when the task was reopened.
+const EDITOR_INDENT_STEP = 20;
+
+// The block the caret sits in, and how its indent is expressed.
+function indentTargetAt(area, node) {
+  if (!area || !node) return null;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  if (!el || !area.contains(el)) return null;
+  const li = el.closest ? el.closest('li') : null;
+  if (li && area.contains(li)) return { kind: 'bullet', line: li };
+  let line = el;
+  while (line && line.parentElement !== area && line !== area) line = line.parentElement;
+  if (!line || line === area) return null;
+  return { kind: 'block', line };
+}
+
+function blockIndent(line) {
+  return parseInt((line && line.style && line.style.marginLeft) || '0') || 0;
+}
+
+// A bullet is outdentable when it sits inside a nested list, i.e. its list has
+// a list ancestor still inside the editor.
+function bulletIsNested(area, li) {
+  const list = li && li.parentElement;
+  if (!list) return false;
+  const parent = list.parentElement;
+  return !!(parent && area.contains(parent) && parent.closest &&
+    parent.closest('ul, ol') && parent.closest('ul, ol') !== list);
+}
+
+// Text typed into an empty editor has no wrapping block - browsers leave it as
+// bare text nodes until the first Enter. That is the FIRST line of most tasks,
+// and indentTargetAt walks up to a direct child of the editor, so it found
+// nothing there and the line simply could not be indented. Wrapping the run
+// around the caret makes it an ordinary line. Mirrors the Box button, which
+// had to solve exactly this for the same reason.
+function wrapBareLineAt(area, node) {
+  if (!area || !node) return null;
+  let n = node;
+  if (n === area) n = area.childNodes[0] || null;
+  while (n && n.parentElement !== area) n = n.parentElement;
+  if (!n) return null;
+  const isBoundary = (x) => !x || (x.nodeType === Node.ELEMENT_NODE &&
+    ['BR', 'DIV', 'P', 'UL', 'OL'].includes(x.tagName));
+  if (isBoundary(n)) return null;
+  let first = n, last = n;
+  while (first.previousSibling && !isBoundary(first.previousSibling)) first = first.previousSibling;
+  while (last.nextSibling && !isBoundary(last.nextSibling)) last = last.nextSibling;
+  const wrapper = document.createElement('div');
+  area.insertBefore(wrapper, first);
+  let cur = first;
+  while (cur) {
+    const next = (cur === last) ? null : cur.nextSibling;
+    wrapper.appendChild(cur);
+    cur = next;
+  }
+  return wrapper;
+}
+
+// What indent/outdent should act on, wrapping a bare line first if that is
+// what the caret is sitting in. Shared by the toolbar buttons and the Tab key
+// so the two can never disagree about what a line is.
+function resolveIndentTarget(area, node) {
+  const found = indentTargetAt(area, node);
+  if (found) return found;
+  const wrapped = wrapBareLineAt(area, node);
+  return wrapped ? { kind: 'block', line: wrapped } : null;
+}
+
+// Can the line at the caret be outdented right now?
+function canOutdentAt(area, node) {
+  const target = indentTargetAt(area, node);
+  if (!target) return false;
+  return target.kind === 'bullet'
+    ? bulletIsNested(area, target.line)
+    : blockIndent(target.line) > 0;
+}
+
+// Does the editor contain any indented content at all? The outdent button
+// appears for either reason - the caret sitting on an indented line, or the
+// document simply having indented content somewhere.
+function hasAnyIndent(area) {
+  if (!area) return false;
+  const blocks = area.querySelectorAll('[style*="margin-left"]');
+  for (const el of blocks) if (blockIndent(el) > 0) return true;
+  return !!area.querySelector('ul ul, ul ol, ol ul, ol ol, li ul, li ol');
+}
+
 const UnlitFlame = () => (
   <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
     viewBox="0 0 1280.000000 1280.000000"
@@ -790,7 +1996,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
   const clickTimeoutRef = React.useRef(null);
   // Holds the task in place briefly after checking it, so the checkmark is
   // visible before the task leaves the list.
-  const [isCompleting, setIsCompleting] = React.useState(false);
+  const [isExiting, setIsExiting] = React.useState(false);
+  // Whether the exit in progress should show the box ticked. Completing lights
+  // the tick and holds so it can be seen; a move to Backlog uses the identical
+  // fade and collapse but must NOT tick the box, or the card reads as having
+  // been completed on its way out.
+  const [exitTicksBox, setExitTicksBox] = React.useState(false);
   // Set when completion came from a swipe. The card then leaves by sliding
   // fully off to the right, uncovering the green panel, instead of shrinking
   // in place - two different exits fighting each other was what made it look
@@ -803,7 +2014,88 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // the button was pressed would go stale immediately and show "engaged"
   // when nothing is.
   const [formatOn, setFormatOn] = React.useState(false);
+  // Whether the outdent button is showing. Driven by the editor's content and
+  // the caret, not by a click, so it survives a collapse and re-expand: a task
+  // saved with indented lines shows the button the moment it is reopened.
+  const [showOutdent, setShowOutdent] = React.useState(false);
+
+  // Recomputed on anything that can move the caret or change the content.
+  // Passing the same boolean back is free - React bails out of the re-render
+  // when the value is unchanged, which is the common case on every keystroke.
+  const refreshOutdentVisibility = React.useCallback((area) => {
+    if (!area) { setShowOutdent(false); return; }
+    let atCaret = false;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      const node = sel.getRangeAt(0).startContainer;
+      if (area.contains(node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement)) {
+        atCaret = canOutdentAt(area, node);
+      }
+    }
+    const next = atCaret || hasAnyIndent(area);
+    setShowOutdent(next);
+    return next;
+  }, []);
+
+  // Suppresses the one synthetic click that follows a press whose target this
+  // component removed. Self-clearing, so a press that turns out not to produce
+  // that click can never swallow a later, genuine tap on the card.
+  const guardTimerRef = React.useRef(null);
+  const armCollapseGuard = React.useCallback(() => {
+    collapseGuardRef.current = true;
+    if (guardTimerRef.current) clearTimeout(guardTimerRef.current);
+    guardTimerRef.current = setTimeout(() => {
+      collapseGuardRef.current = false;
+      guardTimerRef.current = null;
+    }, 400);
+  }, [collapseGuardRef]);
   const [projectDropdownOpen, setProjectDropdownOpen] = React.useState(false);
+  const [datePickerOpen, setDatePickerOpen] = React.useState(false);
+
+  // The details stay mounted for the length of the closing animation, so the
+  // panel can be seen sliding shut instead of vanishing between frames.
+  //
+  // Adjusted during render rather than in an effect, deliberately. An effect
+  // runs after the commit, and by then React has already removed the section
+  // from the DOM - setting the flag there would tear it out and put it back,
+  // which flashes, and puts back an EMPTY editor because the content-load
+  // guard has been reset by its own cleanup. Reacting to the change while
+  // rendering means the section is never removed in the first place.
+  const [detailsClosing, setDetailsClosing] = React.useState(false);
+  const prevExpandedRef = React.useRef(isExpanded);
+  if (prevExpandedRef.current !== isExpanded) {
+    prevExpandedRef.current = isExpanded;
+    // Re-expanding mid-close: drop the closing state so the panel is simply
+    // open again rather than finishing an animation nobody is waiting for.
+    setDetailsClosing(!isExpanded);
+  }
+
+  // Unmount once the animation has run. Keyed on the flag, not on isExpanded,
+  // so a re-expand cancels the pending unmount through the cleanup.
+  React.useEffect(() => {
+    if (!detailsClosing) return;
+    const timer = setTimeout(() => setDetailsClosing(false), DETAILS_CLOSE_MS);
+    return () => clearTimeout(timer);
+  }, [detailsClosing]);
+
+  // Whether the gesture in progress STARTED while a popup was open inside this
+  // task. Recorded at pointer-down, before any handler has had a chance to
+  // close anything, and read on the click that follows.
+  //
+  // This replaces relying on the shared collapseGuardRef for the job. That
+  // guard is a single app-wide flag consumed by whichever card click happens
+  // first, so it only works if exactly one click follows - and here the tap
+  // that dismisses a popup may be swallowed by an element that stops
+  // propagation, leaving the flag armed for the next, unrelated tap. Reading
+  // the state at the start of the gesture needs no such coordination.
+  // Where the list was before this task was expanded, so collapsing can undo
+  // the scroll that expanding caused.
+  const scrollRestoreRef = React.useRef(null);
+
+  const popupOpenAtGestureRef = React.useRef(false);
+  const noteGestureStart = React.useCallback(() => {
+    popupOpenAtGestureRef.current = projectDropdownOpen || datePickerOpen;
+  }, [projectDropdownOpen, datePickerOpen]);
 
   // A native select closed itself on an outside tap; a div has to be told.
   // Without this the list stays open until something else re-renders, and
@@ -814,9 +2106,17 @@ const Task = ({ task, listName, showMoveButtons }) => {
       if (taskRef.current && taskRef.current.contains(e.target)) {
         // Inside the card: the dropdown's own handlers stopPropagation, so
         // reaching here means the tap was somewhere else in the card.
+        //
+        // The tap that dismisses this list must not also collapse the task.
+        // That is handled by popupOpenAtGestureRef, recorded on the card at
+        // pointer-down - not here - because a tap on something that stops
+        // propagation never reaches the card at all, and a flag armed here
+        // would then still be waiting when the next, unrelated tap arrived.
         setProjectDropdownOpen(false);
         return;
       }
+      // Outside the card entirely: that genuinely is a tap out of the task
+      // details, so closing the list and collapsing the task are both right.
       setProjectDropdownOpen(false);
     };
     document.addEventListener('mousedown', close);
@@ -955,25 +2255,57 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // collapses its own height so everything below slides up into the gap
   // rather than jumping. Un-completing is immediate - there's nothing to
   // celebrate and no reason to make it wait.
+  // Plays the exit - fade, drift, then collapse the row's own height - and
+  // commits the change at the end of it. Shared so that completing a task and
+  // moving one to Backlog animate identically rather than being two separate
+  // ideas of a task leaving its place.
+  const runExit = (commit, holdMs, { ticksBox = false } = {}) => {
+    setExitTicksBox(ticksBox);
+    // Measured before anything changes, because once the card starts fading
+    // its height is no longer the height the collapse needs to animate from.
+    if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
+    setIsExiting(true);
+    collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), holdMs);
+    completeTimeoutRef.current = setTimeout(() => {
+      commit();
+      // Cleared explicitly rather than left to a remount. Completing a task
+      // moves it to another section, so the card was rebuilt and its state
+      // reset for free - but that is a property of where the card happens to
+      // be rendered, not something this code should depend on. Any view that
+      // keeps the same element across the change would otherwise leave a card
+      // stranded at zero height and zero opacity.
+      setIsExiting(false);
+      setExitTicksBox(false);
+      setCollapsing(false);
+      setMeasuredHeight(null);
+    }, holdMs + COMPLETE_ANIM_MS + 50);
+  };
+
   const requestComplete = () => {
     if (task.isArchived) return;
     if (task.completed) {
       toggleTask(listName, task.id);
       return;
     }
-    if (isCompleting) return; // already on its way out
+    if (isExiting) return; // already on its way out
     if (!settings.completionDelay) {
       toggleTask(listName, task.id);
       return;
     }
-    // Measured before anything changes, because once the card starts fading
-    // its height is no longer the height the collapse needs to animate from.
-    if (taskRef.current) setMeasuredHeight(taskRef.current.offsetHeight);
-    setIsCompleting(true);
-    collapseTimeoutRef.current = setTimeout(() => setCollapsing(true), COMPLETE_HOLD_MS);
-    completeTimeoutRef.current = setTimeout(() => {
-      toggleTask(listName, task.id);
-    }, COMPLETE_TOTAL_MS);
+    runExit(() => toggleTask(listName, task.id), COMPLETE_HOLD_MS, { ticksBox: true });
+  };
+
+  // To Do <-> Backlog. Same exit, no hold - see MOVE_HOLD_MS. Honours the same
+  // App Behavior setting: someone who turned the pause off wants tasks to move
+  // the instant they say so, whichever button said it.
+  const requestSectionMove = (newSection) => {
+    if (task.isArchived) return;
+    if (isExiting) return;
+    if (!settings.completionDelay) {
+      moveTaskToSection(listName, task.id, newSection);
+      return;
+    }
+    runExit(() => moveTaskToSection(listName, task.id, newSection), MOVE_HOLD_MS);
   };
 
   // True while a native picker (date/select) is open. iOS presents these as a
@@ -1007,9 +2339,21 @@ const Task = ({ task, listName, showMoveButtons }) => {
     // re-rendered, remounted the subtree and reloaded the editor. Comparing
     // like with like makes "unchanged" actually mean unchanged.
     const cleaned = sanitizeRichText(content);
-    if (!force && cleaned === task.details) return;
+    if (!force && cleaned === task.details) {
+      // Nothing to write - but the DOM demonstrably matches storage right
+      // now, so refresh the baseline the load guard's unsaved-changes test
+      // compares against. Without this a reverted edit could leave the
+      // baseline pointing at an older save and misread a clean editor as
+      // dirty.
+      lastSavedHtmlRef.current = cleaned;
+      return null;
+    }
     lastSavedHtmlRef.current = cleaned;
     updateTaskDetails(listName, task.id, content);
+    // The sanitized value that is now on its way to storage. The hide-time
+    // save journals exactly this, so the crash journal and the stored task
+    // can never disagree about what the save contained.
+    return cleaned;
   };
 
   React.useEffect(() => {
@@ -1047,8 +2391,15 @@ const Task = ({ task, listName, showMoveButtons }) => {
         const indent = getIndent(lines[i]);
         const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
         const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
+        // "Directly under" means adjacent in the document, not merely the next
+        // checkbox line. This list is built from querySelectorAll, so anything
+        // that is not a checkbox line - an empty line most of all - is
+        // invisible to it, and a line separated from an indented line by a
+        // blank one was still being drawn as its heading.
+        const childIsAdjacent = i + 1 < lines.length &&
+          lines[i].nextElementSibling === lines[i + 1];
         // Parent: a line immediately followed by a more-indented line, with text
-        if (nextIndent > indent) {
+        if (nextIndent > indent && childIsAdjacent) {
           const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
           if (txt) {
             // Class only. These used to also set fontWeight, borderBottom and
@@ -1164,25 +2515,41 @@ const Task = ({ task, listName, showMoveButtons }) => {
     if (isExpanded && area) {
       // Only set content once when first expanded
       if (!hasSetInitialContent.current) {
-        // The echo test has to include the DOM, not just the refs.
+        // The guard is DOM truth, not ref bookkeeping.
         //
-        // lastSavedHtmlRef tracks what we last wrote to storage, and it used to
-        // be enough on its own: Task remounted constantly, so the ref was
-        // rebuilt empty every time and could never match a real saved value.
-        // Hoisting Task made these refs persist for the life of the page - so
-        // after collapse and re-expand, task.details and lastSavedHtmlRef still
-        // matched each other while the editor was a brand new, EMPTY div. That
-        // took the "already showing it" branch and skipped the load, leaving the
-        // editor blank - and the next collapse then saved that blank over the
-        // real content.
-        //
-        // Requiring the DOM to actually hold the content makes the guard mean
-        // what it says: skip the rewrite only when there is genuinely nothing
-        // to change.
+        // lastSavedHtmlRef tracks what we last wrote to storage, and the skip
+        // used to require it to match as well. That condition was vestigial:
+        // whenever the DOM already serializes to exactly the incoming value, a
+        // rewrite is a no-op that only costs the caret and scroll position -
+        // regardless of who wrote the value. (The DOM check itself is load-
+        // bearing and stays: after collapse and re-expand the editor is a
+        // brand new EMPTY div, and skipping the load then is what once left
+        // it blank and saved that blank over the real content.)
         const domNow = sanitizeRichText(area.innerHTML || '');
-        if (task.details === lastSavedHtmlRef.current && domNow === (task.details || '')) {
-          // A true echo of our own save: the DOM already shows exactly this, so
-          // rewriting it would only cost the caret and scroll position.
+        const incoming = sanitizeRichText(task.details || '');
+        if (domNow === incoming) {
+          // The DOM already shows exactly this - nothing to change.
+          hasSetInitialContent.current = true;
+          lastSavedHtmlRef.current = incoming;
+        } else if (
+          // Defer, don't clobber: a rewrite here while the user is typing
+          // destroys the caret and everything since the last save. Applies
+          // only when the editor is focused AND holds unsaved local changes
+          // (the DOM has moved past the last load/save baseline). Both
+          // conditions matter - a focused-but-untouched editor must take the
+          // rewrite, or its next blur would save stale content over the newer
+          // incoming value.
+          //
+          // Nothing external writes task.details while expanded today; this
+          // is the rule Session 4's snapshot listener relies on. The deferred
+          // value is not lost: the user's next save (blur, tick, collapse)
+          // writes the local DOM with a fresh updatedAt, and last-write-wins
+          // then resolves in favour of the person actively editing - which is
+          // the newest edit in fact, not just in bookkeeping.
+          lastSavedHtmlRef.current !== null &&
+          domNow !== lastSavedHtmlRef.current &&
+          area.contains(document.activeElement)
+        ) {
           hasSetInitialContent.current = true;
         } else {
           // Sanitized here too, not just on write. A task's details can arrive
@@ -1190,12 +2557,18 @@ const Task = ({ task, listName, showMoveButtons }) => {
           // stored value can't be assumed to have gone through this app's own
           // editor. This assignment is into a live element, so anything unsafe
           // would execute immediately.
-          area.innerHTML = sanitizeRichText(task.details || '');
+          area.innerHTML = incoming;
+          // Baseline for the unsaved-changes test above: from this moment the
+          // DOM matches storage, so any later divergence is a local edit.
+          lastSavedHtmlRef.current = incoming;
           hasSetInitialContent.current = true;
           // After loading, reflect any already-complete child sets on their parents
           setTimeout(() => syncParentCheckboxes(area), 0);
           setTimeout(() => refreshListMarkers(area), 0);
           syncPlaceholder(area);
+          // A task saved with indented lines shows the outdent button as soon
+          // as it is reopened, without waiting for the caret to move.
+          refreshOutdentVisibility(area);
         }
       }
     }
@@ -1239,21 +2612,20 @@ const Task = ({ task, listName, showMoveButtons }) => {
         }
       }
 
+      // The target was removed from the document before this listener ran -
+      // a conditionally rendered control that unmounted on its own press. It
+      // was inside the task when it was pressed, so it is not an outside tap,
+      // but contains() on a detached node says otherwise.
+      if (e.target && e.target.isConnected === false) return;
+
       if (!taskRef.current.contains(e.target)) {
-        // Save details before collapsing when clicking outside
-        const detailsArea = taskRef.current.querySelector('.details-richtext');
-        if (detailsArea) {
-          const allCheckboxes = detailsArea.querySelectorAll('.task-checkbox');
-          allCheckboxes.forEach(cb => {
-            if (cb.checked) {
-              cb.setAttribute('checked', 'checked');
-            } else {
-              cb.removeAttribute('checked');
-            }
-          });
-          const content = detailsArea.innerHTML;
-          updateTaskDetails(listName, task.id, content);
-        }
+        // Save details before collapsing when clicking outside. Through
+        // saveDetails, which mirrors checked state and no-ops when nothing
+        // changed - the unconditional updateTaskDetails this replaces stamped
+        // updatedAt on every open-and-close, and under last-write-wins sync a
+        // task you merely looked at must never beat a real edit from the
+        // other device. The cleanup save on collapse is the backstop.
+        saveDetails(taskRef.current.querySelector('.details-richtext'));
         setExpandedTaskId(null);
       }
     };
@@ -1458,6 +2830,14 @@ const Task = ({ task, listName, showMoveButtons }) => {
         // Where the tap landed vertically, captured before the deferred work -
         // the event object is not safe to read from a timeout.
         const tapY = evt.clientY;
+        // The horizontal position matters as much as the vertical one. A line
+        // with no block wrapper - the first line of a task, until the first
+        // Enter - is a direct child of the editor, so clicks on its own text
+        // arrive here with the editor as the target, exactly like a click in
+        // the margin beside it. Without X, the two are indistinguishable and
+        // every click on the first line was read as "carry on from the end",
+        // which made it impossible to put the caret at the start of it.
+        const tapX = evt.clientX;
         setTimeout(() => {
           try {
             // Tapping to the right of a line also lands on detailsArea when that
@@ -1466,6 +2846,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
             // "below everything" and the caret was sent to the bottom of the
             // editor, past any checkboxes underneath.
             let alongside = null;
+            let alongsideRect = null;
             detailsArea.childNodes.forEach(node => {
               let rect = null;
               if (node.nodeType === Node.ELEMENT_NODE) {
@@ -1475,10 +2856,34 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 rr.selectNodeContents(node);
                 rect = rr.getBoundingClientRect();
               }
-              if (rect && rect.height && tapY >= rect.top && tapY <= rect.bottom) alongside = node;
+              if (rect && rect.height && tapY >= rect.top && tapY <= rect.bottom) {
+                alongside = node;
+                alongsideRect = rect;
+              }
             });
 
-            if (alongside) {
+            if (alongside && alongsideRect) {
+              // The tap was on the line's own text, not in the margin beside
+              // it. The browser has already placed the caret where the user
+              // aimed - anywhere in the line, including its very start - so
+              // the only correct thing to do is leave it alone.
+              if (tapX >= alongsideRect.left && tapX <= alongsideRect.right) return;
+
+              // To the LEFT of the text: that is a request for the start of
+              // the line, not the end of it.
+              if (tapX < alongsideRect.left) {
+                const rr = document.createRange();
+                const startHost = alongside.nodeType === Node.ELEMENT_NODE
+                  ? (alongside.querySelector('span') || alongside)
+                  : alongside;
+                rr.selectNodeContents(startHost);
+                rr.collapse(true);
+                const selStart = window.getSelection();
+                selStart.removeAllRanges();
+                selStart.addRange(rr);
+                return;
+              }
+
               // Same treatment as the end of a checkbox line: sit one space
               // clear of the last word, ready to keep writing.
               const host = alongside.nodeType === Node.ELEMENT_NODE
@@ -1643,7 +3048,135 @@ const Task = ({ task, listName, showMoveButtons }) => {
         detailsArea.removeEventListener('touchcancel', onIndentEnd);
       }
     };
-  }, [isExpanded, listName, task.id]);
+    // task.details is in the deps for correctness, not convenience. The
+    // handlers above (outside-click save, the delegated tick save) close over
+    // saveDetails, whose "did anything change" comparison closes over
+    // task.details. Without this dep those handlers keep the snapshot from
+    // when the effect last ran, and after any save while expanded the stale
+    // comparison fails both ways: content that hadn't changed looked changed
+    // (a redundant save, stamping updatedAt - the exact write a sync merge
+    // must not see), and content reverted to the stale snapshot looked
+    // unchanged (a skipped save, rescued only by the collapse backstop).
+    // Re-running on each save re-registers the listeners and resets the
+    // indent-drag accumulator; every save happens between gestures, so
+    // there is nothing in flight to lose. A side benefit: the
+    // contentEditable re-arm above now also re-runs if details are ever
+    // rewritten externally while expanded.
+  }, [isExpanded, listName, task.id, task.details]);
+
+  // Bring a freshly expanded task into view.
+  //
+  // The card can expand from anywhere in a 68vh scroller, and if it was near
+  // the bottom the details opened below the fold - the task appeared to vanish
+  // and had to be hunted for. Aligning the top of the card to the top of the
+  // scrollport puts the name and the start of the details on screen together,
+  // which is what someone who just tapped a task is looking for.
+  //
+  // Two frames, not one: the first commit adds the details section, and its
+  // height only exists after layout. Measuring on the same frame reads the
+  // collapsed height and scrolls to the wrong place.
+  //
+  // Both platforms. This was touch-only at first, on the theory that yanking a
+  // 600px pane under a mouse would be worse than leaving it be - but the pane
+  // is a scroller like any other, and a task expanded near its bottom edge
+  // runs off the end there for exactly the same reason it does on a phone.
+  // The "already comfortable" test below is what keeps it from moving anything
+  // the user can already see, and that test is device-independent.
+  React.useEffect(() => {
+    if (!isExpanded) return;
+    const card = taskRef.current;
+    if (!card || typeof card.scrollIntoView !== 'function') return;
+
+    let inner = null;
+    let settleTimer = null;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        const port = scrollPortFor(card);
+        const portRect = port
+          ? port.getBoundingClientRect()
+          : { top: 0, bottom: window.innerHeight || 0 };
+        if (!needsScrollIntoView(card.getBoundingClientRect(), portRect)) return;
+
+        // Where we were, so collapsing can put it back. Captured before the
+        // scroll, obviously, but also only when a scroll is actually going to
+        // happen - a card that was already in view has nothing to undo.
+        scrollRestoreRef.current = { port, from: readScrollTop(port), landed: null };
+
+        try {
+          card.scrollIntoView({
+            block: 'start',
+            behavior: settings.reduceMotion ? 'auto' : 'smooth'
+          });
+        } catch (err) {
+          // Older WebKit rejects the options object; the bare call still works.
+          card.scrollIntoView(true);
+        }
+
+        // Where the smooth scroll came to rest. Recorded a beat later because
+        // smooth scrolling is asynchronous and there is no event for it, and
+        // needed so that a later position can be told apart from this one.
+        settleTimer = setTimeout(() => {
+          if (scrollRestoreRef.current) {
+            scrollRestoreRef.current.landed = readScrollTop(port);
+          }
+        }, 450);
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(outer);
+      if (inner) cancelAnimationFrame(inner);
+      if (settleTimer) clearTimeout(settleTimer);
+    };
+  }, [isExpanded, settings.reduceMotion]);
+
+  // Collapsing returns the view to where it was before the task was opened.
+  //
+  // Started as the close begins rather than after it, so the panel sliding shut
+  // and the page moving back settle together instead of the page jumping once
+  // the animation has finished.
+  React.useEffect(() => {
+    if (isExpanded) return;
+    const info = scrollRestoreRef.current;
+    if (!info) return;
+    scrollRestoreRef.current = null;
+    if (!shouldRestoreScroll(info, readScrollTop(info.port))) return;
+    writeScrollTop(info.port, info.from, !settings.reduceMotion);
+  }, [isExpanded, settings.reduceMotion]);
+
+  // Save the open editor the moment the app is hidden or torn down. Saves
+  // otherwise happen on blur, cut, indent-end and collapse - but iOS does not
+  // reliably blur the focused element when a home-screen app is backgrounded,
+  // and a backgrounded PWA can be killed before the user ever returns. The
+  // dispatch below feeds the normal save path for the case where the app
+  // survives; the journal write is the synchronous copy for the case where it
+  // does not (see EDITOR_DRAFT_KEY). saveDetails no-ops on unchanged content,
+  // so the common case costs one sanitize and a string compare.
+  //
+  // task.details is deliberately in the deps: the handler's comparison inside
+  // saveDetails closes over it, and a stale closure would re-save (and
+  // re-stamp) content that had not actually changed.
+  React.useEffect(() => {
+    if (!isExpanded) return;
+    const saveOnHide = () => {
+      const cleaned = saveDetails(detailsRef.current);
+      if (typeof cleaned === 'string') {
+        writeEditorDraft(listName, task.id, cleaned);
+      } else {
+        // Nothing new to save, so any draft still sitting in storage is by
+        // definition stale. Clearing it keeps the journal from ever holding
+        // something older than the state it would be applied to.
+        clearEditorDraft();
+      }
+    };
+    const onVisibility = () => { if (document.hidden) saveOnHide(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', saveOnHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', saveOnHide);
+    };
+  }, [isExpanded, listName, task.id, task.details]);
 
   return (
     <div 
@@ -1651,7 +3184,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
       className={`task ${task.completed ? 'completed' : ''} ${isExpanded ? 'expanded' : ''} ${collapsing ? 'collapsing' : ''} ${task.isArchived ? 'archived-task-readonly' : ''}`}
       // Not while expanded: the details editor needs normal text selection,
       // and a draggable ancestor breaks it.
-      draggable={!isExpanded && !task.isArchived && !isCompleting}
+      draggable={!isExpanded && !task.isArchived && !isExiting}
       onDragStart={(e) => {
         draggingTaskRef.current = { id: task.id, listName };
         e.dataTransfer.effectAllowed = 'move';
@@ -1692,8 +3225,20 @@ const Task = ({ task, listName, showMoveButtons }) => {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
+      // Capture phase, so this runs before the dismiss handlers that close a
+      // popup on the very same press. By the click that follows, the popup is
+      // already gone and there would be nothing left to tell.
+      onMouseDownCapture={noteGestureStart}
+      onTouchStartCapture={noteGestureStart}
       onClick={() => {
         if (task.isArchived) return;
+        // This gesture began with a dropdown or the date calendar open, so it
+        // was a dismissal, not a tap on the card. One gesture, one effect: the
+        // popup closed, and the task stays open until a later tap.
+        if (popupOpenAtGestureRef.current) {
+          popupOpenAtGestureRef.current = false;
+          return;
+        }
         // A completed swipe is followed by a click; ignore it so the card
         // doesn't expand as a side effect of being completed.
         if (swipe.current.justSwiped) return;
@@ -1704,21 +3249,13 @@ const Task = ({ task, listName, showMoveButtons }) => {
           return;
         }
         
-        // Save details before collapsing
-        if (isExpanded && detailsRef.current) {
-          const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-          allCheckboxes.forEach(cb => {
-            if (cb.checked) {
-              cb.setAttribute('checked', 'checked');
-            } else {
-              cb.removeAttribute('checked');
-            }
-          });
-          const content = detailsRef.current.innerHTML;
-          // Always save when collapsing, even if content looks the same
-          // This ensures text is persisted
-          updateTaskDetails(listName, task.id, content);
-        }
+        // Save details before collapsing. Through saveDetails rather than the
+        // unconditional updateTaskDetails this replaces: "always save even if
+        // content looks the same" predates the reliable cleanup save on
+        // collapse, and its unconditional updatedAt stamp is what would let
+        // merely opening a task win sync conflicts. saveDetails no-ops when
+        // unchanged; the collapse cleanup still saves as the backstop.
+        if (isExpanded) saveDetails(detailsRef.current);
         
         setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
       }}
@@ -1728,13 +3265,13 @@ const Task = ({ task, listName, showMoveButtons }) => {
         // left looking at is the full green panel and its checkmark. Ticked:
         // it fades in place as before.
         ...(swipedOut ? { '--swipe-progress': 1, '--swipe-dx': '110%' } : {}),
-        opacity: task.isArchived ? 0.7 : (isCompleting && !swipedOut ? 0 : 1),
+        opacity: task.isArchived ? 0.7 : (isExiting && !swipedOut ? 0 : 1),
         transform: swipedOut
           ? 'translateX(110%)'
-          : (isCompleting ? 'translateX(14px) scale(0.97)' : 'none'),
+          : (isExiting ? 'translateX(14px) scale(0.97)' : 'none'),
         // Height collapse: pinned to the measured value first, then driven to 0
         // once `collapsing` flips, which pulls the rows below up smoothly.
-        ...(isCompleting && measuredHeight != null ? {
+        ...(isExiting && measuredHeight != null ? {
           maxHeight: collapsing ? '0px' : `${measuredHeight}px`,
           marginBottom: collapsing ? '0px' : undefined,
           paddingTop: collapsing ? '0px' : undefined,
@@ -1751,7 +3288,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
         // Built from the same constants as the timers above. Opacity and
         // transform wait out the hold; the collapse needs no delay here
         // because its own timer already fires at that moment.
-        transition: isCompleting
+        transition: isExiting
           ? (swipedOut ? [
               // The slide-off happens immediately - it's the tail of the
               // gesture, not something to wait for. Only the collapse waits
@@ -1778,7 +3315,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
         <div className="checkbox-wrapper">
           <input
             type="checkbox"
-            checked={task.completed || isCompleting}
+            checked={task.completed || exitTicksBox}
             onChange={(e) => {
               e.stopPropagation();
               requestComplete();
@@ -1832,21 +3369,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   // If collapsed, single click expands
                   // Delay single-click action to allow double-click to cancel it
                   clickTimeoutRef.current = setTimeout(() => {
-                    // Save details before toggling if expanded
-                    if (isExpanded && detailsRef.current) {
-                      const allCheckboxes = detailsRef.current.querySelectorAll('.task-checkbox');
-                      allCheckboxes.forEach(cb => {
-                        if (cb.checked) {
-                          cb.setAttribute('checked', 'checked');
-                        } else {
-                          cb.removeAttribute('checked');
-                        }
-                      });
-                      const content = detailsRef.current.innerHTML;
-                      // Always save when collapsing, even if content looks the same
-                      // This ensures text is persisted
-                      updateTaskDetails(listName, task.id, content);
-                    }
+                    // Save details before toggling if expanded. Same reasoning
+                    // as the collapse path above: saveDetails no-ops when
+                    // unchanged, so opening a task is never a write.
+                    if (isExpanded) saveDetails(detailsRef.current);
                     
                     // Single click toggles task expanded/collapsed
                     if (!task.isArchived) {
@@ -1912,7 +3438,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
         )}
       </div>
 
-      {isExpanded && (
+      {(isExpanded || detailsClosing) && (
+        <div className={`details-shell${detailsClosing ? ' closing' : ''}`}>
+          <div className="details-shell-inner">
         <div className="task-details-section">
           {/* First field in the expanded view: on a shared list, who owns
               this task is the thing you want to see before the notes. */}
@@ -2044,6 +3572,63 @@ const Task = ({ task, listName, showMoveButtons }) => {
                     // else: leftover markup with no checkbox - fall through to convert it
                   }
                   
+                  // A bullet with text at the caret becomes a checkbox - the
+                  // marker is REPLACED. This has to be handled here because
+                  // currentLine above walks up to the direct child of the
+                  // details area, which for a bullet is the whole <ul>: the
+                  // generic path below would then convert the ENTIRE list
+                  // into a single checkbox line, silently swallowing every
+                  // other item in it.
+                  //
+                  // Converting an item from the middle splits the list, so
+                  // the items after it stay bullets in their own list.
+                  {
+                    const caretForLi = currentNode.nodeType === Node.ELEMENT_NODE
+                      ? currentNode : currentNode.parentElement;
+                    const liAtCaret = caretForLi && caretForLi.closest
+                      ? caretForLi.closest('li') : null;
+                    if (liAtCaret && detailsArea.contains(liAtCaret) &&
+                        (liAtCaret.textContent || '').replace(/\u00A0/g, '').trim() !== '') {
+                      const list = liAtCaret.parentElement;
+                      const { line, span } = buildCheckboxLine();
+                      span.innerHTML = '';
+                      while (liAtCaret.firstChild) span.appendChild(liAtCaret.firstChild);
+                      if (!span.textContent.trim()) span.innerHTML = '&nbsp;';
+                      // Indent lives on the <ul> for a bullet and on the line
+                      // itself for a checkbox, so it moves across explicitly.
+                      const indent = (list && list.style && list.style.marginLeft) ||
+                        (liAtCaret.style && liAtCaret.style.marginLeft) || '';
+                      if (indent) line.style.marginLeft = indent;
+
+                      const items = Array.from(list.children).filter(el => el.tagName === 'LI');
+                      const after = items.slice(items.indexOf(liAtCaret) + 1);
+                      liAtCaret.remove();
+                      if (after.length) {
+                        const rest = document.createElement('ul');
+                        if (indent) rest.style.marginLeft = indent;
+                        after.forEach(item => rest.appendChild(item));
+                        list.parentElement.insertBefore(rest, list.nextSibling);
+                        list.parentElement.insertBefore(line, rest);
+                      } else {
+                        list.parentElement.insertBefore(line, list.nextSibling);
+                      }
+                      // A list with nothing left in it is empty scaffolding.
+                      if (!list.querySelector('li')) list.remove();
+
+                      const caret = document.createRange();
+                      caret.selectNodeContents(span);
+                      caret.collapse(false);
+                      selection.removeAllRanges();
+                      selection.addRange(caret);
+
+                      setTimeout(() => {
+                        syncParentCheckboxes(detailsArea);
+                        refreshListMarkers(detailsArea);
+                      }, 0);
+                      return;
+                    }
+                  }
+
                   // An empty bullet at the caret is an intent, not content:
                   // you started a bullet and then chose a checkbox instead.
                   // It has to be handled separately because currentLine walks
@@ -2161,8 +3746,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 }
               }}
               title="Insert Checkbox"
+              aria-label="Insert checkbox"
             >
-              <CheckboxIcon />Box
+              <CheckboxIcon /><span className="toolbar-btn-label">Box</span>
             </button>
             <button 
               className="toolbar-btn"
@@ -2214,32 +3800,60 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   }
                 }
 
-                // An empty checkbox line at the caret is an intent, not
-                // content: you made a checkbox, then chose a bullet instead.
-                // The exact mirror of the empty-bullet case the Box button
-                // handles. Without this, execCommand wraps the line and you
-                // end up with a checkbox sitting inside a bullet.
+                // A checkbox line at the caret becomes a bullet - the marker
+                // is REPLACED, not added to. A line is one thing or the other,
+                // and execCommand would wrap the whole .checkbox-line in an
+                // <li>, leaving a dead box sitting inside the bullet. This
+                // applies whether the line has text or not; an empty one is
+                // just the case where you made a checkbox and immediately
+                // changed your mind.
                 const caretNode = range.startContainer;
                 const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
                   ? caretNode : caretNode.parentElement;
-                const emptyBox = caretEl && caretEl.closest
+                const boxLine = caretEl && caretEl.closest
                   ? caretEl.closest('.checkbox-line') : null;
-                if (emptyBox && detailsArea.contains(emptyBox) &&
-                    (emptyBox.textContent || '').replace(/\u00A0/g, '').trim() === '') {
-                  const list = document.createElement('ul');
+                if (boxLine && detailsArea.contains(boxLine)) {
+                  const hadText = (boxLine.textContent || '')
+                    .replace(/\u00A0/g, '').trim() !== '';
+                  // The box goes first, so it can't be carried into the <li>
+                  // along with the text.
+                  const box = boxLine.querySelector('.task-checkbox');
+                  if (box) box.remove();
+                  const source = boxLine.querySelector('span') || boxLine;
                   const li = document.createElement('li');
-                  li.innerHTML = '<br>';
-                  list.appendChild(li);
+                  while (source.firstChild) li.appendChild(source.firstChild);
+                  if (!(li.textContent || '').replace(/\u00A0/g, '').trim()) {
+                    li.innerHTML = '<br>';
+                  }
+
                   // Indent carries across so swapping the marker type doesn't
                   // silently promote the line back to the top level.
-                  if (emptyBox.style && emptyBox.style.marginLeft) {
-                    list.style.marginLeft = emptyBox.style.marginLeft;
+                  const indent = (boxLine.style && boxLine.style.marginLeft) || '';
+                  // Join an adjacent list at the same indent rather than
+                  // leaving two <ul>s abutting, which renders as a visible
+                  // break in what the user sees as one list.
+                  const isListAt = (el) => !!el && el.tagName === 'UL' &&
+                    ((el.style && el.style.marginLeft) || '') === indent;
+                  const prev = boxLine.previousElementSibling;
+                  const next = boxLine.nextElementSibling;
+                  if (isListAt(prev)) {
+                    prev.appendChild(li);
+                    boxLine.remove();
+                  } else if (isListAt(next)) {
+                    next.insertBefore(li, next.firstChild);
+                    boxLine.remove();
+                  } else {
+                    const list = document.createElement('ul');
+                    if (indent) list.style.marginLeft = indent;
+                    list.appendChild(li);
+                    boxLine.parentElement.replaceChild(list, boxLine);
                   }
-                  emptyBox.parentElement.replaceChild(list, emptyBox);
 
+                  // Caret to the end of text that was already there, to the
+                  // start of a line that is still empty.
                   const caret = document.createRange();
                   caret.selectNodeContents(li);
-                  caret.collapse(true);
+                  caret.collapse(!hadText);
                   selection.removeAllRanges();
                   selection.addRange(caret);
 
@@ -2250,8 +3864,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 document.execCommand('insertUnorderedList', false, null);
               }}
               title="Bullet List"
+              aria-label="Bullet list"
             >
-              • Bullets
+              <BulletsIcon /><span className="toolbar-btn-label">Bullets</span>
             </button>
             <button
               className={`toolbar-btn ${formatOn ? 'format-on' : ''}`}
@@ -2278,11 +3893,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 document.execCommand('underline', false, null);
               }}
               title="Bold + underline"
+              aria-label="Bold and underline"
             >
               {/* A span, not <strong>: the underline is the only cue this
                   button needs, and <strong> was overriding the toolbar's own
                   font weight so it sat heavier than its neighbours. */}
-              <span style={{ textDecoration: 'underline' }}>Bold</span>
+              <span style={{ textDecoration: 'underline' }}>B<span className="toolbar-btn-label">old</span></span>
             </button>
             <button 
               className="toolbar-btn"
@@ -2335,9 +3951,93 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 setTimeout(() => refreshListMarkers(detailsArea), 0);
               }}
               title="Add Follow Up section"
+              aria-label="Add Follow Up section"
             >
-              Follow Up
+              <span className="toolbar-btn-compact-icon"><FollowUpIcon /></span>
+              <span className="toolbar-btn-label">Follow Up</span>
             </button>
+            {/* Indent / outdent. Icon-only, so the toolbar doesn't grow two
+                more word-width buttons - the pair reads as one control.
+                Both delegate to the same two representations the Tab key and
+                the drag gesture use: nesting for bullets, marginLeft for
+                everything else. */}
+            <button
+              className="toolbar-btn toolbar-btn-icon"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const detailsArea = e.target.closest('.task-details-section')
+                  .querySelector('.details-richtext');
+                if (!detailsArea) return;
+                detailsArea.focus();
+                const selection = window.getSelection();
+                if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+                  // Nothing to act on: put the caret somewhere sensible and
+                  // stop, rather than indenting a line the user can't see.
+                  const range = document.createRange();
+                  range.selectNodeContents(detailsArea);
+                  range.collapse(false);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  return;
+                }
+                const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
+                if (!target) return;
+                if (target.kind === 'bullet') {
+                  document.execCommand('indent', false, null);
+                } else {
+                  target.line.style.marginLeft =
+                    (blockIndent(target.line) + EDITOR_INDENT_STEP) + 'px';
+                }
+                refreshListMarkers(detailsArea);
+                refreshOutdentVisibility(detailsArea);
+              }}
+              title="Indent"
+              aria-label="Indent"
+            >
+              <IndentIcon />
+            </button>
+            {showOutdent && (
+              <button
+                className="toolbar-btn toolbar-btn-icon"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const detailsArea = e.target.closest('.task-details-section')
+                    .querySelector('.details-richtext');
+                  if (!detailsArea) return;
+                  detailsArea.focus();
+                  const selection = window.getSelection();
+                  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) return;
+                  const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
+                  if (!target) return;
+                  if (target.kind === 'bullet') {
+                    document.execCommand('outdent', false, null);
+                  } else {
+                    const next = Math.max(0, blockIndent(target.line) - EDITOR_INDENT_STEP);
+                    // Removed rather than set to 0px: an empty declaration is
+                    // what the rest of the app treats as "not indented", and
+                    // the sanitizer would keep a literal 0px around forever.
+                    if (next === 0) target.line.style.removeProperty('margin-left');
+                    else target.line.style.marginLeft = next + 'px';
+                  }
+                  refreshListMarkers(detailsArea);
+                  // Removing this button mid-press is what made the task
+                  // collapse. The press starts on the button; by the time the
+                  // browser dispatches the click, the button is gone, so the
+                  // click is delivered to the nearest surviving ancestor
+                  // instead - past the toolbar's stopPropagation and into the
+                  // card's tap-to-collapse. Same guard the outside-tap
+                  // collapse already uses for "this tap has done its job",
+                  // armed only when the button is actually going away.
+                  if (!refreshOutdentVisibility(detailsArea)) armCollapseGuard();
+                }}
+                title="Outdent"
+                aria-label="Outdent"
+              >
+                <OutdentIcon />
+              </button>
+            )}
           </div>
           <div 
             className="details-richtext"
@@ -2357,12 +4057,22 @@ const Task = ({ task, listName, showMoveButtons }) => {
             onInput={(e) => {
               refreshListMarkers(e.currentTarget);
               syncPlaceholder(e.currentTarget);
+              refreshOutdentVisibility(e.currentTarget);
             }}
+            // Caret moves that aren't edits: arrows, taps, and the selection
+            // landing here on focus. Without these the button would only
+            // update when the text changed, so moving onto an indented line
+            // would leave it hidden.
+            onKeyUp={(e) => refreshOutdentVisibility(e.currentTarget)}
+            onFocus={(e) => refreshOutdentVisibility(e.currentTarget)}
             onBlur={(e) => {
               e.stopPropagation();
               saveDetails(e.currentTarget);
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              refreshOutdentVisibility(e.currentTarget);
+            }}
             onCopy={(e) => {
               e.stopPropagation();
               writeClipboard(e);
@@ -2546,19 +4256,45 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 currentNode.closest('.checkbox-line') : 
                 currentNode.parentElement?.closest('.checkbox-line');
               
-              // Handle Tab key - indent checkbox
-              if (e.key === 'Tab' && checkboxLine) {
+              // Handle Tab key - indent the line at the caret.
+              //
+              // This used to be gated on `&& checkboxLine`, so Tab worked on a
+              // checkbox and nowhere else: a plain line, a bullet, and above
+              // all the FIRST line of a task - which is usually bare text with
+              // no block wrapper at all - fell through to the browser, which
+              // moved focus out of the editor instead of indenting.
+              //
+              // Routed through the same resolver the toolbar buttons use, so
+              // the key and the buttons cannot disagree: bullets nest, and
+              // everything else takes marginLeft.
+              if (e.key === 'Tab') {
                 e.preventDefault();
-                const currentIndent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                const area = e.currentTarget;
+                const target = resolveIndentTarget(area, currentNode);
+                if (!target) return;
+
+                if (target.kind === 'bullet') {
+                  document.execCommand(e.shiftKey ? 'outdent' : 'indent', false, null);
+                  refreshListMarkers(area);
+                  refreshOutdentVisibility(area);
+                  return;
+                }
+
+                const line = target.line;
+                const currentIndent = parseInt(line.style.marginLeft || '0') || 0;
                 // Shift+Tab outdents. The handler used to ignore the modifier
                 // entirely, so Shift+Tab indented like a plain Tab and there
                 // was no way back out of a nesting level except backspacing
                 // from the start of the line.
                 const newIndent = e.shiftKey
-                  ? Math.max(0, currentIndent - 20)
-                  : currentIndent + 20;
+                  ? Math.max(0, currentIndent - EDITOR_INDENT_STEP)
+                  : currentIndent + EDITOR_INDENT_STEP;
                 if (newIndent === currentIndent) return;
-                checkboxLine.style.marginLeft = newIndent + 'px';
+                // Removed rather than set to 0px, matching the outdent button:
+                // an empty declaration is what the rest of the app reads as
+                // "not indented".
+                if (newIndent === 0) line.style.removeProperty('margin-left');
+                else line.style.marginLeft = newIndent + 'px';
 
                 // Parent and boundary marks are recomputed for the whole list
                 // rather than patched for this one line. Outdenting can orphan
@@ -2566,7 +4302,8 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 // the line you just moved could never notice - and this is
                 // the same function that runs on load, so the two can't
                 // disagree about what the list looks like.
-                refreshListMarkers(checkboxLine.closest('.details-richtext'));
+                refreshListMarkers(area);
+                refreshOutdentVisibility(area);
               }
               
               // Handle Backspace at the start of a checkbox line - remove the checkbox.
@@ -2728,6 +4465,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
               <InlineDatePicker
                 value={task.dueDate || ''}
                 onChange={(v) => updateTaskDueDate(listName, task.id, v)}
+                onOpenChange={setDatePickerOpen}
               />
             </div>
 
@@ -2770,6 +4508,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
                         setProjectDropdownOpen(o => !o);
                       }}
                       onTouchStart={(e) => e.stopPropagation()}
+                      // The click as well as the mousedown. Stopping only the
+                      // mousedown left the click to bubble on to the card,
+                      // whose tap-to-collapse then shut the whole task on the
+                      // same press that opened this list. The date field's
+                      // wrapper already stops all three; this one stopped two.
+                      onClick={(e) => e.stopPropagation()}
                       className="project-selector"
                       style={{
                         display: 'flex', alignItems: 'center',
@@ -2780,13 +4524,34 @@ const Task = ({ task, listName, showMoveButtons }) => {
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         color: chosen ? 'var(--text)' : 'var(--text-muted)'
                       }}>
-                        {chosen ? chosen.name : 'No project'}
+                        {/* Blank when nothing is chosen, rather than "No project".
+                            The label beside it already says Project, so the words
+                            only restated the field's own name - and a task with no
+                            project is the common case, so this was the loudest
+                            thing on a row that had nothing to say. The dropdown
+                            still offers "No project" as the way to clear one.
+
+                            A non-breaking space, not an empty string: with the
+                            caret also hidden while empty, the row had no content
+                            at all and collapsed to the height of its padding,
+                            leaving a sliver next to the full-height Due Date
+                            field above it. Same fix, for the same reason, as the
+                            date trigger's own empty state. */}
+                        {chosen ? chosen.name : '\u00A0'}
                       </span>
-                      <span style={{
-                        transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                        transition: 'transform 0.2s ease',
-                        fontSize: '0.7rem', flexShrink: 0
-                      }}>▼</span>
+                      {/* The caret only appears once there is something to point
+                          at - a chosen project - or while the list is actually
+                          open. An empty field with an arrow beside it was two
+                          pieces of furniture saying nothing; the row now reads as
+                          blank until you engage with it. The whole field stays
+                          tappable either way, so nothing is harder to reach. */}
+                      {(chosen || projectDropdownOpen) && (
+                        <span style={{
+                          transform: projectDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.2s ease',
+                          fontSize: '0.7rem', flexShrink: 0
+                        }}>▼</span>
+                      )}
                     </div>
 
                     {projectDropdownOpen && (
@@ -2863,7 +4628,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
                     className="edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      moveTaskToSection(listName, task.id, 'backlog');
+                      requestSectionMove('backlog');
                     }}
                   >
                     → Backlog
@@ -2874,7 +4639,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
                     className="edit-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      moveTaskToSection(listName, task.id, 'todo');
+                      requestSectionMove('todo');
                     }}
                   >
                     → To Do
@@ -2904,6 +4669,8 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 Delete
               </button>
             )}
+          </div>
+        </div>
           </div>
         </div>
       )}
@@ -3141,9 +4908,25 @@ function LittleFiresApp() {
     defaultTimerDuration: '', // '' = open-ended "Timer"
     defaultReportTimeframe: 'thisWeek',
     completionDelay: true,    // pause so the checkmark is visible before a task moves
+    // Fresh-install defaults: light theme, Matcha accent, Lora & Inter.
+    // Existing installs are held on the previous defaults by the pins in the
+    // loader below - changing a default normally reaches everyone who never
+    // overrode it, which is right for most keys but would silently restyle an
+    // app somebody is already using.
     accentId: 'matcha',       // preset id, or 'custom'
     customAccent: '#53745f',
-    fontChoice: 'default',
+    fontChoice: 'serif',      // Lora & Inter
+    // AI suggestions. Off until switched on deliberately: it is the one
+    // feature that sends task text off the device.
+    aiSuggestions: false,
+    // Details are where the specifics live - notes about people, numbers,
+    // medical things - so they are excluded unless asked for, separately from
+    // the feature itself. Someone who never opens this card sends titles only.
+    aiIncludeDetails: false,
+    // Exact model strings are retired over time, and a stale one fails the
+    // whole feature - so this is a setting the user can change without a code
+    // release, not a constant.
+    aiModel: 'claude-haiku-4-5-20251001',
     // 'system' follows the phone; 'dark' and 'light' pin it. Light is the
     // default for a fresh install - see the loader below, which keeps everyone
     // who was already using the app on what they had.
@@ -3188,6 +4971,31 @@ function LittleFiresApp() {
   // anything else reads it.
   const batterySaverUserChoiceRef = React.useRef(false);
 
+  // The saved API key, read once at mount. Held in state only so the Settings
+  // card can re-render when it changes - the value of record is the storage
+  // entry, never this. The draft is what is being typed and is cleared the
+  // moment it is saved.
+  // Suggestions, held in state and mirrored to the side table. Shaped as
+  // { [listKey]: { generatedAt, seed, items: [{ id, text, rationale }] } }.
+  const [aiShelves, setAiShelves] = useState(() =>
+    readJsonStore(AI_SUGGESTIONS_STORAGE, {}));
+  const [aiRejected, setAiRejected] = useState(() =>
+    pruneRejected(readJsonStore(AI_REJECTED_STORAGE, {}), Date.now()));
+
+  // { id, text } while a suggestion is being edited before it is added.
+  // window.prompt is unavailable here for the same reason window.confirm is -
+  // a sandboxed iframe blocks it - so editing happens inline.
+  const [aiEditing, setAiEditing] = useState(null);
+  // Per-shelf, so one list refreshing or failing says nothing about the others.
+  const [aiBusy, setAiBusy] = useState({});
+  const [aiErrors, setAiErrors] = useState({});
+
+  const [aiKeySaved, setAiKeySaved] = useState(() => readAiKey());
+  // Free text, saved as it is typed via the same debounce the rest of the app
+  // uses for storage, so there is no Save button to forget to press.
+  const [aiProfile, setAiProfile] = useState(() => readAiProfile());
+  const [aiKeyDraft, setAiKeyDraft] = useState('');
+
   const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('little_fires_settings');
@@ -3196,10 +5004,28 @@ function LittleFiresApp() {
       // Changing a default normally reaches everyone, because only deltas are
       // stored - that's the point of the delta scheme. It's the wrong outcome
       // for theme: someone who has been using a dark app would open it one day
-      // to find it light, having changed nothing. A stored blob means an
-      // existing install, so anyone who never picked a theme is pinned to the
-      // behaviour they already had rather than inheriting the new default.
+      // to find it light, having changed nothing.
+      //
+      // Narrower than it looks now. The persistence effect writes `theme`
+      // unconditionally, so any blob saved by current code HAS the key and
+      // never reaches this line. Only a blob written before that change can
+      // be missing it - a genuine pre-existing install, which is precisely
+      // who this pin is for. It used to catch everyone, including fresh
+      // installs on their second launch, which is what made a chosen Light
+      // theme revert to the phone's dark setting on every open.
       if (parsed.theme === undefined) parsed.theme = 'system';
+      // Same treatment, same reasoning, for the two other look-and-feel
+      // defaults that changed when Ember and Lora & Inter became the
+      // fresh-install look. Current code writes both keys unconditionally, so
+      // a blob missing them predates that change and belongs to someone
+      // already using the app: hold them on what they had.
+      // Matcha is both the pin and the current default, so this line changes
+      // nothing today. It stays because the two are separate facts: the pin
+      // says what an install that predates the key already looked like, and
+      // the default says what a new install gets. Deleting it would make the
+      // next change to the default silently restyle every old install.
+      if (parsed.accentId === undefined) parsed.accentId = 'matcha';
+      if (parsed.fontChoice === undefined) parsed.fontChoice = 'default';
       // Same reasoning as theme, and it matters more here: someone already
       // using Notes or Projects would open the app one day to find those
       // sections simply gone. A stored blob means an existing install, so
@@ -3262,6 +5088,37 @@ function LittleFiresApp() {
       // the next auto-detect could silently override it back to on.
       if (k === 'batterySaver') {
         if (batterySaverUserChoiceRef.current) overrides.batterySaver = settings.batterySaver;
+        return;
+      }
+      // Theme is always written, for the same reason batterySaver is: its
+      // chosen value can equal the default, and the generic check below
+      // cannot tell "I chose Light" from "I never touched it".
+      //
+      // That distinction is not cosmetic here. DEFAULT_SETTINGS.theme is
+      // 'light', so choosing Light used to write nothing at all - and the
+      // loader treats a stored blob with no theme key as an existing install
+      // and pins it to 'system'. On a phone set to dark, the app therefore
+      // reopened dark every single time, no matter how often Light was
+      // chosen. It also caught fresh installs, because this effect writes a
+      // blob on first mount, so by the second launch every install looked
+      // like an "existing" one.
+      //
+      // With the key always present, a blob that lacks it can only have been
+      // written before this change - a genuine pre-existing install - which
+      // is exactly what the loader's pin was written for, so that pin stays.
+      if (k === 'theme') {
+        overrides.theme = settings.theme;
+        return;
+      }
+      // accentId and fontChoice need the identical exception, and for the
+      // identical reason: both now have a fresh-install default a user can
+      // also choose deliberately (Ember, Lora & Inter). Under the generic
+      // equals-default check, choosing the default writes nothing, the
+      // loader's pin above then reads the key as absent, and the choice
+      // reverts to the old default on the next launch - which is exactly the
+      // bug that made a chosen Light theme reopen dark.
+      if (k === 'accentId' || k === 'fontChoice') {
+        overrides[k] = settings[k];
         return;
       }
       if (JSON.stringify(settings[k]) !== JSON.stringify(DEFAULT_SETTINGS[k])) {
@@ -3404,19 +5261,32 @@ function LittleFiresApp() {
 
   // Font. The variables are set on <html> alongside the theme tokens.
   //
-  // The chosen family is requested only when it isn't the default - the default
-  // pairing is already in index.html's <link> tags, where the preload scanner
-  // finds it while the HTML is still parsing. Loading all five upfront would
-  // mean downloading four families nobody is using on every visit.
+  // Only the family in use is ever requested - loading all five upfront would
+  // mean downloading four families nobody is using on every visit. The first
+  // request happens in index.html's boot script, before first paint, because
+  // doing it here meant a non-default family wasn't even asked for until
+  // React had mounted: the app painted in the :root defaults, reflowed to the
+  // fallback when these variables changed, then popped again when the real
+  // font finally arrived. This effect now handles runtime switches, and finds
+  // the boot script's link already in place on load.
   useEffect(() => {
     const choice = FONT_OPTIONS.find(f => f.id === settings.fontChoice) || FONT_OPTIONS[0];
     const root = document.documentElement;
     root.style.setProperty('--font-ui', choice.ui);
     root.style.setProperty('--font-body', choice.body);
 
-    if (!choice.google || choice.id === 'default') return;
+    if (!choice.google) return;
 
-    // Keyed by id so switching fonts twice doesn't stack duplicate <link>s.
+    // Keyed by id so switching fonts twice doesn't stack duplicate <link>s -
+    // and so the link the boot script in index.html already inserted for the
+    // font in use is found here rather than requested again.
+    //
+    // 'default' is no longer special-cased. It used to be skipped because
+    // index.html carried a static <link> for that pairing, but that link is
+    // gone: it downloaded two families every visit for anyone using a
+    // different font, competing with the one they actually wanted. The boot
+    // script now requests whichever family is in use, and this branch covers
+    // switching back to the default at runtime.
     const id = 'lf-font-' + choice.id;
     if (document.getElementById(id)) return;
     const link = document.createElement('link');
@@ -3432,6 +5302,18 @@ function LittleFiresApp() {
   // Theme. The class goes on <html> rather than <body> so the tokens are in
   // scope for anything portalled or rendered outside the app root, and so the
   // page background is right before React has mounted anything.
+  //
+  // "Before React has mounted" needs more than the class: the stylesheets are
+  // React-rendered, so pre-bundle the class has no rules to trigger. An inline
+  // script in index.html resolves the theme synchronously and sets the class
+  // plus an inline background-color and color-scheme on <html> before first
+  // paint. This effect then OWNS those two inline properties from mount on -
+  // re-set on every apply, with the background read from the live --bg-1
+  // token rather than hardcoded - so a runtime theme switch can never leave
+  // the pre-paint background stale behind the container (it shows in
+  // overscroll). If the resolution logic here changes, index.html's copy must
+  // change with it: fresh install -> 'light', stored blob without a theme ->
+  // 'system', parse failure -> 'light'.
   useEffect(() => {
     const root = document.documentElement;
     const apply = () => {
@@ -3442,6 +5324,10 @@ function LittleFiresApp() {
         window.matchMedia('(prefers-color-scheme: light)').matches
       );
       root.classList.toggle('theme-light', light);
+      // Class first, then read: the token reflects the theme just applied.
+      const bg = getComputedStyle(root).getPropertyValue('--bg-1').trim();
+      if (bg) root.style.backgroundColor = bg;
+      root.style.colorScheme = light ? 'light' : 'dark';
     };
     apply();
     // Only follow the OS while set to 'system' - otherwise an explicit choice
@@ -3920,6 +5806,158 @@ function LittleFiresApp() {
   const TASK_LISTS = [...personalListKeys, ...sharedListKeys];
   const isSharedList = (key) => sharedListKeys.includes(key);
 
+  // Lists that get a shelf: the ones on display, minus shared ones. Shared is
+  // excluded because a suggestion there would become a task another person
+  // sees, and because their content never leaves the device to be reasoned
+  // about in the first place.
+  const suggestionLists = () => visibleTaskLists.filter(k => !isSharedList(k));
+
+  // Everything already written down in a list, so a suggestion can't repeat it.
+  const existingTextsFor = (listName) => [
+    ...(allLists[listName] || []),
+    ...(archivedTasks[listName] || [])
+  ].map(t => t && t.text).filter(Boolean);
+
+  // Fills one shelf. The generator is the only part that will change when this
+  // talks to the API - what surrounds it is already the real thing.
+  const refreshShelf = async (listName) => {
+    if (aiBusy[listName]) return;
+    const payload = compactForSuggestions(
+      { allLists, archivedTasks, projects, goals },
+      {
+        lists: [listName],
+        isSharedList,
+        includeDetails: !!settings.aiIncludeDetails,
+        profile: aiProfile,
+        now: Date.now()
+      }
+    );
+    const shelfData = payload.lists[0];
+    if (!shelfData) return;
+
+    setAiBusy(prev => ({ ...prev, [listName]: true }));
+    setAiErrors(prev => {
+      const next = { ...prev };
+      delete next[listName];
+      return next;
+    });
+
+    // Ask for more than fit on the shelf: the filters below drop duplicates,
+    // dismissals and anything vague, and a request for exactly three would
+    // leave the shelf short every time one is rejected.
+    const ASK_FOR = SUGGESTIONS_PER_SHELF * 2;
+    let raw;
+    let failure = null;
+    if (aiKeySaved) {
+      const result = await requestSuggestions({
+        apiKey: aiKeySaved,
+        model: settings.aiModel || SUGGESTION_MODELS[0].id,
+        payload,
+        count: ASK_FOR
+      });
+      if (result.ok) {
+        raw = result.items;
+      } else {
+        failure = result.error;
+        raw = [];
+      }
+    } else {
+      // No key: the local stand-in, which can only echo what the person wrote.
+      // Enough to use the feature, not enough to be the feature.
+      raw = fakeSuggestionsFor(shelfData, ((aiShelves[listName] || {}).seed || 0) + 1);
+    }
+
+    const candidates = validateSuggestions(raw, TASK_LISTS, ASK_FOR);
+    const hasIntent =
+      (shelfData.intent.projects.length + shelfData.intent.goals.length) > 0;
+    const balanced = balanceByAnchor(
+      filterSuggestions(candidates, {
+        existingTexts: existingTextsFor(listName),
+        rejected: aiRejected,
+        max: 20
+      }),
+      { hasIntent, max: SUGGESTIONS_PER_SHELF }
+    );
+    const items = balanced.map(c => ({
+      id: makeId(), text: c.text, rationale: c.rationale, anchor: c.anchor
+    }));
+
+    setAiBusy(prev => {
+      const next = { ...prev };
+      delete next[listName];
+      return next;
+    });
+
+    if (failure) {
+      // Keep whatever was on the shelf. Emptying it because the network was
+      // down would lose suggestions the person had not decided about yet.
+      setAiErrors(prev => ({ ...prev, [listName]: failure }));
+      return;
+    }
+
+    const seed = ((aiShelves[listName] && aiShelves[listName].seed) || 0) + 1;
+    setAiShelves(prev => {
+      const next = {
+        ...prev,
+        [listName]: { generatedAt: new Date().toISOString(), seed, items }
+      };
+      writeJsonStore(AI_SUGGESTIONS_STORAGE, next);
+      return next;
+    });
+  };
+
+  const removeSuggestion = (listName, id) => {
+    setAiShelves(prev => {
+      const shelf = prev[listName];
+      if (!shelf) return prev;
+      const next = {
+        ...prev,
+        [listName]: { ...shelf, items: shelf.items.filter(i => i.id !== id) }
+      };
+      writeJsonStore(AI_SUGGESTIONS_STORAGE, next);
+      return next;
+    });
+  };
+
+  // Dismissing remembers the text so the next refresh doesn't propose it again.
+  const dismissSuggestion = (listName, item) => {
+    const key = normalizeSuggestionText(item.text);
+    if (key) {
+      setAiRejected(prev => {
+        const next = { ...prev, [key]: new Date().toISOString() };
+        writeJsonStore(AI_REJECTED_STORAGE, next);
+        return next;
+      });
+    }
+    removeSuggestion(listName, item.id);
+  };
+
+  // Accepting builds the same task object addTask does - same fields, same
+  // stamps, same id generator. A suggestion becomes an ordinary task with
+  // nothing marking it as having been suggested.
+  const acceptSuggestion = (listName, item, textOverride) => {
+    const text = (textOverride != null ? textOverride : item.text).trim();
+    if (!text) return;
+    const newTask = {
+      text,
+      completed: false,
+      priority: 'low',
+      section: 'todo',
+      dueDate: null,
+      dueTime: null,
+      details: '',
+      id: makeId(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      projectId: null
+    };
+    setAllLists(prev => ({
+      ...prev,
+      [listName]: [newTask, ...(prev[listName] || [])]
+    }));
+    removeSuggestion(listName, item.id);
+  };
+
   // Colour for a list - built-ins are fixed, custom ones carry their own.
   const BUILT_IN_LIST_COLORS = {
     personal: '#6a9d5f', work: '#3b82f6', home: '#4a7a3a',
@@ -4151,8 +6189,18 @@ function LittleFiresApp() {
       parsed.partner = [];
     }
     
-    return parsed;
+    // Recover any hide-time editor save that never made it through the normal
+    // path (see EDITOR_DRAFT_KEY). Read-only, and applied only if strictly
+    // newer than the stored task - the effect below is what consumes it.
+    return applyEditorDraft(parsed);
   });
+
+  // Clear the journal here rather than inside the initializer above: an
+  // initializer must stay pure (StrictMode invokes it twice in development),
+  // and by this point the draft has either been applied into state or been
+  // judged stale. The persistence effect will write the applied result back
+  // to storage on this same mount.
+  useEffect(() => { clearEditorDraft(); }, []);
 
   // Deletion tombstones: { [taskId]: deletedAtISO }.
   //
@@ -4528,14 +6576,16 @@ function LittleFiresApp() {
   const [showJournalTimeLogs, setShowJournalTimeLogs] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
   const [showProjects, setShowProjects] = useState(true);
+  const [showGoals, setShowGoals] = useState(true);
   
   // Month key ("2026-08") of the last auto-archive sweep. null means it has
   // never run on this device, which has to mean "sweep now", not "skip".
   //
   // This used to default a missing key to the current time, and the key was
-  // only ever written inside the is-it-a-new-month branch. So the branch could
-  // only be reached if the key already existed, and the key could only exist if
-  // the branch had already run: the sweep could never happen at all.
+  // only ever written inside the is-it-a-new-month branch below. So the branch
+  // could only be reached if the key already existed, and the key could only
+  // exist if the branch had already run: on a device that never got seeded,
+  // the sweep compared now against now and could never fire at all.
   const [lastArchiveCheck, setLastArchiveCheck] = useState(() => {
     return localStorage.getItem('little_fires_last_archive_check') || null;
   });
@@ -4786,72 +6836,74 @@ function LittleFiresApp() {
     queueSetItem('little_fires_deleted', () => JSON.stringify(deletedTaskIds));
   }, [deletedTaskIds, queueSetItem]);
 
-  // Live mirror of allLists for the auto-archive sweep. The sweep is held by a
-  // timer for the whole session, so anything it closes over is frozen at mount;
-  // a ref is the only thing it can read that stays current.
-  const allListsRef = React.useRef(allLists);
-  useEffect(() => { allListsRef.current = allLists; }, [allLists]);
-
-  // "2026-08" - the only granularity the sweep cares about.
-  const monthKeyOf = (value) => {
-    const d = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(d.getTime())) return null;
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  };
-
-  const lastArchiveCheckRef = React.useRef(lastArchiveCheck);
-  useEffect(() => { lastArchiveCheckRef.current = lastArchiveCheck; }, [lastArchiveCheck]);
-
-  // Auto-archive completed tasks from previous months: on load, when the app
-  // comes back to the foreground, at midnight, and daily after that.
+  // Auto-archive completed tasks from previous months on app load and daily.
+  //
+  // The check body lives in a ref that is refreshed every commit, and the
+  // timers below call through it. With the timers' effect on [] deps, calling
+  // checkAndArchive directly would freeze the closure at FIRST render - so a
+  // midnight run would filter the app-launch snapshot of allLists. That was
+  // not hypothetical: a last-month-completed task deleted (or manually
+  // archived) during the day was still in that snapshot, and midnight would
+  // re-add it to the archive - resurrecting the deleted one, duplicating the
+  // archived one - while the identity-based removal filter matched nothing
+  // and hid the evidence. The ref means whenever the timer fires, it sees the
+  // lists and lastArchiveCheck of the latest render.
+  const checkAndArchiveRef = React.useRef(() => {});
   useEffect(() => {
-    const checkAndArchive = () => {
-      const thisMonth = monthKeyOf(new Date());
+    checkAndArchiveRef.current = () => {
+      const now = new Date();
+      const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
       // Slicing to seven characters reads a stored month key and an ISO
       // timestamp left by an older build the same way, so no migration needed.
-      const lastMonth = lastArchiveCheckRef.current
-        ? String(lastArchiveCheckRef.current).slice(0, 7)
-        : null;
+      const lastMonth = lastArchiveCheck ? String(lastArchiveCheck).slice(0, 7) : null;
 
-      // null is "never run", and never-run has to sweep.
+      // null is "never run", and never-run has to sweep rather than skip.
       if (lastMonth === thisMonth) return;
 
       autoArchiveCompletedTasks();
-      // Written to the ref as well as to state: two checks can fire in the same
-      // tick, and state wouldn't have landed before the second one reads it.
-      lastArchiveCheckRef.current = thisMonth;
       setLastArchiveCheck(thisMonth);
       safeSetItem('little_fires_last_archive_check', thisMonth);
     };
+  });
 
+  useEffect(() => {
+    const checkAndArchive = () => checkAndArchiveRef.current();
+    
+    // Check on initial load
     checkAndArchive();
-
-    // On iOS a home-screen PWA is suspended rather than reloaded, so a month can
-    // turn over without a single load event and with every timer paused.
-    // Foregrounding is the one moment we're guaranteed to get.
+    
+    // And whenever the app comes back to the foreground. On iOS a home-screen
+    // PWA is suspended rather than reloaded, so a month can turn over with
+    // every timer below paused and no load event to catch it - foregrounding
+    // is the one moment that is guaranteed to happen.
     const onVisibilityChange = () => { if (!document.hidden) checkAndArchive(); };
     document.addEventListener('visibilitychange', onVisibilityChange);
-
-    // Midnight, then every 24h. Five seconds past, so a timer that fires a beat
-    // early still lands on the new day.
+    
+    // Set up daily check at midnight
     const now = new Date();
     const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    const msUntilMidnight = tomorrow.getTime() - now.getTime();
+    
+    // Declared at effect scope so the cleanup below can reach it. The
+    // previous version returned the clearInterval from inside the setTimeout
+    // callback, where a return value goes nowhere - once the app had been
+    // open past midnight, the interval could never be cleaned up, and every
+    // error-boundary remount stacked another immortal one.
     let dailyInterval = null;
+    
+    // Schedule first midnight check
     const midnightTimeout = setTimeout(() => {
       checkAndArchive();
+      
+      // Then check every 24 hours
       dailyInterval = setInterval(checkAndArchive, 24 * 60 * 60 * 1000);
-    }, tomorrow.getTime() - now.getTime());
-
+    }, msUntilMidnight);
+    
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       clearTimeout(midnightTimeout);
-      // The interval used to be cleaned up by a return statement inside the
-      // setTimeout callback, where nothing was listening for it - so it leaked.
       if (dailyInterval) clearInterval(dailyInterval);
     };
-    // Empty deps on purpose. autoArchiveCompletedTasks is a useCallback with a
-    // stable identity, and it's declared further down this component, so naming
-    // it here would read it from the temporal dead zone during render.
   }, []);
 
   // Close dropdowns when clicking outside
@@ -4897,10 +6949,15 @@ function LittleFiresApp() {
     // Touch has to wait. Putting a finger down outside the card is how you
     // scroll, and collapsing on touchstart meant the details closed the moment
     // you tried to look further down the page. So the decision is deferred to
-    // touchend and only made if the finger effectively stayed put - a tap is a
-    // dismissal, a drag is a scroll.
-    const touch = { x: 0, y: 0, pending: false };
+    // touchend, and only a QUICK TAP counts as a dismissal: the finger has to
+    // stay put and lift promptly. Anything longer is a press - holding to read,
+    // to select text, or to start a scroll that has not moved yet - and the
+    // task stays open.
+    const touch = { x: 0, y: 0, startedAt: 0, pending: false };
     const MOVE_TOLERANCE = 10;
+    // Just above the platform's own long-press threshold, so anything iOS
+    // would treat as a press rather than a tap is left alone here too.
+    const TAP_MAX_MS = 500;
 
     const onTouchStart = (e) => {
       if (e.touches.length !== 1 || !isOutside(e.target)) {
@@ -4910,11 +6967,17 @@ function LittleFiresApp() {
       const t = e.touches[0];
       touch.x = t.clientX;
       touch.y = t.clientY;
+      touch.startedAt = Date.now();
       touch.pending = true;
     };
 
     const onTouchMove = (e) => {
       if (!touch.pending) return;
+      // A second finger means a pinch or a two-finger scroll, never a tap.
+      if (e.touches.length !== 1) {
+        touch.pending = false;
+        return;
+      }
       const t = e.touches[0];
       if (Math.abs(t.clientX - touch.x) > MOVE_TOLERANCE ||
           Math.abs(t.clientY - touch.y) > MOVE_TOLERANCE) {
@@ -4925,21 +6988,32 @@ function LittleFiresApp() {
     const onTouchEnd = () => {
       if (!touch.pending) return;
       touch.pending = false;
+      // A held finger is not a dismissal, even if it never moved. Scrolling
+      // often begins as a stationary press while the page decides to move, and
+      // closing the task at the end of that reads as the app closing itself.
+      if (Date.now() - touch.startedAt > TAP_MAX_MS) return;
       collapse();
     };
+
+    // touchcancel is not a tap that happened to end - it is the gesture being
+    // taken away, which is exactly what the browser does when it decides the
+    // touch is a scroll. Routing it to onTouchEnd meant a scroll that had not
+    // yet passed the movement tolerance collapsed the task at the moment the
+    // browser took over.
+    const onTouchCancel = () => { touch.pending = false; };
 
     // Capture phase so this runs before the tapped card's own handler.
     document.addEventListener('mousedown', onMouseDown, true);
     document.addEventListener('touchstart', onTouchStart, true);
     document.addEventListener('touchmove', onTouchMove, true);
     document.addEventListener('touchend', onTouchEnd, true);
-    document.addEventListener('touchcancel', onTouchEnd, true);
+    document.addEventListener('touchcancel', onTouchCancel, true);
     return () => {
       document.removeEventListener('mousedown', onMouseDown, true);
       document.removeEventListener('touchstart', onTouchStart, true);
       document.removeEventListener('touchmove', onTouchMove, true);
       document.removeEventListener('touchend', onTouchEnd, true);
-      document.removeEventListener('touchcancel', onTouchEnd, true);
+      document.removeEventListener('touchcancel', onTouchCancel, true);
     };
   }, [expandedTaskId]);
 
@@ -5136,11 +7210,16 @@ function LittleFiresApp() {
   // would tell the other device to destroy a task that was only filed away.
   const removeTaskFromList = (listName, taskId) => {
     setAllLists(prev => {
-      const newLists = { ...prev };
-      const idx = findTaskIndex(newLists[listName], taskId);
+      const idx = findTaskIndex(prev[listName], taskId);
       if (idx === -1) return prev;
-      newLists[listName].splice(idx, 1);
-      return newLists;
+      // Copy the ARRAY, not just the object. { ...prev } shares every list
+      // array with prev, so splicing in place mutated the state React was
+      // still holding - masked today, but any change detection that compares
+      // old and new list references (exactly what sync's push layer will do)
+      // would see removals as "nothing changed" and never propagate them.
+      const nextList = [...prev[listName]];
+      nextList.splice(idx, 1);
+      return { ...prev, [listName]: nextList };
     });
   };
 
@@ -5187,21 +7266,23 @@ function LittleFiresApp() {
 
     // Remove from archived
     setArchivedTasks(prev => {
-      const newArchived = { ...prev };
-      const idx = findTaskIndex(newArchived[listName], taskId);
+      const idx = findTaskIndex(prev[listName], taskId);
       if (idx === -1) return prev;
-      newArchived[listName].splice(idx, 1);
-      return newArchived;
+      // Copy the array, not just the object - see removeTaskFromList.
+      const nextList = [...prev[listName]];
+      nextList.splice(idx, 1);
+      return { ...prev, [listName]: nextList };
     });
   };
 
   const deleteArchivedTask = (listName, taskId) => {
     setArchivedTasks(prev => {
-      const newArchived = { ...prev };
-      const idx = findTaskIndex(newArchived[listName], taskId);
+      const idx = findTaskIndex(prev[listName], taskId);
       if (idx === -1) return prev;
-      newArchived[listName].splice(idx, 1);
-      return newArchived;
+      // Copy the array, not just the object - see removeTaskFromList.
+      const nextList = [...prev[listName]];
+      nextList.splice(idx, 1);
+      return { ...prev, [listName]: nextList };
     });
     recordDeletion(taskId);
   };
@@ -5781,7 +7862,7 @@ function LittleFiresApp() {
     allTaskLists.forEach(listName => {
       // Both maps, not just the active one. Archiving is a decision about the
       // task list, not about history: looking back at March should show what
-      // March actually looked like. This can't leak into the present, either -
+      // March actually looked like. This can't leak into the present either -
       // anything archived was completed in a month that has already ended, so
       // its anchor is necessarily a past date.
       const seenIds = new Set();
@@ -5792,8 +7873,8 @@ function LittleFiresApp() {
 
       sources.forEach(({ tasks, archived }) => {
         tasks.forEach(task => {
-          // Guards the moment mid-sweep when a task sits in both maps - the
-          // active copy is walked first, so it's the one that wins.
+          // Guards the moment mid-sweep when a task sits in both maps. The
+          // active copy is walked first, so it is the one that wins.
           if (task.id != null) {
             if (seenIds.has(task.id)) return;
             seenIds.add(task.id);
@@ -5864,7 +7945,45 @@ function LittleFiresApp() {
         });
       });
     }
-    
+
+    // Goals, on their start and end dates. Same shape and same rules as
+    // projects - a goal that starts and ends on one day is marked once, as
+    // 'both', rather than appearing twice.
+    if (showGoals && isFeatureOn('goals')) {
+      const allGoalLists = ['personal', 'work', 'home', 'travel', 'kids'];
+      allGoalLists.forEach(listName => {
+        (goals[listName] || []).forEach(goal => {
+          let shouldShow = false;
+          let dateType = '';
+
+          if (goal.startDate) {
+            const startDate = parseLocalDate(goal.startDate);
+            if (startDate && isSameDate(startDate, date)) {
+              shouldShow = true;
+              dateType = 'start';
+            }
+          }
+
+          if (goal.endDate) {
+            const endDate = parseLocalDate(goal.endDate);
+            if (endDate && isSameDate(endDate, date)) {
+              shouldShow = true;
+              dateType = dateType === 'start' ? 'both' : 'end';
+            }
+          }
+
+          if (shouldShow) {
+            items.push({
+              type: 'goal',
+              data: goal,
+              list: listName,
+              dateType: dateType
+            });
+          }
+        });
+      });
+    }
+
     return items;
   };
 
@@ -5918,14 +8037,8 @@ function LittleFiresApp() {
 
   // Sweeps completed tasks out of the active lists once the calendar month they
   // were completed in is over - not on a rolling window. A task finished on the
-  // 31st stays put through the 31st, and the whole month leaves together on the
-  // 1st. The cutoff is midnight local on the 1st of the current month, so
-  // "before the current month" is the entire test.
-  //
-  // Reads allLists through a ref, not the closure: the daily timer holds one
-  // copy of this function for the life of the session, and a closure would have
-  // it sweeping whatever the lists looked like at mount.
-  const autoArchiveCompletedTasks = React.useCallback(() => {
+  // 31st stays through the 31st, and the whole month leaves together on the 1st.
+  const autoArchiveCompletedTasks = () => {
     const now = new Date();
     const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const stamp = now.toISOString();
@@ -5939,14 +8052,12 @@ function LittleFiresApp() {
       return completedDate < currentMonthStart;
     };
 
-    const lists = allListsRef.current || {};
-    const moved = {};
-    let total = 0;
-
     // Walks the keys actually present in storage rather than TASK_LISTS, so a
     // list the user has since removed can't strand completed tasks in limbo.
-    Object.keys(lists).forEach(listName => {
-      const tasks = lists[listName];
+    const moved = {};
+    let total = 0;
+    Object.keys(allLists || {}).forEach(listName => {
+      const tasks = allLists[listName];
       if (!Array.isArray(tasks)) return;
       const take = tasks.filter(belongsInArchive);
       if (take.length > 0) {
@@ -5957,8 +8068,7 @@ function LittleFiresApp() {
 
     if (total === 0) return 0;
 
-    // One update per map instead of one per task. Both are functional, so
-    // neither depends on the snapshot above still being current when they run.
+    // One update per map rather than one per task.
     setArchivedTasks(prev => {
       const next = { ...prev };
       Object.keys(moved).forEach(listName => {
@@ -5966,8 +8076,10 @@ function LittleFiresApp() {
         const seen = new Set(existing.map(t => t.id).filter(id => id != null));
         const additions = moved[listName]
           .filter(t => t.id == null || !seen.has(t.id))
-          // Stamped like archiveTask does, so two devices disagreeing about
-          // whether a task is archived can tell which opinion is newer.
+          // Stamped like the manual archiveTask path: archiving is a state
+          // change like any other, and without the stamp two devices
+          // disagreeing about whether a task is archived have no way to tell
+          // which opinion is newer.
           .map(t => ({ ...t, archivedAt: stamp, updatedAt: stamp }));
         if (additions.length > 0) next[listName] = [...existing, ...additions];
       });
@@ -5980,8 +8092,10 @@ function LittleFiresApp() {
         const tasks = Array.isArray(next[listName]) ? next[listName] : [];
         const ids = new Set(moved[listName].map(t => t.id).filter(id => id != null));
         const objects = new Set(moved[listName]);
-        // Matched by id, falling back to identity, so a task that was cloned
-        // between the snapshot and this update is still removed.
+        // Matched by id with an identity fallback, so a task cloned between
+        // the snapshot above and this update is still removed. Removal without
+        // a tombstone - the task still exists, under the same id, in the
+        // archive.
         next[listName] = tasks.filter(
           t => !(objects.has(t) || (t.id != null && ids.has(t.id)))
         );
@@ -5989,11 +8103,8 @@ function LittleFiresApp() {
       return next;
     });
 
-    // Removed, not deleted - no tombstones. The tasks still exist under the
-    // same ids in the archive, and telling another device to destroy them
-    // would turn filing away into data loss.
     return total;
-  }, []);
+  };
 
   // Project management functions
   const addProject = (listName, name, description, startDate, endDate) => {
@@ -7722,11 +9833,22 @@ function LittleFiresApp() {
              the only input in the app doing that. */
           color: var(--text);
           font-family: var(--font-body);
-          font-size: 0.9rem;
+          /* Matched to InlineDatePicker's trigger, which sits directly above
+             this in the task details. Everything else already agreed -
+             background, 20px radius, 2px border, 10px vertical padding - so
+             the type size was the last thing making the two rows look like
+             different kinds of control. */
+          font-size: 0.95rem;
           cursor: pointer;
           transition: all 0.3s ease;
           outline: none;
           min-width: 150px;
+          /* The mobile block sets width: 100% on this control. There is no
+             global border-box reset in this stylesheet - it is declared per
+             rule - so without this the 14px side padding and 2px border were
+             added OUTSIDE that 100% and the field rendered 32px wider than its
+             parent, spilling past the right edge of the task card. */
+          box-sizing: border-box;
         }
 
         .project-selector:focus {
@@ -8012,6 +10134,10 @@ function LittleFiresApp() {
         }
 
         .task {
+          /* Breathing room when an expanded card is scrolled to the top of the
+             list - scrollIntoView({block:'start'}) pins the edge exactly, which
+             looks like the card is jammed against the rim. */
+          scroll-margin-top: 12px;
           background: rgba(var(--surface-raised-rgb), 0.6);
           backdrop-filter: blur(10px);
           border: 2px solid rgba(var(--accent-rgb), 0.15);
@@ -8272,6 +10398,41 @@ function LittleFiresApp() {
           background: rgba(var(--partner-rgb), 0.2);
           color: var(--partner);
           border-color: rgba(var(--partner-rgb), 0.45);
+        }
+
+        /* Wrapper that lets the details animate shut.
+        
+           grid-template-rows 1fr -> 0fr is the one way to transition to and
+           from an automatic height without measuring it in JavaScript. The
+           inner element carries overflow: hidden and min-height: 0, which is
+           what actually clips the content as the row shrinks.
+        
+           Only the CLOSING state carries a transition. Opening stays instant:
+           the expand already has a scroll-into-view that measures the card two
+           frames later, and animating the height at the same time would mean
+           measuring a card still on its way to full size. */
+        .details-shell {
+          display: grid;
+          grid-template-rows: 1fr;
+        }
+
+        .details-shell-inner {
+          overflow: hidden;
+          min-height: 0;
+        }
+
+        .details-shell.closing {
+          grid-template-rows: 0fr;
+          opacity: 0;
+          transition: grid-template-rows 220ms ease, opacity 200ms ease;
+          /* Nothing in a panel on its way out should be tappable. */
+          pointer-events: none;
+        }
+
+        /* Browsers that can't interpolate grid-template-rows simply snap shut,
+           which is what happened before this existed. */
+        body.reduce-motion .details-shell.closing {
+          transition: none;
         }
 
         .task-details-section {
@@ -8591,6 +10752,27 @@ function LittleFiresApp() {
 
         .toolbar-btn:active {
           transform: scale(0.95);
+        }
+
+        /* Shown only where the labels are hidden. On a wide screen "Follow Up"
+           is its own best label and a flag beside it is noise - unlike Box and
+           Bullets, whose icons double as a preview of what they insert. */
+        .toolbar-btn-compact-icon {
+          display: none;
+        }
+
+        /* Icon-only variant. Square-ish and gapless, so the pair reads as one
+           control next to the worded buttons rather than two undersized ones.
+           Padding is tuned to match its neighbours' rendered height: those are
+           6px + a 0.85rem line box, this is an SVG of a fixed size. */
+        .toolbar-btn-icon {
+          gap: 0;
+          padding: 6px 9px;
+          /* A 44px target is the accessibility floor for touch, and these are
+             the smallest controls in the editor. The button stays visually
+             small; the tappable area is grown around it. */
+          min-width: 34px;
+          justify-content: center;
         }
 
         .task-priority-selector {
@@ -8951,6 +11133,9 @@ function LittleFiresApp() {
         .project-detail-content {
           max-width: 800px;
           width: 100%;
+          /* 30px padding outside a 100% width overflowed the viewport by
+             60px on a phone - same class of bug as .project-selector. */
+          box-sizing: border-box;
           background: #1e1e2e;
           border-radius: 20px;
           padding: 30px;
@@ -8975,6 +11160,9 @@ function LittleFiresApp() {
         .goal-detail-content {
           max-width: 800px;
           width: 100%;
+          /* 30px padding outside a 100% width overflowed the viewport by
+             60px on a phone - same class of bug as .project-selector. */
+          box-sizing: border-box;
           background: #1e1e2e;
           border-radius: 20px;
           padding: 30px;
@@ -9485,6 +11673,9 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
           font-family: var(--font-body);
           width: 100%;
+          /* width: 100% plus side padding and a border, with no global
+             border-box reset - same overflow as .project-selector. */
+          box-sizing: border-box;
         }
 
         .tag-input:focus {
@@ -9736,6 +11927,12 @@ function LittleFiresApp() {
           color: #9333EA;
         }
 
+        /* Distinct from the project dot beside it, and readable on both
+           themes - the other three indicators are fixed colours too. */
+        .goal-indicator {
+          color: #0EA5E9;
+        }
+
         .day-details {
           background: rgba(var(--surface-raised-rgb), 0.6);
           border: 2px solid rgba(var(--border-rgb), 0.3);
@@ -9796,6 +11993,44 @@ function LittleFiresApp() {
           border-bottom: 1px solid rgba(var(--accent-rgb), 0.15);
         }
 
+        /* Status heading inside a list group. Deliberately quieter than the
+           list heading above it - smaller, uppercase, no rule underneath - so
+           the two read as a hierarchy rather than as two competing headers. */
+        .day-status-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 4px 0 8px;
+          font-size: 0.7rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--text-soft);
+        }
+
+        .day-status-count {
+          font-size: 0.7rem;
+          font-weight: 600;
+          color: var(--text-muted);
+        }
+
+        /* The first status group sits directly under the list heading, which
+           already provides the separation. */
+        .day-status-group + .day-status-group .day-status-header {
+          margin-top: 14px;
+        }
+
+        /* Completed rows recede: the eye should land on what is still open.
+           Opacity rather than a colour change, so it works in both themes. */
+        .day-status-group.status-complete .calendar-item .item-text,
+        .day-status-group.status-complete .calendar-item .item-project {
+          opacity: 0.62;
+        }
+
+        .day-status-group.status-complete .calendar-item .item-text .task-dot {
+          text-decoration: none;
+        }
+
         .calendar-item {
           background: rgba(var(--surface-deep-rgb), 0.6);
           border-radius: 12px;
@@ -9848,6 +12083,9 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
           box-shadow: 0 4px 15px rgba(45, 106, 79, 0.3);
           width: 100%;
+          /* Same as .project-selector: 20px side padding outside a 100%
+             width overflowed the card by 40px. */
+          box-sizing: border-box;
         }
 
         .go-to-btn:hover {
@@ -9990,8 +12228,26 @@ function LittleFiresApp() {
           border-left: 4px solid var(--accent);
         }
 
+        /* No left stripe. The row is identified by its bullet, in the same
+           colour it uses on the month grid, which keeps the calendar's own
+           colour language rather than adding a second one. */
         .project-item {
-          border-left: 4px solid #9333EA;
+          border-left: none;
+        }
+
+        /* Shares the task bullet's metrics so a project row and a task row
+           line up down the panel. */
+        .item-dot {
+          font-size: 0.8rem;
+          margin-right: 6px;
+        }
+
+        .project-dot {
+          color: #9333EA;
+        }
+
+        .goal-dot {
+          color: #0EA5E9;
         }
 
         .project-date-badge {
@@ -10086,7 +12342,46 @@ function LittleFiresApp() {
         .item-text {
           color: var(--text);
           font-size: 1rem;
+          /* Matched to .task-text in the main list. Both surfaces inherit
+             --font-body from the container, so weight was the only thing that
+             differed - this read as 400 next to the list's 600 and looked like
+             a different font rather than the same task in another view.
+             600 is deliberate there (the import carries 400/600/700/800 only,
+             so 500 would silently render as 400). */
+          font-weight: 600;
           line-height: 1.5;
+        }
+
+        /* The flame sits inline after the name now, rather than in a header
+           row above it. A small gap so it reads as attached to the text
+           without crowding the last word. */
+        .item-text .priority-badge {
+          margin-left: 6px;
+        }
+
+        /* Project name as a subtitle under the task. Indented to line up with
+           the task text rather than the bullet, so the two read as one block. */
+        .item-project {
+          margin-top: 2px;
+          padding-left: 18px;
+          color: var(--text-muted);
+          font-size: 0.8rem;
+          line-height: 1.4;
+        }
+
+        /* Sits under the name like .item-project, aligned to the same 18px so a
+           row with both reads as one block. Muted rather than accent-coloured:
+           it's a note about where the task lives now, not something to
+           celebrate. */
+        .item-archived {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          margin-top: 2px;
+          padding-left: 18px;
+          color: var(--text-soft);
+          font-size: 0.75rem;
+          line-height: 1.4;
         }
 
         .task-dot {
@@ -10102,23 +12397,6 @@ function LittleFiresApp() {
           background: rgba(var(--accent-rgb), 0.2);
           border-radius: 10px;
           color: var(--accent);
-          font-size: 0.8rem;
-          font-weight: 600;
-        }
-
-        /* Sits next to .completed-badge on calendar items from the archive.
-           Deliberately muted rather than accent-coloured - it's a note about
-           where the task lives now, not a second thing to celebrate. */
-        .archived-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          margin-top: 8px;
-          margin-left: 6px;
-          padding: 3px 10px;
-          background: rgba(var(--surface-alt-rgb), 0.5);
-          border-radius: 10px;
-          color: var(--text-muted);
           font-size: 0.8rem;
           font-weight: 600;
         }
@@ -10277,19 +12555,25 @@ function LittleFiresApp() {
             min-height: 25vh;
           }
 
-          /* Details toolbar (Box / Bullets / Follow Up): the global button rule
-             applies uppercase + 1px letter-spacing, which makes these overflow
-             onto a second row. Tighten them so they fit a single row. */
+          /* Details toolbar: tightened for the narrow screen, and allowed to
+             wrap.
+             
+             This deliberately reverses an earlier decision. The row used to be
+             nowrap + overflow-x: auto with shrinkable buttons, so that adding a
+             button shortened the others instead of pushing one off the edge.
+             That works while the labels still fit the shortened buttons. It
+             stopped working at five: a shrunk button does not reflow its label,
+             because .toolbar-btn is white-space: nowrap - so the text simply
+             rendered outside the button's border. Indent and Outdent made it
+             obvious, but Bullets and Bold were already overrunning.
+             
+             Wrapping to a second row costs a little height on a task that is
+             already expanded, and in exchange no button is ever distorted or
+             scrolled out of sight. */
           .richtext-toolbar {
             gap: 5px;
             padding: 4px;
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-          }
-
-          .richtext-toolbar::-webkit-scrollbar {
-            display: none;
+            flex-wrap: wrap;
           }
 
           .toolbar-btn {
@@ -10297,15 +12581,77 @@ function LittleFiresApp() {
             font-size: 0.62rem;
             letter-spacing: 0;
             border-radius: 6px;
-            /* Was flex-shrink: 0 from the base rule, which is what pushed the
-               fourth button off the edge once Bold was added - the row could
-               only scroll, never compress. Letting them share the width means
-               adding a button shortens the others rather than hiding one.
-               min-width: 0 is required as well: a flex item won't shrink below
-               its content width without it, so the padding change alone
-               wouldn't have been enough. */
-            flex-shrink: 1;
-            min-width: 0;
+            /* Never below the width of the label. flex-shrink: 1 with
+               min-width: 0 is precisely what let a button compress past its
+               own text, and with white-space: nowrap the text then rendered
+               outside the border rather than reflowing. */
+            flex-shrink: 0;
+          }
+
+          /* The labels come off on a narrow screen and each button becomes its
+             icon. Six labelled buttons need roughly 330px of a ~300px row, so
+             something had to give: shrinking distorted the text, wrapping cost
+             a whole extra row for one icon, and abbreviating only bought back
+             the one button while Bullets and Bold kept growing the row.
+             Icon-only is about 195px and leaves headroom for another button.
+             Desktop keeps every label - it has the width, and the words are
+             clearer than any icon. */
+          .toolbar-btn-label {
+            display: none;
+          }
+
+          .toolbar-btn {
+            gap: 0;
+            min-width: 34px;
+            justify-content: center;
+          }
+
+          .toolbar-btn-compact-icon {
+            display: inline-flex;
+          }
+
+          /* Sized for a finger, and share the row rather than each claiming a
+             fixed width.
+             
+             A fixed 41px square fitted five buttons and pushed the sixth onto
+             its own line: the toolbar's interior is about 244px on a 390px
+             phone, not the ~300px a first estimate suggested, and six squares
+             plus gaps need 283px. Rather than pick a smaller number that would
+             fail again on a narrower phone, the buttons flex.
+             
+             Shrinking is safe HERE specifically, and only because the labels
+             are hidden: what made a shrunk button overrun its border was text
+             that could not reflow. An icon is a fixed 17px centred in whatever
+             width the button gets, and Bold is a single character. The floor
+             keeps the touch target honest - 6 x 34 + gaps is 229px, so the row
+             holds down to a considerably narrower screen than any current
+             iPhone, and wrap remains as the last resort below that.
+             
+             Scoped to the details toolbar on purpose. The Notes editor uses
+             .toolbar-btn too and still shows its labels, where shrinking would
+             bring the overrun straight back. */
+          .task-details-section .richtext-toolbar .toolbar-btn {
+            flex: 1 1 0;
+            min-width: 34px;
+            /* Stops five buttons stretching into lozenges when the outdent
+               button is hidden. */
+            max-width: 52px;
+            min-height: 41px;
+            padding: 11px 0;
+          }
+
+          .task-details-section .richtext-toolbar .toolbar-btn svg {
+            width: 17px;
+            height: 17px;
+          }
+
+          /* Bold degrades to "B" rather than to an icon, so it keeps the
+             underline that shows it applies bold AND underline together. The
+             letter is text where its neighbours are 17px icons, so it is
+             sized to match them optically rather than left at the label size
+             it no longer displays. */
+          .task-details-section .richtext-toolbar .toolbar-btn {
+            font-size: 0.95rem;
           }
 
           /* The icon must not be squeezed with the label - it has no text to
@@ -10692,6 +13038,18 @@ function LittleFiresApp() {
                     Notes
                   </div>
                 )}
+                {/* Only present once suggestions are switched on in Settings.
+                    In the menu rather than among the list tabs on purpose: it
+                    is a view, not a list, and putting it in TASK_LISTS is what
+                    would make every count in the app treat proposals as work. */}
+                {settings.aiSuggestions && (
+                  <div
+                    className={`menu-item ${appMode === 'ai' ? 'active' : ''}`}
+                    onClick={() => { setAppMode('ai'); setMenuOpen(false); }}
+                  >
+                    AI Tasks
+                  </div>
+                )}
                 <div className="menu-divider"></div>
                 <div 
                   className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
@@ -10918,6 +13276,179 @@ function LittleFiresApp() {
               {renderTasks()}
             </div>
           </>
+        )}
+
+        {appMode === 'ai' && (
+          <div className="tasks-container">
+            <div style={{
+              color: 'var(--text-muted)', fontSize: '0.85rem',
+              fontFamily: 'var(--font-ui)', lineHeight: 1.5, marginBottom: '18px'
+            }}>
+              Proposals based on what you've been doing. Nothing here is a task until
+              you add it.
+              {!aiKeySaved && (
+                <div style={{ marginTop: '8px' }}>
+                  No API key saved, so these are generated on this device and can only
+                  echo what you've already written. Add a key in Settings → AI Tasks for
+                  suggestions that propose something new.
+                </div>
+              )}
+            </div>
+
+            {suggestionLists().map(listName => {
+              const shelf = aiShelves[listName];
+              const items = (shelf && shelf.items) || [];
+              return (
+                <div key={listName} className="day-list-group" style={{ marginBottom: '22px' }}>
+                  <div className="list-section-header day-list-header" style={{ cursor: 'default' }}>
+                    <span>{listLabel(listName)}</span>
+                    <button
+                      onClick={() => refreshShelf(listName)}
+                      disabled={!!aiBusy[listName]}
+                      title={`Refresh ${listLabel(listName)} suggestions`}
+                      style={{
+                        padding: '6px 12px', borderRadius: '8px',
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                        background: 'rgba(var(--surface-rgb), 0.8)',
+                        color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                        fontSize: '0.72rem', cursor: 'pointer', letterSpacing: '0.04em'
+                      }}
+                    >
+                      {aiBusy[listName] ? 'Thinking…' : 'Refresh'}
+                    </button>
+                  </div>
+
+                  {aiErrors[listName] && (
+                    <div style={{
+                      color: '#d15a5a', fontSize: '0.8rem', fontFamily: 'var(--font-ui)',
+                      padding: '8px 2px', lineHeight: 1.4
+                    }}>
+                      {aiErrors[listName]}
+                    </div>
+                  )}
+
+                  {items.length === 0 ? (
+                    <div style={{
+                      color: 'var(--text-soft)', fontSize: '0.85rem',
+                      fontFamily: 'var(--font-ui)', padding: '10px 2px'
+                    }}>
+                      {!shelf
+                        ? 'No suggestions yet. Tap Refresh.'
+                        : 'Nothing to suggest for this list yet — suggestions are '
+                          + 'built from your projects, goals and the tasks you\'ve '
+                          + 'written down, so a thin list gets fewer of them rather '
+                          + 'than filler.'}
+                    </div>
+                  ) : items.map(item => (
+                    <div key={item.id} className="calendar-item" style={{ marginBottom: '10px' }}>
+                      {aiEditing && aiEditing.id === item.id ? (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <input
+                            value={aiEditing.text}
+                            autoFocus
+                            onChange={(e) => setAiEditing({ id: item.id, text: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                acceptSuggestion(listName, item, aiEditing.text);
+                                setAiEditing(null);
+                              } else if (e.key === 'Escape') {
+                                setAiEditing(null);
+                              }
+                            }}
+                            style={{
+                              flex: 1, minWidth: '160px', padding: '8px 12px',
+                              borderRadius: '8px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.35)',
+                              background: 'rgba(var(--surface-rgb), 0.9)',
+                              color: 'var(--text)', fontFamily: 'var(--font-body)',
+                              fontSize: '0.95rem', outline: 'none'
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              acceptSuggestion(listName, item, aiEditing.text);
+                              setAiEditing(null);
+                            }}
+                            disabled={!aiEditing.text.trim()}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                              background: aiEditing.text.trim()
+                                ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                                : 'rgba(var(--surface-rgb), 1)',
+                              color: aiEditing.text.trim() ? '#fff' : 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
+                              cursor: aiEditing.text.trim() ? 'pointer' : 'default'
+                            }}
+                          >
+                            Add
+                          </button>
+                          <button
+                            onClick={() => setAiEditing(null)}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--border-rgb), 0.3)',
+                              background: 'transparent', color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (<>
+                      <div className="item-text">
+                        <span className="item-dot" style={{ color: 'var(--accent)' }}>●</span>
+                        {item.text}
+                      </div>
+                      {item.rationale && (
+                        <div className="item-project">{item.rationale}</div>
+                      )}
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => acceptSuggestion(listName, item)}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                            color: '#fff', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Add to {listLabel(listName)}
+                        </button>
+                        <button
+                          onClick={() => setAiEditing({ id: item.id, text: item.text })}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => dismissSuggestion(listName, item)}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--border-rgb), 0.3)',
+                            background: 'transparent',
+                            color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                      </>)}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
         )}
 
         {appMode === 'notes' && (
@@ -13325,6 +15856,16 @@ function LittleFiresApp() {
                   <span>Projects</span>
                 </label>
               )}
+              {isFeatureOn('goals') && (
+                <label className="calendar-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={showGoals}
+                    onChange={(e) => setShowGoals(e.target.checked)}
+                  />
+                  <span>Goals</span>
+                </label>
+              )}
               {isFeatureOn('notes') && (
                 <label className="calendar-checkbox">
                   <input
@@ -13459,6 +16000,11 @@ function LittleFiresApp() {
                             ●
                           </span>
                         )}
+                        {items.filter(item => item.type === 'goal').length > 0 && (
+                          <span className="indicator goal-indicator" title={`${items.filter(item => item.type === 'goal').length} goal(s)`}>
+                            ●
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -13486,6 +16032,7 @@ function LittleFiresApp() {
                   const tasks = items.filter(item => item.type === 'task');
                   const notes = items.filter(item => item.type === 'note');
                   const projectItems = items.filter(item => item.type === 'project');
+                  const goalItems = items.filter(item => item.type === 'goal');
                   
                   return (
                     <div className="day-items">
@@ -13518,7 +16065,14 @@ function LittleFiresApp() {
                                 <span>{listLabel(listName)}</span>
                                 <span className={`badge ${listName}`}>{listTasks.length}</span>
                               </div>
-                          {!isCalendarSectionCollapsed(`list-${listName}`) && listTasks.map((item, idx) => {
+                          {!isCalendarSectionCollapsed(`list-${listName}`) &&
+                            groupTasksByStatus(listTasks, it => it.data).map(statusGroup => (
+                            <div key={statusGroup.key} className={`day-status-group status-${statusGroup.key}`}>
+                              <div className="day-status-header">
+                                <span>{statusGroup.label}</span>
+                                <span className="day-status-count">{statusGroup.items.length}</span>
+                              </div>
+                              {statusGroup.items.map((item, idx) => {
                             const project = item.data.projectId 
                               ? getAllProjects().find(p => p.id == item.data.projectId)
                               : null;
@@ -13533,23 +16087,30 @@ function LittleFiresApp() {
                                 onClick={() => setExpandedCalendarTaskId(isExpanded ? null : taskId)}
                                 style={{cursor: 'pointer'}}
                               >
-                                <div className="item-header">
-                                  <span className={`list-badge ${item.list}`}>{item.list}</span>
-                                  {project && (
-                                    <span className="project-badge">
-                                      {project.name}
-                                    </span>
-                                  )}
-                                  {item.data.priority === 'high' && <span className="priority-badge"><FlameIcon /></span>}
-                                </div>
+                                {/* No header row. The list badge and the Completed
+                                    badge went when the rows gained list and status
+                                    headings that said the same thing; the flame now
+                                    sits inline with the name it describes, and the
+                                    project reads as a subtitle beneath it. What is
+                                    left is the same shape as a task in the main list:
+                                    name first, detail under it. */}
                                 <div className="item-text">
                                   <span className="task-dot">●</span> {item.data.text}
+                                  {item.data.priority === 'high' && (
+                                    <span className="priority-badge"><FlameIcon /></span>
+                                  )}
                                 </div>
-                                {item.data.completed && <span className="completed-badge">✓ Completed</span>}
-                                {/* Says why this one isn't in the task list any
-                                    more. Everything in this panel is read-only,
-                                    so there's nothing to disable - only to explain. */}
-                                {item.archived && <span className="archived-badge"><ArchiveIcon /> Archived</span>}
+                                {project && (
+                                  <div className="item-project">{project.name}</div>
+                                )}
+                                {/* Says why this one isn't in the task list any more.
+                                    Everything in this panel is read-only, so there's
+                                    nothing to disable - only to explain. */}
+                                {item.archived && (
+                                  <div className="item-archived">
+                                    <ArchiveIcon /> Archived
+                                  </div>
+                                )}
                                 
                                 {isExpanded && (
                                   <div className="calendar-task-details" onClick={(e) => e.stopPropagation()}>
@@ -13591,7 +16152,7 @@ function LittleFiresApp() {
                                         if (taskIndex !== -1) {
                                           setAppMode('tasks');
                                           setCurrentList(item.list);
-                                          setSelectedDate(null);
+                                          setSelectedDay(null);
                                           setTimeout(() => {
                                             setExpandedTaskId(`${item.list}-${item.data.id}`);
                                           }, 100);
@@ -13606,12 +16167,75 @@ function LittleFiresApp() {
                             );
                           })}
                             </div>
+                          ))}
+                            </div>
                           );
                           })}
                           </>)}
                         </div>
                       )}
                       
+                      {goalItems.length > 0 && (
+                        <div className="day-section">
+                          <h4
+                            className="day-section-toggle"
+                            onClick={() => toggleCalendarSection('goals')}
+                          >
+                            <span>Goals</span>
+                            <span className="day-section-count">{goalItems.length}</span>
+                          </h4>
+                          {!isCalendarSectionCollapsed('goals') && (<>
+                          {/* Grouped by list exactly as the tasks and projects are,
+                              in the same Settings order, with only the lists that
+                              have a goal on this day getting a header. */}
+                          {orderedTaskLists
+                            .filter(listName => goalItems.some(g => g.list === listName))
+                            .map(listName => {
+                          const listGoals = goalItems.filter(g => g.list === listName);
+                          return (
+                            <div key={listName} className="day-list-group">
+                              <div
+                                className="list-section-header day-list-header day-section-toggle"
+                                onClick={() => toggleCalendarSection(`goal-list-${listName}`)}
+                              >
+                                <span>{listLabel(listName)}</span>
+                                <span className={`badge ${listName}`}>{listGoals.length}</span>
+                              </div>
+                              {!isCalendarSectionCollapsed(`goal-list-${listName}`) &&
+                                listGoals.map((item, idx) => (
+                            <div key={`goal-${item.data.id}-${idx}`} className="calendar-item goal-item">
+                              {/* Name first, at task weight, with a bullet in the
+                                  colour this goal carries on the month grid. The
+                                  list pill is gone - the row sits under a list
+                                  heading that says the same thing. */}
+                              <div className="item-text">
+                                <span className="item-dot goal-dot">●</span>
+                                {item.data.name}
+                              </div>
+                              {/* Dates as a subtitle under the name, same as the
+                                  project rows. Still says which end of the goal this
+                                  day is, because a goal can start and finish on the
+                                  same one. */}
+                              <div className="item-project">
+                                {item.dateType === 'start' && 'Starts '}
+                                {item.dateType === 'end' && 'Ends '}
+                                {item.dateType === 'both' && 'Starts & ends '}
+                                {formatProjectSpan(item.data, parseLocalDate)}
+                              </div>
+                              {item.data.description && (
+                                <div className="project-description-preview">
+                                  {item.data.description}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                            </div>
+                          );
+                          })}
+                          </>)}
+                        </div>
+                      )}
+
                       {notes.length > 0 && (
                         <div className="day-section">
                           <h4
@@ -13668,7 +16292,7 @@ function LittleFiresApp() {
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setAppMode('notes');
-                                        setSelectedDate(null);
+                                        setSelectedDay(null);
                                         setTimeout(() => {
                                           const noteElement = document.querySelector(`[data-note-id="${item.data.id}"]`);
                                           if (noteElement) {
@@ -13677,7 +16301,7 @@ function LittleFiresApp() {
                                               block: 'center'
                                             });
                                             // Expand the note
-                                            const currentNote = allNotes.find(n => n.id === item.data.id);
+                                            const currentNote = notes.find(n => n.id === item.data.id);
                                             if (currentNote && !currentNote.expanded) {
                                               toggleNoteExpanded(item.data.id);
                                             }
@@ -13706,7 +16330,27 @@ function LittleFiresApp() {
                             <span className="day-section-count">{projectItems.length}</span>
                           </h4>
                           {!isCalendarSectionCollapsed('projects') && (<>
-                          {projectItems.map((item, idx) => {
+                          {/* Grouped by list exactly as the tasks above are, and in
+                              the same Settings order, so the two sections read the
+                              same way. Only lists with something on this day get a
+                              header. Projects live in the five personal lists, so
+                              orderedTaskLists is filtered against what is actually
+                              here rather than assumed. */}
+                          {orderedTaskLists
+                            .filter(listName => projectItems.some(p => p.list === listName))
+                            .map(listName => {
+                          const listProjects = projectItems.filter(p => p.list === listName);
+                          return (
+                            <div key={listName} className="day-list-group">
+                              <div
+                                className="list-section-header day-list-header day-section-toggle"
+                                onClick={() => toggleCalendarSection(`project-list-${listName}`)}
+                              >
+                                <span>{listLabel(listName)}</span>
+                                <span className={`badge ${listName}`}>{listProjects.length}</span>
+                              </div>
+                              {!isCalendarSectionCollapsed(`project-list-${listName}`) &&
+                                listProjects.map((item, idx) => {
                             const projectId = `calendar-project-${item.data.id}`;
                             const isExpanded = expandedCalendarProjectId === projectId;
                             
@@ -13717,16 +16361,24 @@ function LittleFiresApp() {
                                 onClick={() => setExpandedCalendarProjectId(isExpanded ? null : projectId)}
                                 style={{cursor: 'pointer'}}
                               >
-                                <div className="item-header">
-                                  <span className={`list-badge ${item.list}`}>{item.list}</span>
-                                  <span className="project-date-badge">
-                                    {item.dateType === 'start' && 'Start'}
-                                    {item.dateType === 'end' && 'End'}
-                                    {item.dateType === 'both' && 'Start & End'}
-                                  </span>
-                                </div>
+                                {/* Name first, in the same weight as a task, with a
+                                    bullet in the colour this project carries on the
+                                    month grid. The list pill is gone - the row sits
+                                    under a list heading that says the same thing. */}
                                 <div className="item-text">
+                                  <span className="item-dot project-dot">●</span>
                                   {item.data.name}
+                                </div>
+                                {/* Dates read as a subtitle under the name rather than
+                                    as a badge above it, matching the task rows. The
+                                    marking still says which end of the project this
+                                    day is, because a project can start and finish on
+                                    the same one. */}
+                                <div className="item-project">
+                                  {item.dateType === 'start' && 'Starts '}
+                                  {item.dateType === 'end' && 'Ends '}
+                                  {item.dateType === 'both' && 'Starts & ends '}
+                                  {formatProjectSpan(item.data, parseLocalDate)}
                                 </div>
                                 {item.data.description && (
                                   <div className="project-description-preview">
@@ -13768,7 +16420,7 @@ function LittleFiresApp() {
                                         setAppMode('projects');
                                         setCurrentProjectList(item.list);
                                         setSelectedProject({ id: item.data.id, listName: item.list });
-                                        setSelectedDate(null);
+                                        setSelectedDay(null);
                                       }}
                                     >
                                       Go to Project →
@@ -13777,6 +16429,9 @@ function LittleFiresApp() {
                                 )}
                               </div>
                             );
+                          })}
+                            </div>
+                          );
                           })}
                           </>)}
                         </div>
@@ -18468,6 +21123,236 @@ function LittleFiresApp() {
                       <span style={{ ...hint, marginTop: 0 }}>
                         Not linked — syncing isn't available yet.
                       </span>
+                    </div>
+                  </div>
+
+                  {/* ---- AI Tasks ---- */}
+                  <div style={card}>
+                    <div style={heading}>AI Tasks</div>
+                    <div style={sub}>
+                      Suggests tasks based on what you've been creating, completing and
+                      leaving in your backlog. Suggestions are proposals only — nothing
+                      is added to a list until you accept it.
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Enable suggestions</div>
+                        <div style={hint}>
+                          Off by default. This is the only feature that sends the text of
+                          your tasks off this device.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.aiSuggestions}
+                        onChange={(v) => updateSetting('aiSuggestions', v)}
+                      />
+                    </div>
+
+                    <div style={{ marginTop: '4px' }}>
+                      <div style={label}>About you</div>
+                      <div style={hint}>
+                        Anything worth knowing when suggesting tasks — constraints matter
+                        more than interests. "Two young kids, no car, evenings only" rules
+                        more out than a list of hobbies rules in. Optional, and sent with
+                        every request.
+                      </div>
+                      <textarea
+                        value={aiProfile}
+                        onChange={(e) => {
+                          const v = e.target.value.slice(0, AI_PROFILE_MAX);
+                          setAiProfile(v);
+                          writeAiProfile(v);
+                        }}
+                        rows={3}
+                        placeholder="e.g. Two kids under 6. No car during the week. Knee injury — nothing running."
+                        style={{
+                          width: '100%', boxSizing: 'border-box', marginTop: '8px',
+                          padding: '10px 14px', borderRadius: '10px',
+                          border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                          background: 'rgba(var(--surface-rgb), 0.8)',
+                          color: 'var(--text)', fontFamily: 'var(--font-body)',
+                          fontSize: '0.9rem', outline: 'none', resize: 'vertical'
+                        }}
+                      />
+                      <div style={{
+                        ...hint, display: 'flex', justifyContent: 'space-between',
+                        alignItems: 'center', gap: '10px'
+                      }}>
+                        <span>{aiProfile.length}/{AI_PROFILE_MAX}</span>
+                        {aiProfile && (
+                          <button
+                            onClick={() => { setAiProfile(''); writeAiProfile(''); }}
+                            style={{
+                              padding: '4px 10px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--border-rgb), 0.3)',
+                              background: 'transparent', color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.72rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={divider} />
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Include task details</div>
+                        <div style={hint}>
+                          Off by default, and separate from the switch above. Details are
+                          often where the next step actually is — a checklist inside a
+                          task says more than its title does. They're also where the
+                          specifics live, so this is a deliberate choice rather than part
+                          of turning the feature on.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.aiIncludeDetails}
+                        onChange={(v) => updateSetting('aiIncludeDetails', v)}
+                      />
+                    </div>
+
+                    <div style={divider} />
+
+                    <div style={subheading}>Model</div>
+                    <div style={hint}>
+                      Haiku is cheap enough to refresh freely; Sonnet thinks harder about
+                      what to suggest. Either costs a fraction of a cent per refresh.
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                      {SUGGESTION_MODELS.map(m => {
+                        const on = (settings.aiModel || SUGGESTION_MODELS[0].id) === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => updateSetting('aiModel', m.id)}
+                            style={{
+                              padding: '8px 14px', borderRadius: '10px',
+                              border: '2px solid rgba(var(--accent-rgb), ' + (on ? '0.5' : '0.2') + ')',
+                              background: on
+                                ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                                : 'rgba(var(--surface-rgb), 0.8)',
+                              color: on ? '#fff' : 'var(--text)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.8rem', cursor: 'pointer'
+                            }}
+                          >
+                            {m.label}
+                            <span style={{ opacity: 0.75, fontSize: '0.72rem', marginLeft: '6px' }}>
+                              {m.note}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div style={divider} />
+
+                    <div style={subheading}>Anthropic API key</div>
+                    <div style={hint}>
+                      Your own key, from console.anthropic.com. Usage is billed to your
+                      account.
+                    </div>
+
+                    {aiKeySaved ? (
+                      <div style={{ ...row, marginTop: '12px' }}>
+                        <div style={{ flex: 1, minWidth: '180px' }}>
+                          <div style={{
+                            fontFamily: 'var(--font-body)', fontSize: '0.9rem',
+                            color: 'var(--text)', wordBreak: 'break-all'
+                          }}>
+                            {maskAiKey(aiKeySaved)}
+                          </div>
+                          <div style={hint}>
+                            Stored on this device only. Never included in backups or
+                            exports.
+                          </div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            const ok = await confirmAction('Remove the stored API key?');
+                            if (!ok) return;
+                            clearAiKey();
+                            setAiKeySaved('');
+                            setAiKeyDraft('');
+                          }}
+                          style={{
+                            padding: '10px 16px', borderRadius: '10px',
+                            border: '2px solid rgba(220, 90, 90, 0.4)',
+                            background: 'rgba(220, 90, 90, 0.12)',
+                            color: '#d15a5a', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.85rem', cursor: 'pointer', flexShrink: 0
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ ...row, marginTop: '12px', alignItems: 'flex-start' }}>
+                        <input
+                          type="password"
+                          value={aiKeyDraft}
+                          onChange={(e) => setAiKeyDraft(e.target.value)}
+                          placeholder="sk-ant-…"
+                          autoComplete="off"
+                          spellCheck={false}
+                          style={{
+                            flex: 1, minWidth: '180px', padding: '10px 14px',
+                            borderRadius: '10px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', fontFamily: 'var(--font-body)',
+                            fontSize: '0.9rem', outline: 'none'
+                          }}
+                        />
+                        <button
+                          onClick={() => {
+                            if (!aiKeyDraft.trim()) return;
+                            if (writeAiKey(aiKeyDraft)) {
+                              setAiKeySaved(aiKeyDraft.trim());
+                              // Cleared so the value doesn't linger in a field
+                              // anyone can reveal with devtools or a screenshot.
+                              setAiKeyDraft('');
+                            }
+                          }}
+                          disabled={!aiKeyDraft.trim()}
+                          style={{
+                            padding: '10px 18px', borderRadius: '10px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                            background: aiKeyDraft.trim()
+                              ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                              : 'rgba(var(--surface-rgb), 1)',
+                            color: aiKeyDraft.trim() ? '#fff' : 'var(--text-muted)',
+                            fontFamily: 'var(--font-ui)', fontSize: '0.85rem',
+                            cursor: aiKeyDraft.trim() ? 'pointer' : 'default',
+                            flexShrink: 0
+                          }}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
+
+                    {!aiKeySaved && aiKeyDraft.trim() && !looksLikeAnthropicKey(aiKeyDraft) && (
+                      <div style={{ ...hint, color: '#d19a5a' }}>
+                        That doesn't look like an Anthropic key — they start with
+                        "sk-ant-". It will still be saved if you go ahead.
+                      </div>
+                    )}
+
+                    <div style={{ ...hint, marginTop: '12px' }}>
+                      What gets sent: the text of your tasks and when they were created
+                      and completed, plus the name, description, challenge, outcome and
+                      dates of your projects and goals — what you're working towards is
+                      what makes a suggestion worth having.
+                      {settings.aiIncludeDetails
+                        ? ' Also the details of tasks that are still open, as plain text, shortened — never of completed ones.'
+                        : ' Not sent: the details field on a task.'}
+                      {aiProfile ? ' Your "about you" note is sent with every request.' : ''}
+                      {' '}Never sent: your notes, or anything from a shared list.
                     </div>
                   </div>
 

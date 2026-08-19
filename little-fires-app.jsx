@@ -1632,6 +1632,27 @@ const CALENDAR_STATUS_GROUPS = [
   { key: 'complete', label: 'Complete', match: (t) => !!t.completed }
 ];
 
+// Completed tasks read newest-first: what you just ticked is what you want to
+// see, and everything below it is history in the order it became history.
+//
+// Sorted on completedAt, falling back to createdAt for anything finished before
+// that field was stamped. A task with neither sinks to the bottom rather than
+// floating to the top, which is what a plain date subtraction would do with an
+// unparseable value.
+function byMostRecentlyCompleted(a, b) {
+  const when = (t) => {
+    const raw = (t && t.completedAt) || (t && t.createdAt) || null;
+    const ms = raw ? new Date(raw).getTime() : NaN;
+    return Number.isNaN(ms) ? null : ms;
+  };
+  const av = when(a);
+  const bv = when(b);
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return bv - av;
+}
+
 // Empty buckets are dropped so a day with only completed tasks doesn't render
 // two empty headings above them.
 function groupTasksByStatus(items, getTask) {
@@ -3411,6 +3432,20 @@ const Task = ({ task, listName, showMoveButtons }) => {
           {dueDate && !task.completed && (
             <div className="task-meta">
               <span className={`task-due-date ${isOverdue ? 'overdue' : ''}`}><CalendarIcon /> {dueDateText}</span>
+            </div>
+          )}
+
+          {/* Once a task is complete, when it was finished is the only date
+              that still means anything - the due date has stopped being a
+              deadline and become trivia. So the two are mutually exclusive
+              rather than stacked.
+
+              CheckboxIcon, not CheckedBox: the latter is defined inside
+              LittleFiresApp, and Task is its own module-scope component, so
+              referencing it here threw on every render of a completed task. */}
+          {task.completed && completedDate && (
+            <div className="task-meta">
+              <span className="task-completed-date"><CheckboxIcon /> {completedDate}</span>
             </div>
           )}
         </div>
@@ -9036,7 +9071,9 @@ function LittleFiresApp() {
         if (a.priority !== 'high' && b.priority === 'high') return 1;
         return 0;
       });
-      const completedTasks = allTasks.filter(t => t.completed);
+      // .filter already returns a new array, so sorting it in place can't
+      // disturb the stored order the drag-to-reorder logic depends on.
+      const completedTasks = allTasks.filter(t => t.completed).sort(byMostRecentlyCompleted);
 
       return (
         <>
@@ -10297,6 +10334,15 @@ function LittleFiresApp() {
         }
 
         .task-due-date {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        /* Same shape as .task-due-date so the two occupy the row identically -
+           a task doesn't shift when it's ticked. The tick glyph inherits
+           currentColor, as CalendarIcon does. */
+        .task-completed-date {
           display: flex;
           align-items: center;
           gap: 4px;

@@ -1563,6 +1563,45 @@ function scrollPortFor(el) {
   return null;
 }
 
+// Reading and writing the scroll position of whatever is actually scrolling -
+// an element on mobile, the window on a page that scrolls itself.
+function readScrollTop(port) {
+  if (port) return port.scrollTop;
+  return window.scrollY || window.pageYOffset || 0;
+}
+
+function writeScrollTop(port, top, smooth) {
+  const target = { top: Math.max(0, top), behavior: smooth ? 'smooth' : 'auto' };
+  try {
+    if (port) port.scrollTo(target); else window.scrollTo(target);
+  } catch (err) {
+    // Older WebKit rejects the options object.
+    if (port) port.scrollTop = Math.max(0, top);
+    else window.scrollTo(0, Math.max(0, top));
+  }
+}
+
+// Expanding a task scrolls it into view; collapsing it should put the page back
+// where it was, so opening something at the bottom of a long list does not
+// leave you somewhere you never chose to be.
+//
+// Not unconditionally, though. If the person scrolled somewhere else while the
+// task was open - reading further down, going back up to check something - then
+// yanking them to a position from before is the app overruling a deliberate
+// action. So the return only happens if they are still where the expand scroll
+// put them.
+const SCROLL_RESTORE_TOLERANCE = 48;
+
+function shouldRestoreScroll(info, currentTop, tolerance = SCROLL_RESTORE_TOLERANCE) {
+  if (!info) return false;
+  // Nothing moved on expand, so there is nothing to undo.
+  if (info.from == null) return false;
+  // The expand scroll had not settled yet, so the person cannot have chosen a
+  // position of their own - restoring is safe.
+  if (info.landed == null) return true;
+  return Math.abs(currentTop - info.landed) <= tolerance;
+}
+
 // Should an expanded card be brought into view, given where it sits?
 //
 // Only when it isn't already comfortably in the scrollport: either its top is
@@ -2049,6 +2088,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // that dismisses a popup may be swallowed by an element that stops
   // propagation, leaving the flag armed for the next, unrelated tap. Reading
   // the state at the start of the gesture needs no such coordination.
+  // Where the list was before this task was expanded, so collapsing can undo
+  // the scroll that expanding caused.
+  const scrollRestoreRef = React.useRef(null);
+
   const popupOpenAtGestureRef = React.useRef(false);
   const noteGestureStart = React.useCallback(() => {
     popupOpenAtGestureRef.current = projectDropdownOpen || datePickerOpen;
@@ -3045,6 +3088,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
     if (!card || typeof card.scrollIntoView !== 'function') return;
 
     let inner = null;
+    let settleTimer = null;
     const outer = requestAnimationFrame(() => {
       inner = requestAnimationFrame(() => {
         const port = scrollPortFor(card);
@@ -3052,6 +3096,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
           ? port.getBoundingClientRect()
           : { top: 0, bottom: window.innerHeight || 0 };
         if (!needsScrollIntoView(card.getBoundingClientRect(), portRect)) return;
+
+        // Where we were, so collapsing can put it back. Captured before the
+        // scroll, obviously, but also only when a scroll is actually going to
+        // happen - a card that was already in view has nothing to undo.
+        scrollRestoreRef.current = { port, from: readScrollTop(port), landed: null };
+
         try {
           card.scrollIntoView({
             block: 'start',
@@ -3061,13 +3111,37 @@ const Task = ({ task, listName, showMoveButtons }) => {
           // Older WebKit rejects the options object; the bare call still works.
           card.scrollIntoView(true);
         }
+
+        // Where the smooth scroll came to rest. Recorded a beat later because
+        // smooth scrolling is asynchronous and there is no event for it, and
+        // needed so that a later position can be told apart from this one.
+        settleTimer = setTimeout(() => {
+          if (scrollRestoreRef.current) {
+            scrollRestoreRef.current.landed = readScrollTop(port);
+          }
+        }, 450);
       });
     });
 
     return () => {
       cancelAnimationFrame(outer);
       if (inner) cancelAnimationFrame(inner);
+      if (settleTimer) clearTimeout(settleTimer);
     };
+  }, [isExpanded, settings.reduceMotion]);
+
+  // Collapsing returns the view to where it was before the task was opened.
+  //
+  // Started as the close begins rather than after it, so the panel sliding shut
+  // and the page moving back settle together instead of the page jumping once
+  // the animation has finished.
+  React.useEffect(() => {
+    if (isExpanded) return;
+    const info = scrollRestoreRef.current;
+    if (!info) return;
+    scrollRestoreRef.current = null;
+    if (!shouldRestoreScroll(info, readScrollTop(info.port))) return;
+    writeScrollTop(info.port, info.from, !settings.reduceMotion);
   }, [isExpanded, settings.reduceMotion]);
 
   // Save the open editor the moment the app is hidden or torn down. Saves

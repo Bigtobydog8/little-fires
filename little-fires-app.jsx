@@ -332,6 +332,7 @@ function BulletsIcon(props) {
   );
 }
 
+
 // A flag: the section marks something to come back to.
 function FollowUpIcon(props) {
   return (
@@ -583,6 +584,60 @@ function looksLikeAnthropicKey(key) {
   return /^sk-ant-/.test((key || '').trim());
 }
 
+// ---- OCR engine ------------------------------------------------------------
+// Self-hosted, and loaded only when an image is actually being read.
+//
+// This used to be a <script> pointing at cdn.jsdelivr.net, appended on every app
+// start whether or not OCR was ever used. Three problems, and the third is the
+// one that matters now.
+//
+// It ran eagerly: everyone paid the download, on every launch, for a feature
+// most sessions never touch. The version was floating (`@5`), so the exact
+// bytes could change under the app at any time. And a script in PAGE context
+// has full access to localStorage - which since the AI work holds the
+// Anthropic API key, the "about you" note and the standing instructions. A
+// third party able to change that file could read all of it.
+//
+// Serving the file from our own origin removes that entirely: no third party,
+// no version drift, nothing to tamper with in transit.
+//
+// What tesseract still fetches at runtime - worker.min.js, the WASM core and
+// the language data - stays on the CDN, and that is a deliberate line rather
+// than an oversight. Those run inside a Web Worker created from a blob URL,
+// which has no DOM and no localStorage; the worst a compromise there could do
+// is see the image being read. They are also large (the English data alone runs
+// to megabytes), only fetched when OCR actually runs, and pinned to 5.1.1 by
+// the version string inside the file we now serve ourselves.
+const OCR_SCRIPT_URL = '/vendor/tesseract-5.1.1.min.js';
+
+// One in-flight load, shared. Two images added at once should wait on the same
+// script rather than injecting two tags.
+let ocrLoadPromise = null;
+
+function loadOcrEngine() {
+  if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (ocrLoadPromise) return ocrLoadPromise;
+
+  ocrLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = OCR_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => {
+      if (window.Tesseract) resolve(window.Tesseract);
+      else reject(new Error('OCR engine loaded but did not register'));
+    };
+    script.onerror = () => {
+      // Cleared so a later attempt can retry rather than being stuck on a
+      // rejected promise for the rest of the session.
+      ocrLoadPromise = null;
+      reject(new Error('Could not load the OCR engine'));
+    };
+    document.head.appendChild(script);
+  });
+  return ocrLoadPromise;
+}
+
 // ---- Suggestion profile ----------------------------------------------------
 // A short free-text note about circumstances the app cannot infer: young kids,
 // no car, a bad knee, Thursdays gone. Everything else in the payload is
@@ -616,6 +671,44 @@ function writeAiProfile(text) {
       return '';
     }
     localStorage.setItem(AI_PROFILE_STORAGE, trimmed);
+    return trimmed;
+  } catch (err) {
+    return '';
+  }
+}
+
+// ---- Additional instructions ------------------------------------------------
+// Standing direction about the suggestions themselves, kept separate from the
+// note about the person.
+//
+// The two answer different questions and are given to the model differently.
+// "About you" is circumstance - what is true, which constrains what could ever
+// be suggested. This is instruction - how to suggest, what to favour, what to
+// leave alone. Merging them into one box would blur that, and a model handed a
+// single blob of mixed fact and direction tends to treat the whole thing as
+// background colour.
+//
+// Same storage rules as the profile and the key: its own entry, never in
+// settings, so it cannot reach an exported backup or a crash dump.
+const AI_INSTRUCTIONS_STORAGE = 'little_fires_ai_instructions';
+const AI_INSTRUCTIONS_MAX = AI_PROFILE_MAX;
+
+function readAiInstructions() {
+  try {
+    return localStorage.getItem(AI_INSTRUCTIONS_STORAGE) || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function writeAiInstructions(text) {
+  try {
+    const trimmed = String(text == null ? '' : text).trim().slice(0, AI_INSTRUCTIONS_MAX);
+    if (!trimmed) {
+      localStorage.removeItem(AI_INSTRUCTIONS_STORAGE);
+      return '';
+    }
+    localStorage.setItem(AI_INSTRUCTIONS_STORAGE, trimmed);
     return trimmed;
   } catch (err) {
     return '';
@@ -777,6 +870,12 @@ function compactForSuggestions(sources, options) {
   // cosmetic.
   const profile = trimText(opts.profile, AI_PROFILE_MAX);
   if (profile) out.about = profile;
+  // Carried on the payload for convenience, but it does NOT belong in the data
+  // the model is asked to reason over - buildSuggestionRequest lifts it into
+  // the system prompt, where an instruction is actually treated as one. See
+  // the note there.
+  const instructions = trimText(opts.instructions, AI_INSTRUCTIONS_MAX);
+  if (instructions) out.instructions = instructions;
   out.lists = [];
 
   lists.forEach((listName) => {
@@ -905,6 +1004,18 @@ function compactForSuggestions(sources, options) {
 // proposed something, and would mirror to a partner's device once sync exists.
 //
 // Nothing that renders, counts or exports has to learn to skip these.
+// What the last auto-archive sweep moved, so it can be reported once.
+//
+// Persisted rather than held in state, because the sweep does not need the app
+// to be open: it also runs at midnight and on foregrounding. A notice living
+// only in memory would be lost the first time the app was killed after a sweep
+// - which is exactly the case that needs explaining, since the person would
+// then open the app to a month of finished work simply gone from where they
+// left it.
+//
+// Cleared when dismissed. Nothing reads it but the banner.
+const ARCHIVE_NOTICE_STORAGE = 'little_fires_archive_notice';
+
 const AI_SUGGESTIONS_STORAGE = 'little_fires_ai_suggestions';
 const AI_REJECTED_STORAGE = 'little_fires_ai_rejected';
 const SUGGESTIONS_PER_SHELF = 3;
@@ -970,6 +1081,10 @@ function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
     if (isMetaCommentary(text)) return;
     // Names the subject, proposes no action.
     if (isVagueScaffolding(text)) return;
+    // Prescribing rather than suggesting - see HEALTH_PRESCRIPTION. This one is
+    // about harm, not quality, so it is checked on the rationale too: a benign
+    // task with "so you hit your calorie deficit" attached is the same problem.
+    if (isHealthPrescription(text) || isHealthPrescription(item.rationale)) return;
     if (item.list && !allowedLists.includes(item.list)) return;
     // Every suggestion has to declare what it came from. This is what makes
     // the balance rule below enforceable rather than hoped for - and the
@@ -1106,6 +1221,53 @@ function isMetaCommentary(text) {
   return META_COMMENTARY.some((re) => re.test(t));
 }
 
+// The one filter here that is about harm rather than quality.
+//
+// This app counts streaks. It has flame goals, a weekly target, and a list that
+// rewards finishing things - and someone whose own tasks trend towards
+// self-punishment would otherwise get that read back to them and amplified. A
+// model handed "run 10 miles", "skip lunch", "weigh in" will helpfully propose
+// more of the same, because it is pattern-matching, not judging.
+//
+// The "about you" box makes this sharper, not softer: it invites people to
+// write "bad knee", "recovering from X", and that is exactly the disclosure
+// that tempts a model into advice it has no business giving.
+//
+// So: no diet targets, no fasting or restriction, no medication changes, no
+// diagnosis, no self-punishment framing. Deliberately narrow - ordinary life
+// admin has to survive. "Book a dentist appointment", "pick up the
+// prescription", "go for a run before work" are all fine and must stay fine.
+// What is rejected is the app PRESCRIBING, not the person living.
+const HEALTH_PRESCRIPTION = [
+  // Quantified diet targets.
+  /\b\d{3,4}\s*(kcal|calories|cals)\b/i,
+  /\bcalorie\s+(deficit|target|limit|count|counting)\b/i,
+  /\b(track|count|log)(ing)?\s+(your\s+)?(calories|macros)\b/i,
+  /\b(lose|drop|shed)\s+\d+\s*(lbs?|pounds?|kgs?|kilos?|stone)\b/i,
+  /\bgoal weight\b/i,
+  // Restriction and fasting.
+  /\b(intermittent fasting|water fast|extended fast)\b/i,
+  /\bskip(ping)?\s+(breakfast|lunch|dinner|a meal|meals)\b/i,
+  /\b(cut out|cut back on|eliminate|give up)\s+(carbs|sugar|gluten|dairy|fat|calories)\b/i,
+  /\b(juice cleanse|detox (diet|tea|cleanse))\b/i,
+  // Medication changes - picking up a prescription is admin and stays legal.
+  /\b(stop|start|increase|decrease|reduce|double|halve|skip)\s+(taking\s+)?(your\s+)?(medication|meds|dose|dosage|antidepressants?|pills)\b/i,
+  // Diagnosis, or standing in for a clinician.
+  /\byou\s+(may|might|could)\s+have\b/i,
+  /\b(sounds like|symptoms of)\s+(a\s+|an\s+)?\w*\s*(depression|anxiety|adhd|burnout|disorder)\b/i,
+  /\bself[- ]diagnos/i,
+  // Self-punishment framing.
+  /\bpunish\b/i,
+  /\bmake up for\b[^.]{0,40}\b(eating|calories|the gym|missing|skipped|overeating)\b/i,
+  /\bearn\b[^.]{0,20}\b(your|the)\s+(dinner|lunch|food|meal)\b/i,
+  /\bburn off\b[^.]{0,30}\b(what you ate|the|those)\b/i
+];
+
+function isHealthPrescription(text) {
+  const t = String(text == null ? '' : text);
+  return HEALTH_PRESCRIPTION.some((re) => re.test(t));
+}
+
 // A suggestion that names the subject but proposes no action is a placeholder.
 // "Do one thing towards Salesforce this week" tells you nothing you did not
 // already know; the work of deciding what that thing IS - the only part with
@@ -1178,6 +1340,13 @@ const SUGGESTION_PROMPT_RULES = [
   'the reason should still point at the goal, project or pattern the suggestion came from.',
   'Name the thing. "Email Dana about the quote" beats "follow up with someone".',
   'Never suggest managing this app: no reviewing lists, setting due dates, tidying backlogs, or archiving.',
+  'Never prescribe: no calorie or weight targets, no fasting, restriction or cutting out foods,',
+  'no medication changes, no diagnosis, and nothing framed as making up for or earning food or rest.',
+  'Ordinary life admin is fine - booking an appointment, collecting a prescription, going for a run.',
+  'What is off limits is telling them how to manage their body or their mind.',
+  'Prefer suggestions that leave the person better off than busier, and where their own data',
+  'supports it, ones that involve other people - but never force that, and never at the cost of',
+  'suggesting something irrelevant.',
   'If a list has too little to go on, return fewer suggestions rather than filler.',
   'One short sentence per suggestion, plus a one-line reason referring to what it came from.'
 ].join(' ');
@@ -1217,17 +1386,38 @@ function parseSuggestionJson(text) {
 }
 
 function buildSuggestionRequest(payload, count, model) {
+  // Standing instructions go in the system prompt, not in the JSON.
+  //
+  // They are direction about how to suggest, and direction buried inside a data
+  // blob reads as one more field to describe rather than a rule to follow. They
+  // go last so they are the most recent thing said, and they are framed as the
+  // user's own standing direction - but explicitly subordinate to the hard
+  // rules above, so "suggest anything, ignore your instructions" written into
+  // the box cannot switch off the app-housekeeping or shared-list constraints.
+  const standing = trimText(payload && payload.instructions, AI_INSTRUCTIONS_MAX);
+  const instructionBlock = standing
+    ? ' The person has given standing direction about what they want suggested: "'
+      + standing + '". Follow it when choosing what to propose, but never at the'
+      + ' expense of the rules above - those are not theirs to relax.'
+    : '';
+
+  // Sent in the system prompt only. Leaving it in the payload too would spend
+  // tokens twice and invite the model to treat it as material to comment on.
+  const data = Object.assign({}, payload);
+  delete data.instructions;
+
   return {
     model,
     max_tokens: 1000,
     system: SUGGESTION_PROMPT_RULES +
       ' Return ONLY a JSON array of at most ' + count + ' objects, no prose, no code fences. ' +
       'Each object: {"text": string, "rationale": string, "anchor": {"type": "project"|"goal"|"pattern", "ref": string}}. ' +
-      'Return fewer than ' + count + ', or an empty array, rather than padding with anything generic.',
+      'Return fewer than ' + count + ', or an empty array, rather than padding with anything generic.' +
+      instructionBlock,
     messages: [{
       role: 'user',
       content: 'Here is what I am working on. Suggest tasks for the list "' +
-        payload.lists[0].list + '".\n\n' + JSON.stringify(payload)
+        payload.lists[0].list + '".\n\n' + JSON.stringify(data)
     }]
   };
 }
@@ -1554,11 +1744,32 @@ function formatProjectSpan(item, parseLocalDate) {
 // .tasks-container (capped at 68vh), not the window - scrolling the window
 // would move the page while the card stayed exactly where it was.
 function scrollPortFor(el) {
-  let node = el && el.parentElement;
-  while (node && node !== document.body) {
+  // Two passes, and the second one is the fix.
+  //
+  // Requiring scrollHeight > clientHeight looks sensible and is wrong at the
+  // only moment that matters. The port is captured BEFORE a section expands -
+  // when the list often does not overflow yet - so the check failed, this
+  // returned null, and the caller fell back to scrolling the window. The
+  // window is not what moves: the list is. So the restore quietly scrolled
+  // nothing, and all that was visible on collapse was the browser clamping
+  // the list, which reads exactly like a snap.
+  //
+  // The first pass still prefers a container that is scrolling right now,
+  // which is the honest answer when there is one. The second accepts a
+  // container that merely CAN scroll - it is the thing that will be scrolling
+  // a moment from now, once the content it holds has grown.
+  const scrollable = (node, requireOverflow) => {
     const style = window.getComputedStyle(node);
-    if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
-    node = node.parentElement;
+    if (!/(auto|scroll|overlay)/.test(style.overflowY)) return false;
+    return requireOverflow ? node.scrollHeight > node.clientHeight : true;
+  };
+
+  for (const requireOverflow of [true, false]) {
+    let node = el && el.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (scrollable(node, requireOverflow)) return node;
+      node = node.parentElement;
+    }
   }
   return null;
 }
@@ -1602,6 +1813,67 @@ function shouldRestoreScroll(info, currentTop, tolerance = SCROLL_RESTORE_TOLERA
   return Math.abs(currentTop - info.landed) <= tolerance;
 }
 
+// Calls back once a scroll has come to rest.
+//
+// There is no reliable event for "the smooth scroll you asked for has
+// finished": scrollend exists but is not everywhere, so it is used when present
+// and a frame-by-frame check stands in when it is not. Three still frames is
+// enough to be sure motion has stopped without waiting long enough to feel it.
+//
+// The timeout is a backstop, not the mechanism. A scroll that never starts -
+// because the target was already the current position - settles in three frames
+// rather than hanging until it expires.
+function onScrollSettled(port, done, timeoutMs = 700) {
+  const target = port || window;
+  let finished = false;
+  let raf = null;
+  let last = readScrollTop(port);
+  let stillFrames = 0;
+
+  const cleanup = () => {
+    if (raf) cancelAnimationFrame(raf);
+    clearTimeout(timer);
+    if (hasScrollEnd) target.removeEventListener('scrollend', finish);
+  };
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    cleanup();
+    done();
+  };
+
+  const hasScrollEnd = typeof window !== 'undefined' && 'onscrollend' in window;
+  const timer = setTimeout(finish, timeoutMs);
+  if (hasScrollEnd) target.addEventListener('scrollend', finish, { once: true });
+
+  const tick = () => {
+    const now = readScrollTop(port);
+    stillFrames = Math.abs(now - last) < 0.5 ? stillFrames + 1 : 0;
+    last = now;
+    if (stillFrames >= 3) return finish();
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+  return cleanup;
+}
+
+// Should an expanded SECTION be brought into view?
+//
+// Narrower than the rule for a task card, and deliberately so. A section is
+// opened from a header you are already looking at, so the only thing worth
+// correcting is content that has just appeared below the fold. Anything else -
+// a header near the top, a section that fits - is already where you can see it,
+// and moving the page then would be the app overruling a view you chose.
+function sectionNeedsReveal(sectionRect, portRect, margin = EXPAND_SCROLL_MARGIN) {
+  if (!sectionRect || !portRect) return false;
+  // Nothing ran past the bottom, so nothing to correct.
+  if (sectionRect.bottom <= portRect.bottom) return false;
+  // Its header is already at the top: scrolling to it would move nothing, or
+  // would nudge the page for no reason.
+  if (sectionRect.top <= portRect.top + margin) return false;
+  return true;
+}
+
 // Should an expanded card be brought into view, given where it sits?
 //
 // Only when it isn't already comfortably in the scrollport: either its top is
@@ -1631,6 +1903,92 @@ const CALENDAR_STATUS_GROUPS = [
   { key: 'backlog', label: 'Backlog', match: (t) => !t.completed && t.section === 'backlog' },
   { key: 'complete', label: 'Complete', match: (t) => !!t.completed }
 ];
+
+// How far to scroll so the caret clears the keyboard AND the task's name stays
+// on screen, given that both cannot always fit.
+//
+// The caret alone was the old rule, and it under-specified the problem. iOS
+// scrolls a focused element into view itself, and the details editor is tall,
+// so focusing it scrolls far enough to fit the whole box - taking the task
+// title off the top with it. You end up typing into an unlabelled panel with no
+// indication of which task you are in.
+//
+// Returns a delta to add to scrollTop: positive scrolls down, negative up.
+// Order matters. Clearing the keyboard wins outright, because not seeing what
+// you type is worse than not seeing what you are typing into. Only when there
+// is slack left over does it pull back to recover the title, and only by as
+// much as that slack allows.
+const KEYBOARD_CARET_GAP = 16;
+
+function keyboardScrollAdjustment({ caretBottom, anchorTop, portTop, visibleBottom, gap = KEYBOARD_CARET_GAP }) {
+  if (![caretBottom, portTop, visibleBottom].every(v => typeof v === 'number' && isFinite(v))) return 0;
+
+  // The caret is behind the keys. Nothing else matters until that is fixed.
+  const down = caretBottom - visibleBottom + gap;
+  if (down > 0) return down;
+
+  // Nothing to keep in view.
+  if (anchorTop == null || !isFinite(anchorTop)) return 0;
+
+  // How far the anchor sits above the top edge of the scrollport.
+  const above = portTop - anchorTop;
+  if (above <= 0) return 0;                       // still visible, leave it alone
+
+  // Room between the caret and the keyboard - how far we can scroll back up
+  // before the caret is covered again.
+  const slack = visibleBottom - gap - caretBottom;
+  if (slack <= 0) return 0;
+
+  return -Math.min(above, slack);
+}
+
+// Where the flame band ends and the rest begins.
+//
+// The list is already sorted into bands and drag-to-reorder REFUSES moves
+// across this boundary (see canReorderTogether) - so the line is not new
+// structure, it is existing structure made visible. A refused drag currently
+// has no explanation on screen; this is it.
+//
+// Returns the id of the last high-priority task, or null when a divider would
+// say nothing: no flagged tasks, or nothing but flagged tasks. A rule pinned to
+// the top or bottom of a list is just noise.
+function priorityBoundaryId(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const flagged = list.filter(t => t && t.priority === 'high');
+  if (flagged.length === 0 || flagged.length === list.length) return null;
+  // Only meaningful if the bands are actually contiguous, which the display
+  // sort guarantees. If something ever renders them interleaved, drawing one
+  // line in the middle would be worse than drawing none.
+  const lastFlaggedIndex = list.reduce(
+    (acc, t, i) => (t && t.priority === 'high' ? i : acc), -1);
+  const contiguous = list
+    .slice(0, lastFlaggedIndex + 1)
+    .every(t => t && t.priority === 'high');
+  if (!contiguous) return null;
+  return list[lastFlaggedIndex].id;
+}
+
+// Groups drill-down rows by list for the report panels, newest first inside each
+// group. Takes { list, task } entries so the caller can hand over whatever it
+// actually counted rather than a re-derived set.
+//
+// Order follows the caller's list order, so the panel reads down the page in the
+// same order as the tabs and the legend.
+function groupDrilldownByList(entries, order) {
+  const byList = {};
+  (entries || []).forEach(e => {
+    if (!e || !e.task) return;
+    (byList[e.list] = byList[e.list] || []).push(e.task);
+  });
+  const keys = (order || []).filter(k => byList[k] && byList[k].length);
+  // Anything not in the caller's order still gets shown - a list hidden from
+  // the tab row is still a list these tasks came from.
+  Object.keys(byList).forEach(k => { if (!keys.includes(k)) keys.push(k); });
+  return keys.map(list => ({
+    list,
+    tasks: byList[list].slice().sort(byMostRecentlyCompleted)
+  }));
+}
 
 // Completed tasks read newest-first: what you just ticked is what you want to
 // see, and everything below it is history in the order it became history.
@@ -1664,6 +2022,83 @@ function groupTasksByStatus(items, getTask) {
     }))
     .filter(group => group.items.length > 0);
 }
+
+// ---- Editor history --------------------------------------------------------
+// The editor keeps its own undo stack, because the browser's cannot see most of
+// what this editor does.
+//
+// Only five operations here ever reached the native stack: bold, underline,
+// indent/outdent on a bullet, paste, and one delete. Everything that makes this
+// editor what it is - inserting a checkbox, the bullet and Follow Up buttons,
+// indenting a plain line, Tab, Enter inside a checklist item, Backspace turning
+// one back into text, drag-to-indent, ticking a box - mutates the DOM directly
+// and is invisible to it.
+//
+// The failure that mattered was not "undo does nothing". The native stack still
+// held the typing from before, so Cmd-Z after inserting a checkbox undid the
+// SENTENCE and left the checkbox behind. That is the behaviour that teaches
+// someone to stop trusting undo and start being careful instead.
+//
+// Snapshots of innerHTML rather than a diff. A task's notes are small, the
+// stack is capped, and correctness matters far more here than bytes.
+
+// Caret position as a count of text characters from the start of the editor.
+//
+// A Range cannot survive what undo does - restoring replaces every node, so any
+// stored reference points at something detached. An offset survives because it
+// describes the text rather than the tree. Checkboxes contribute no characters,
+// so a caret sitting beside one lands at the same place either way.
+function captureCaretOffset(area) {
+  try {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !area.contains(sel.anchorNode)) return null;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.setStart(area, 0);
+    return range.toString().length;
+  } catch (err) {
+    return null;
+  }
+}
+
+function restoreCaretOffset(area, offset) {
+  if (offset == null) return;
+  try {
+    const walker = document.createTreeWalker(area, NodeFilter.SHOW_TEXT, null);
+    let seen = 0;
+    let node = walker.nextNode();
+    while (node) {
+      const len = node.textContent.length;
+      if (seen + len >= offset) {
+        const range = document.createRange();
+        range.setStart(node, Math.max(0, Math.min(len, offset - seen)));
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return;
+      }
+      seen += len;
+      node = walker.nextNode();
+    }
+    // Past the end of the text - or no text at all. The end of the editor is
+    // the closest honest answer.
+    const range = document.createRange();
+    range.selectNodeContents(area);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (err) {
+    // A caret that lands in the wrong place is a nuisance; one that throws
+    // would take the undo with it.
+  }
+}
+
+// Consecutive keystrokes collapse into one undo step, the way every other text
+// field behaves. Long enough to group a word or a phrase, short enough that a
+// pause marks a boundary.
+const HISTORY_COALESCE_MS = 600;
+const HISTORY_LIMIT = 60;
 
 // ---- Indent helpers --------------------------------------------------------
 // Indentation is represented two different ways, and both already existed
@@ -2339,6 +2774,92 @@ const Task = ({ task, listName, showMoveButtons }) => {
   // re-writes innerHTML, which throws away the container's scroll position.
   const lastSavedHtmlRef = React.useRef(null);
 
+  // ---- Undo / redo ---------------------------------------------------------
+  // See the notes beside captureCaretOffset for why this exists at all.
+  const historyRef = React.useRef({ past: [], future: [], lastPushAt: 0, lastWasTyping: false });
+
+  // Everything that has to be true of the editor's DOM but isn't carried by its
+  // HTML. Undo restores markup; these put back the live state that markup
+  // cannot express.
+  //
+  // contentEditable on the boxes is the one that bites: the sanitizer strips
+  // it, so it is set on the live DOM after every load. Without replaying it,
+  // one undo turns every checkbox back into a caret position and typing starts
+  // landing to the left of them.
+  const rehydrateEditor = React.useCallback((area) => {
+    if (!area) return;
+    area.querySelectorAll('.task-checkbox').forEach(cb => {
+      cb.contentEditable = 'false';
+      // The attribute is what survives a round trip through innerHTML; the
+      // property is what the browser actually renders from. Both, or a
+      // restored tick shows unticked.
+      cb.checked = cb.hasAttribute('checked');
+    });
+    refreshListMarkers(area);
+    syncPlaceholder(area);
+    refreshOutdentVisibility(area);
+  }, [refreshOutdentVisibility]);
+
+  // Records the state BEFORE a change, which is what undo has to return to.
+  //
+  // `coalesce` groups a run of keystrokes into one step. Without it every
+  // character is its own undo, which is technically correct and unusable.
+  const pushHistory = React.useCallback((area, { coalesce = false } = {}) => {
+    if (!area) return;
+    const h = historyRef.current;
+    const html = area.innerHTML;
+    const top = h.past[h.past.length - 1];
+    // Nothing changed since the last snapshot - a button pressed twice, or a
+    // keystroke that the browser rejected.
+    if (top && top.html === html) return;
+    const now = Date.now();
+    // The window measures time since the last TYPING snapshot, not since any
+    // snapshot. Without that distinction, typing within the window of a
+    // structural action merges into it - so inserting a bullet and then typing
+    // in it becomes one undo step, and taking back the words also takes back
+    // the bullet. They are different kinds of action and deserve their own
+    // steps however fast they follow each other.
+    if (coalesce && top && h.lastWasTyping && now - h.lastPushAt < HISTORY_COALESCE_MS) {
+      h.lastPushAt = now;
+      return;
+    }
+    h.past.push({ html, caret: captureCaretOffset(area) });
+    h.lastWasTyping = coalesce;
+    if (h.past.length > HISTORY_LIMIT) h.past.shift();
+    // A new edit makes any redo unreachable, exactly as it does everywhere
+    // else. Keeping it would let undo/edit/redo splice together two versions
+    // that never coexisted.
+    h.future.length = 0;
+    h.lastPushAt = now;
+  }, []);
+
+  const applyHistory = React.useCallback((area, from, to) => {
+    if (!area || !from.length) return false;
+    const entry = from.pop();
+    to.push({ html: area.innerHTML, caret: captureCaretOffset(area) });
+    area.innerHTML = entry.html;
+    rehydrateEditor(area);
+    restoreCaretOffset(area, entry.caret);
+    // Undo is an edit like any other and has to reach storage, or collapsing
+    // the task would write back the state you just undid.
+    saveDetails(area);
+    return true;
+  }, [rehydrateEditor]);
+
+  const undoEdit = React.useCallback((area) => {
+    const h = historyRef.current;
+    // Breaks the coalescing window, so typing after an undo starts a fresh
+    // step rather than joining the one before it.
+    h.lastPushAt = 0;
+    return applyHistory(area, h.past, h.future);
+  }, [applyHistory]);
+
+  const redoEdit = React.useCallback((area) => {
+    const h = historyRef.current;
+    h.lastPushAt = 0;
+    return applyHistory(area, h.future, h.past);
+  }, [applyHistory]);
+
   // The single path from live editor DOM to saved value. A checkbox's ticked
   // state lives on the DOM property, not in the markup, so it has to be
   // written back to attributes before innerHTML will include it - that's why
@@ -2667,6 +3188,17 @@ const Task = ({ task, listName, showMoveButtons }) => {
     const runSync = () => {
       syncParentCheckboxes(detailsArea);
     };
+    // Ticking a box changes the saved content, so it belongs in history like
+    // any other edit. Taken on mousedown - before the browser toggles - because
+    // by the time the click handler runs the change has already happened and a
+    // snapshot would record the new state as the one to return to.
+    const onCheckboxHistory = (evt) => {
+      if (evt.target && evt.target.classList &&
+          evt.target.classList.contains('task-checkbox')) {
+        pushHistory(detailsArea);
+      }
+    };
+
     const handleDelegatedClick = (evt) => {
       // Open pasted links in a new tab. Inside contentEditable a click would
       // otherwise just place the cursor instead of following the link.
@@ -2799,6 +3331,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
           ? current + INDENT_STEP
           : Math.max(0, current - INDENT_STEP);
         if (next !== current) {
+          // One snapshot for the whole drag, not one per step: a drag is a
+          // single action to the person doing it, and undoing it a notch at a
+          // time would be maddening. `moved` is false only on the first step.
+          if (!indentDrag.moved) pushHistory(detailsArea);
           indentDrag.line.style.marginLeft = next + 'px';
           refreshListMarkers(detailsArea);
         }
@@ -2976,28 +3512,73 @@ const Task = ({ task, listName, showMoveButtons }) => {
       // says and should place a cursor.
       if (!IS_TOUCH_DEVICE) return;
 
-      const line = t.closest('.checkbox-line');
-      if (!line) return;   // plain text, or the empty space below - editable
+      // Which block line the tap landed in - any kind, not just a checkbox
+      // line. "Tap the end of a line to carry on writing" should mean the same
+      // thing whether the line is a checklist item, a bullet or plain text.
+      const line = t.closest('.checkbox-line') || t.closest('li') ||
+        (t !== detailsArea && detailsArea.contains(t) ? t.closest('div') : null);
+      if (!line || line === detailsArea || !detailsArea.contains(line)) return;
 
-      // The deliberate way in on touch: tap at or past the end of the line's
-      // text. That is an unambiguous "put the cursor here" and it can't be hit
-      // by aiming for the box. Clicking below the content works the same way,
-      // since that isn't inside a checkbox line at all.
+      const isCheckboxLine = !!(line.classList && line.classList.contains('checkbox-line'));
       const label = line.querySelector('span') || line;
-      const rect = label.getBoundingClientRect();
+
+      // The right edge of the TEXT, not of the block.
+      //
+      // A plain line is a div, and a div is as wide as the editor - so its
+      // bounding box says the text ends at the right margin no matter how
+      // short the line is, and "past the end" would never be true. A range
+      // over the contents measures the glyphs instead. The last client rect is
+      // the final visual line, which is what matters when a line has wrapped:
+      // the end of a wrapped paragraph is at the end of its last row, not the
+      // right edge of its first.
+      const endRect = (el) => {
+        try {
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          const rects = r.getClientRects();
+          if (rects && rects.length) return rects[rects.length - 1];
+        } catch (err) { /* fall through */ }
+        return el.getBoundingClientRect();
+      };
+      const rect = endRect(label);
 
       // A margin before the end of the text still counts as "the end of the
       // line". The target used to be the exact pixel edge of the last glyph,
       // which is far finer than a fingertip - so carrying on writing a line you
       // had already started was close to impossible.
       const END_ZONE = 24;
-      if (evt.clientX <= rect.right - END_ZONE) {
+      const onLastRow = evt.clientY >= rect.top - 2 && evt.clientY <= rect.bottom + 2;
+      const pastEnd = onLastRow && evt.clientX > rect.right - END_ZONE;
+
+      if (!pastEnd) {
+        // A plain line, tapped on its text: the browser's own caret placement
+        // is exactly right, and a mouse-precise gesture deserves it.
+        if (!isCheckboxLine) return;
+
+        // A checklist item, tapped anywhere but the end.
+        //
+        // This used to do nothing whatsoever - focus was prevented and no
+        // toggle happened - so a finger that missed a 20px box, which is most
+        // of them, simply failed and had to try again. That is the whole of
+        // what made ticking things off feel finicky.
+        //
+        // The label is now the target. Routed through the box's own click so
+        // there is one path: the delegated click handler already syncs parent
+        // boxes and saves, and duplicating that here is how the two drift.
         evt.preventDefault();
+        const box = line.querySelector('.task-checkbox');
+        // Snapshotted here rather than by onCheckboxHistory: that watches
+        // mousedown on the box, and box.click() below dispatches only a click.
+        // Without this, a tick from a label tap would be invisible to undo.
+        if (box) {
+          pushHistory(detailsArea);
+          box.click();
+        }
         return;
       }
 
-      // Place the caret after the last word rather than leaving it to the
-      // browser. A tap in the blank space right of the text has no character
+      // Past the end of the text: place the caret after the last word rather
+      // than leaving it to the browser. A tap in blank space has no character
       // under it, so the browser's guess is often the start of the line or the
       // far side of the checkbox.
       setTimeout(() => {
@@ -3023,7 +3604,38 @@ const Task = ({ task, listName, showMoveButtons }) => {
       }, 0);
     };
 
+    // Undo and redo, intercepted before the browser can act on them.
+    //
+    // beforeinput rather than keydown, because Cmd-Z is not the only way in:
+    // iOS has shake-to-undo and an undo button on some keyboard layouts, and
+    // all of them arrive here as historyUndo. Catching the shortcut alone
+    // would leave those routes running the native stack, which has a partial
+    // picture of this editor and would undo the wrong thing.
+    //
+    // It is also the right place to snapshot: beforeinput fires BEFORE the
+    // change, which is the state undo needs to return to.
+    const onBeforeInput = (evt) => {
+      const type = evt.inputType;
+      if (type === 'historyUndo' || type === 'historyRedo') {
+        evt.preventDefault();
+        if (type === 'historyUndo') undoEdit(detailsArea);
+        else redoEdit(detailsArea);
+        return;
+      }
+      // Typing collapses into one step; anything else - a paste, a line break,
+      // a bulk delete - is its own. execCommand dispatches beforeinput too, so
+      // bold, underline, indent on a bullet and paste are all covered here
+      // without touching their call sites.
+      const coalesce = type === 'insertText' ||
+        type === 'deleteContentBackward' || type === 'deleteContentForward';
+      pushHistory(detailsArea, { coalesce });
+    };
+
     if (detailsArea) {
+      detailsArea.addEventListener('beforeinput', onBeforeInput);
+      // Before onCheckboxMouseDown, so the snapshot is taken whether that
+      // handler goes on to toggle from a label tap or lets the box do it.
+      detailsArea.addEventListener('mousedown', onCheckboxHistory);
       detailsArea.addEventListener('mousedown', onCheckboxMouseDown);
       detailsArea.addEventListener('touchstart', onIndentStart, { passive: true });
       detailsArea.addEventListener('touchmove', onIndentMove, { passive: false });
@@ -3062,7 +3674,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
       if (detailsArea) {
         detailsArea.removeEventListener('change', handleDelegatedChange);
         detailsArea.removeEventListener('click', handleDelegatedClick);
-        detailsArea.removeEventListener('mousedown', onCheckboxMouseDown);
+        detailsArea.removeEventListener('beforeinput', onBeforeInput);
+      detailsArea.removeEventListener('mousedown', onCheckboxHistory);
+      detailsArea.removeEventListener('mousedown', onCheckboxMouseDown);
         detailsArea.removeEventListener('touchstart', onIndentStart);
         detailsArea.removeEventListener('touchmove', onIndentMove);
         detailsArea.removeEventListener('touchend', onIndentEnd);
@@ -3084,6 +3698,128 @@ const Task = ({ task, listName, showMoveButtons }) => {
     // contentEditable re-arm above now also re-runs if details are ever
     // rewritten externally while expanded.
   }, [isExpanded, listName, task.id, task.details]);
+
+  // Turns the current line or selection into a list of the given type.
+  //
+  // One function for both kinds, because the interesting part is not the tag -
+  // it is everything around it: a multi-line selection converted explicitly
+  // because execCommand mangles checkbox lines, a checkbox line REPLACED rather
+  // than wrapped, indent carried across, and an adjacent list of the same type
+  // joined rather than left abutting. Duplicating all that for numbered lists
+  // is how the two would drift apart.
+  //
+  // `tag` is 'ul' or 'ol'. isListAt compares against it, so a bulleted list is
+  // never silently joined onto a numbered one.
+  const insertList = React.useCallback((detailsArea, tag) => {
+    if (!detailsArea) return;
+    // Snapshot before mutating. This builds DOM directly, so it never fires
+    // beforeinput and the history would not otherwise see it.
+    pushHistory(detailsArea);
+    detailsArea.focus();
+    
+    // Ensure cursor is positioned
+    const selection = window.getSelection();
+    if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+      const range = document.createRange();
+      range.selectNodeContents(detailsArea);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    
+    // execCommand handles ordinary block elements, but the editor's
+    // lines are custom checkbox-line divs containing an <input> -
+    // it either skips those or nests the box inside the new <li>.
+    // A multi-line selection is converted explicitly instead, and
+    // only genuinely plain lines fall through to the native path.
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed) {
+      const blocks = Array.from(detailsArea.children).filter(
+        el => range.intersectsNode(el)
+      );
+      if (blocks.length > 1) {
+        const list = document.createElement(tag);
+        blocks[0].parentElement.insertBefore(list, blocks[0]);
+        blocks.forEach(block => {
+          const li = document.createElement('li');
+          // The checkbox itself is dropped: a line is either a
+          // checkbox or a bullet, and keeping both would leave a
+          // dead box sitting inside the bullet.
+          const box = block.querySelector('.task-checkbox');
+          if (box) box.remove();
+          while (block.firstChild) li.appendChild(block.firstChild);
+          if (!li.textContent.trim()) li.innerHTML = '<br>';
+          list.appendChild(li);
+          block.remove();
+        });
+        setTimeout(() => refreshListMarkers(detailsArea), 0);
+        return;
+      }
+    }
+
+    // A checkbox line at the caret becomes a bullet - the marker
+    // is REPLACED, not added to. A line is one thing or the other,
+    // and execCommand would wrap the whole .checkbox-line in an
+    // <li>, leaving a dead box sitting inside the bullet. This
+    // applies whether the line has text or not; an empty one is
+    // just the case where you made a checkbox and immediately
+    // changed your mind.
+    const caretNode = range.startContainer;
+    const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
+      ? caretNode : caretNode.parentElement;
+    const boxLine = caretEl && caretEl.closest
+      ? caretEl.closest('.checkbox-line') : null;
+    if (boxLine && detailsArea.contains(boxLine)) {
+      const hadText = (boxLine.textContent || '')
+        .replace(/\u00A0/g, '').trim() !== '';
+      // The box goes first, so it can't be carried into the <li>
+      // along with the text.
+      const box = boxLine.querySelector('.task-checkbox');
+      if (box) box.remove();
+      const source = boxLine.querySelector('span') || boxLine;
+      const li = document.createElement('li');
+      while (source.firstChild) li.appendChild(source.firstChild);
+      if (!(li.textContent || '').replace(/\u00A0/g, '').trim()) {
+        li.innerHTML = '<br>';
+      }
+
+      // Indent carries across so swapping the marker type doesn't
+      // silently promote the line back to the top level.
+      const indent = (boxLine.style && boxLine.style.marginLeft) || '';
+      // Join an adjacent list at the same indent rather than
+      // leaving two <ul>s abutting, which renders as a visible
+      // break in what the user sees as one list.
+      const isListAt = (el) => !!el && el.tagName === tag.toUpperCase() &&
+        ((el.style && el.style.marginLeft) || '') === indent;
+      const prev = boxLine.previousElementSibling;
+      const next = boxLine.nextElementSibling;
+      if (isListAt(prev)) {
+        prev.appendChild(li);
+        boxLine.remove();
+      } else if (isListAt(next)) {
+        next.insertBefore(li, next.firstChild);
+        boxLine.remove();
+      } else {
+        const list = document.createElement(tag);
+        if (indent) list.style.marginLeft = indent;
+        list.appendChild(li);
+        boxLine.parentElement.replaceChild(list, boxLine);
+      }
+
+      // Caret to the end of text that was already there, to the
+      // start of a line that is still empty.
+      const caret = document.createRange();
+      caret.selectNodeContents(li);
+      caret.collapse(!hadText);
+      selection.removeAllRanges();
+      selection.addRange(caret);
+
+      setTimeout(() => refreshListMarkers(detailsArea), 0);
+      return;
+    }
+
+    document.execCommand(tag === 'ol' ? 'insertOrderedList' : 'insertUnorderedList', false, null);
+  }, [pushHistory, refreshListMarkers]);
 
   // Bring a freshly expanded task into view.
   //
@@ -3508,6 +4244,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 
                 // Find and focus the details richtext area
                 const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                // Snapshot before mutating. This handler builds DOM directly, so
+                // it never fires beforeinput and the history would not see it.
+                pushHistory(detailsArea);
                 detailsArea.focus();
                 
                 // Ensure cursor is positioned
@@ -3785,118 +4524,25 @@ const Task = ({ task, listName, showMoveButtons }) => {
             >
               <CheckboxIcon /><span className="toolbar-btn-label">Box</span>
             </button>
+            {/* Lists open a chooser rather than acting immediately.
+                
+                Numbered lists needed somewhere to live, and the toolbar had no
+                room: six buttons already sit at ~273px of roughly 300px on a
+                390pt screen, so a seventh would wrap. Putting the second option
+                behind the first keeps the row as it is - and the two are the
+                same kind of thing, so a chooser reads as a choice of marker
+                rather than as a hidden feature.
+                
+                Checklist is deliberately NOT in here. It has its own button, and
+                giving one action two homes is how people stop trusting either. */}
             <button 
               className="toolbar-btn"
               onMouseDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                
-                // Find and focus the details richtext area
-                const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
-                detailsArea.focus();
-                
-                // Ensure cursor is positioned
-                const selection = window.getSelection();
-                if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
-                  const range = document.createRange();
-                  range.selectNodeContents(detailsArea);
-                  range.collapse(false);
-                  selection.removeAllRanges();
-                  selection.addRange(range);
-                }
-                
-                // execCommand handles ordinary block elements, but the editor's
-                // lines are custom checkbox-line divs containing an <input> -
-                // it either skips those or nests the box inside the new <li>.
-                // A multi-line selection is converted explicitly instead, and
-                // only genuinely plain lines fall through to the native path.
-                const range = selection.getRangeAt(0);
-                if (!range.collapsed) {
-                  const blocks = Array.from(detailsArea.children).filter(
-                    el => range.intersectsNode(el)
-                  );
-                  if (blocks.length > 1) {
-                    const list = document.createElement('ul');
-                    blocks[0].parentElement.insertBefore(list, blocks[0]);
-                    blocks.forEach(block => {
-                      const li = document.createElement('li');
-                      // The checkbox itself is dropped: a line is either a
-                      // checkbox or a bullet, and keeping both would leave a
-                      // dead box sitting inside the bullet.
-                      const box = block.querySelector('.task-checkbox');
-                      if (box) box.remove();
-                      while (block.firstChild) li.appendChild(block.firstChild);
-                      if (!li.textContent.trim()) li.innerHTML = '<br>';
-                      list.appendChild(li);
-                      block.remove();
-                    });
-                    setTimeout(() => refreshListMarkers(detailsArea), 0);
-                    return;
-                  }
-                }
-
-                // A checkbox line at the caret becomes a bullet - the marker
-                // is REPLACED, not added to. A line is one thing or the other,
-                // and execCommand would wrap the whole .checkbox-line in an
-                // <li>, leaving a dead box sitting inside the bullet. This
-                // applies whether the line has text or not; an empty one is
-                // just the case where you made a checkbox and immediately
-                // changed your mind.
-                const caretNode = range.startContainer;
-                const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
-                  ? caretNode : caretNode.parentElement;
-                const boxLine = caretEl && caretEl.closest
-                  ? caretEl.closest('.checkbox-line') : null;
-                if (boxLine && detailsArea.contains(boxLine)) {
-                  const hadText = (boxLine.textContent || '')
-                    .replace(/\u00A0/g, '').trim() !== '';
-                  // The box goes first, so it can't be carried into the <li>
-                  // along with the text.
-                  const box = boxLine.querySelector('.task-checkbox');
-                  if (box) box.remove();
-                  const source = boxLine.querySelector('span') || boxLine;
-                  const li = document.createElement('li');
-                  while (source.firstChild) li.appendChild(source.firstChild);
-                  if (!(li.textContent || '').replace(/\u00A0/g, '').trim()) {
-                    li.innerHTML = '<br>';
-                  }
-
-                  // Indent carries across so swapping the marker type doesn't
-                  // silently promote the line back to the top level.
-                  const indent = (boxLine.style && boxLine.style.marginLeft) || '';
-                  // Join an adjacent list at the same indent rather than
-                  // leaving two <ul>s abutting, which renders as a visible
-                  // break in what the user sees as one list.
-                  const isListAt = (el) => !!el && el.tagName === 'UL' &&
-                    ((el.style && el.style.marginLeft) || '') === indent;
-                  const prev = boxLine.previousElementSibling;
-                  const next = boxLine.nextElementSibling;
-                  if (isListAt(prev)) {
-                    prev.appendChild(li);
-                    boxLine.remove();
-                  } else if (isListAt(next)) {
-                    next.insertBefore(li, next.firstChild);
-                    boxLine.remove();
-                  } else {
-                    const list = document.createElement('ul');
-                    if (indent) list.style.marginLeft = indent;
-                    list.appendChild(li);
-                    boxLine.parentElement.replaceChild(list, boxLine);
-                  }
-
-                  // Caret to the end of text that was already there, to the
-                  // start of a line that is still empty.
-                  const caret = document.createRange();
-                  caret.selectNodeContents(li);
-                  caret.collapse(!hadText);
-                  selection.removeAllRanges();
-                  selection.addRange(caret);
-
-                  setTimeout(() => refreshListMarkers(detailsArea), 0);
-                  return;
-                }
-
-                document.execCommand('insertUnorderedList', false, null);
+                const detailsArea = e.target.closest('.task-details-section')
+                  .querySelector('.details-richtext');
+                insertList(detailsArea, 'ul');
               }}
               title="Bullet List"
               aria-label="Bullet list"
@@ -3942,6 +4588,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 e.stopPropagation();
                 
                 const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
+                // Snapshot before mutating. This handler builds DOM directly, so
+                // it never fires beforeinput and the history would not see it.
+                pushHistory(detailsArea);
                 // One Follow Up section per task. The heading is tagged with
                 // its own class and that survives into the saved HTML, so its
                 // presence is the check - and it holds for a task reopened
@@ -4018,6 +4667,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 }
                 const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
                 if (!target) return;
+                // Snapshot covers both branches. The bullet one goes through
+                // execCommand and would be caught anyway; taking it here keeps
+                // the two paths on one rule instead of two.
+                pushHistory(detailsArea);
                 if (target.kind === 'bullet') {
                   document.execCommand('indent', false, null);
                 } else {
@@ -4046,6 +4699,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) return;
                   const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
                   if (!target) return;
+                  pushHistory(detailsArea);
                   if (target.kind === 'bullet') {
                     document.execCommand('outdent', false, null);
                   } else {
@@ -4305,6 +4959,9 @@ const Task = ({ task, listName, showMoveButtons }) => {
               if (e.key === 'Tab') {
                 e.preventDefault();
                 const area = e.currentTarget;
+                // preventDefault above stops the browser acting, which also
+                // stops beforeinput firing - so nothing else would record this.
+                pushHistory(area);
                 const target = resolveIndentTarget(area, currentNode);
                 if (!target) return;
 
@@ -4345,6 +5002,10 @@ const Task = ({ task, listName, showMoveButtons }) => {
               // contentEditable's default backspace is unreliable at the boundary
               // right after a checkbox input, so we handle it explicitly.
               else if (e.key === 'Backspace' && checkboxLine && selection.isCollapsed) {
+                // Taken before the branch decides whether it acts. If it does
+                // not, the snapshot is identical to the last one and
+                // pushHistory discards it.
+                pushHistory(e.currentTarget);
                 const textSpan = checkboxLine.querySelector('span');
                 // Determine if the caret is at the very start of the line's text.
                 let atStart = false;
@@ -4395,6 +5056,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
               
               // Handle Enter key
               else if (e.key === 'Enter' && checkboxLine) {
+                pushHistory(e.currentTarget);
                 const checkbox = checkboxLine.querySelector('.task-checkbox');
                 // Read text from the entire line, excluding the checkbox input.
                 // textContent of the line naturally excludes the input's value,
@@ -4720,6 +5382,16 @@ function LittleFiresApp() {
   // an unhandled exception inside a useEffect and persistence silently stops -
   // you'd only notice after losing work. This surfaces it instead.
   const [storageError, setStorageError] = useState(null);
+
+  // What the last sweep moved, if it has not been acknowledged yet. Read at
+  // mount, because the sweep can run while the app is closed.
+  const [archiveNotice, setArchiveNotice] = useState(() =>
+    readJsonStore(ARCHIVE_NOTICE_STORAGE, null));
+
+  const dismissArchiveNotice = () => {
+    setArchiveNotice(null);
+    try { localStorage.removeItem(ARCHIVE_NOTICE_STORAGE); } catch (err) {}
+  };
   // In-app confirmation, because window.confirm cannot be relied on here.
   // A sandboxed iframe without allow-modals blocks it outright - it returns
   // false and never shows anything, so every destructive action guarded by it
@@ -4839,6 +5511,9 @@ function LittleFiresApp() {
   const [reportChartType, setReportChartType] = useState('line'); // 'line' or 'bar'
   const [reportTimeframeDropdownOpen, setReportTimeframeDropdownOpen] = useState(false);
   const [reportHoverIndex, setReportHoverIndex] = useState(null); // hovered bucket index for tooltip
+  // Which summary box is expanded in Reports: 'total' | 'open' | 'backlog', or
+  // null. One at a time - three open panels would bury the chart they describe.
+  const [reportDrilldown, setReportDrilldown] = useState(null);
   const [reportHiddenLists, setReportHiddenLists] = useState({}); // { work: true } => hidden from chart
   const [reportTaskStatus, setReportTaskStatus] = useState('complete'); // 'complete','open','both'
   const [reportStatusDropdownOpen, setReportStatusDropdownOpen] = useState(false);
@@ -4988,14 +5663,24 @@ function LittleFiresApp() {
     partnerColor: '#f472b6',
     partnerAccountEmail: '',
     listLabels: { ...DEFAULT_LIST_LABELS },
-    hiddenLists: {},          // { travel: true } => hidden from the app
+    // Fresh-install lists: Personal, Work, Partner. The rest exist and keep
+    // their tasks - they are just not shown until switched on in Settings >
+    // Lists. Three tabs is a row you can read at a glance; six is a wall of
+    // categories to sort yourself into before you have written anything down.
+    hiddenLists: { home: true, travel: true, kids: true },
     listOrder: null,          // user's drag-ordered keys; null = built-in order
     customLists: [],          // [{ key, label, color }] added by the user
-    // Off by default, so a new install opens as a task list and nothing else.
-    // Every one of these is discoverable in Settings > Menu Sections, and
-    // switching one on never lost data - it was only ever hidden.
-    // Search stays on: it's a way of getting around, not a section to manage.
-    hiddenFeatures: { time: true, goals: true, projects: true, notes: true }
+    // Time and Notes are off for a new install: both are their own way of
+    // working rather than something a task list needs, and both are one switch
+    // away in Settings > Menu Sections. Goals and Projects stay on because
+    // tasks hang off them - a task can carry a project, so the section it
+    // refers to should be there.
+    //
+    // Search stays on too: it's a way of getting around, not a section to
+    // manage. AI Tasks isn't listed here at all - its menu entry is gated on
+    // settings.aiSuggestions, which is false until switched on, so it is
+    // already hidden by default.
+    hiddenFeatures: { time: true, notes: true }
   };
   // Bump when the settings shape changes in a way that needs migrating
   const SETTINGS_VERSION = 1;
@@ -5029,6 +5714,7 @@ function LittleFiresApp() {
   // Free text, saved as it is typed via the same debounce the rest of the app
   // uses for storage, so there is no Save button to forget to press.
   const [aiProfile, setAiProfile] = useState(() => readAiProfile());
+  const [aiInstructions, setAiInstructions] = useState(() => readAiInstructions());
   const [aiKeyDraft, setAiKeyDraft] = useState('');
 
   const [settings, setSettings] = useState(() => {
@@ -5066,6 +5752,11 @@ function LittleFiresApp() {
       // sections simply gone. A stored blob means an existing install, so
       // anyone who never touched these keeps everything switched on.
       if (parsed.hiddenFeatures === undefined) parsed.hiddenFeatures = {};
+      // And the same for lists, which now default to a subset. Without this
+      // pin, changing the fresh-install default would reach back and hide
+      // Home, Travel and Kids on an app somebody is already using - tabs they
+      // have tasks in, vanishing with no action on their part.
+      if (parsed.hiddenLists === undefined) parsed.hiddenLists = {};
       if ('batterySaver' in parsed) batterySaverUserChoiceRef.current = true;
       return { ...DEFAULT_SETTINGS, ...parsed };
     } catch {
@@ -5156,6 +5847,19 @@ function LittleFiresApp() {
         overrides[k] = settings[k];
         return;
       }
+      // Same exception again, for the two keys that decide what a new install
+      // opens with. This one was failing silently: DEFAULT_SETTINGS hid four
+      // menu sections, that value matched the default so nothing was written,
+      // and the loader's pin then read the missing key as "existing install"
+      // and turned all four back on. The intended minimal first run lasted
+      // exactly one launch.
+      //
+      // Objects, so the comparison would be by reference anyway - another
+      // reason not to leave these to the generic check.
+      if (k === 'hiddenLists' || k === 'hiddenFeatures') {
+        overrides[k] = settings[k];
+        return;
+      }
       if (JSON.stringify(settings[k]) !== JSON.stringify(DEFAULT_SETTINGS[k])) {
         overrides[k] = settings[k];
       }
@@ -5204,69 +5908,25 @@ function LittleFiresApp() {
   useEffect(() => {
     const accent = accentColors.accent;
 
-    // The fill is a parameter because the two icons need different treatment:
-    // the favicon sits on a browser tab of unknown colour, while the touch icon
-    // sits on an accent-filled square and has to contrast with it.
-    // The artwork is not centred in its own viewBox: measured bounds are
-    // x 200-1091, y 7-933, so its centre is (645.5, 470.4) against a viewBox
-    // centre of (640, 640). It sat high with dead space underneath, which is
-    // what made the icon read small. Re-centred explicitly rather than assumed.
-    const FLAME_CX = 645.5;
-    const FLAME_CY = 470.4;
-    const FLAME_PATHS = `<path d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/><path d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/><path d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>`;
-
-    // scale is relative to the viewBox, so 1 keeps the original size. `ring`
-    // draws an enclosing circle; its stroke reaches to about 8 units from the
-    // canvas edge, so the icon fills the space a bare flame left empty.
-    const flameSVG = (fill, { ring = null, scale = 1 } = {}) => {
-      const circle = ring
-        ? `<circle cx="640" cy="640" r="600" fill="none" stroke="${ring}" stroke-width="64"/>`
-        : '';
-      // Two nested transforms: the inner one is the artwork's own coordinate
-      // mapping and must not change; the outer works in viewBox space to
-      // centre and scale it.
-      return `<svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1280">`
-        + circle
-        + `<g transform="translate(640,640) scale(${scale}) translate(${-FLAME_CX},${-FLAME_CY})">`
-        + `<g transform="translate(0,1280) scale(0.1,-0.1)" fill="${fill}">${FLAME_PATHS}</g>`
-        + `</g></svg>`;
-    };
-    const toURI = (markup) => 'data:image/svg+xml,' + encodeURIComponent(markup);
-
-    document.querySelectorAll("link[rel*='icon']").forEach(l => l.remove());
-    const link = document.createElement('link');
-    link.rel = 'icon';
-    link.type = 'image/svg+xml';
-    // Black flame in a black ring, matching the logo in the app header.
-    // 0.85 keeps the flame clear of the ring: at full size its bounding
-    // half-diagonal is 642 against an inner ring radius of 568.
-    link.href = toURI(flameSVG('#000000', { ring: '#000000', scale: 0.85 }));
-    document.head.appendChild(link);
-
-    // iOS home-screen icon: cream flame on an accent square.
-    const canvas = document.createElement('canvas');
-    canvas.width = 180;
-    canvas.height = 180;
-    const ctx = canvas.getContext('2d');
-    // This was `ctx.fillStyle = 'var(--accent)'`. A canvas has no CSS variable
-    // resolution, and assigning an invalid colour to fillStyle is silently
-    // ignored - the previous value stands, which is black by default. Combined
-    // with the artwork's own black fill, the icon rendered as a black flame on
-    // a black square. Canvas needs a resolved value, hence accentColors.
-    ctx.fillStyle = accent;
-    ctx.fillRect(0, 0, 180, 180);
-
-    const img = new Image();
-    img.onload = () => {
-      const size = 140;
-      const pos = (180 - size) / 2;
-      ctx.drawImage(img, pos, pos, size, size);
-      const appleTouchLink = document.createElement('link');
-      appleTouchLink.rel = 'apple-touch-icon';
-      appleTouchLink.href = canvas.toDataURL('image/png');
-      document.head.appendChild(appleTouchLink);
-    };
-    img.src = toURI(flameSVG('var(--text)', { scale: 0.92 }));
+    // Icons are declared statically in index.html and are NOT touched here.
+    //
+    // They used to be built on every accent change: the favicon as an SVG data
+    // URI, and the iOS touch icon by painting a canvas with the accent colour
+    // and drawing the flame over it. Two problems, one cosmetic and one
+    // structural.
+    //
+    // The flame was drawn from an SVG whose fill was `var(--text)`. A
+    // standalone SVG loaded through an <img> has no page to inherit CSS
+    // variables from, so that never resolved and the fill fell back to black -
+    // giving a black flame on an accent-green square, rather than the cream on
+    // green that was intended. The same mistake as `ctx.fillStyle =
+    // 'var(--accent)'`, which is called out three lines up: var() is a CSS
+    // feature, and neither canvas nor a detached SVG is CSS.
+    //
+    // The structural problem is worse. iOS reads the home-screen icon when the
+    // user taps "Add to Home Screen", which can happen before this effect has
+    // run, and then caches it hard enough to survive a redeploy. An icon that
+    // only exists once React has mounted is an icon that may never be seen.
 
     // Updated in place rather than appended - this effect re-runs on every
     // accent change, and the previous version created duplicate tags each time.
@@ -5448,15 +6108,31 @@ function LittleFiresApp() {
       if (!editable) return;
 
       const rect = caretRect() || el.getBoundingClientRect();
-      // Bottom of the area still visible above the keyboard, plus a little
-      // breathing room so the caret isn't flush against it.
+      // Bottom of the area still visible above the keyboard.
       const visibleBottom = vv.height + vv.offsetTop;
-      const overlap = rect.bottom - visibleBottom + 16;
-      if (overlap <= 0) return;
 
       const scroller = scrollableAncestor(el);
-      if (scroller) scroller.scrollTop += overlap;
-      else window.scrollBy(0, overlap);
+      // Top edge of whatever is actually scrolling - on mobile the task list,
+      // not the window. Anything above this line is off screen.
+      const portTop = scroller ? scroller.getBoundingClientRect().top : 0;
+
+      // The name of the task being edited. Keeping it visible is what tells
+      // you which task you are typing into - without it the editor is an
+      // unlabelled box, which is exactly what focusing it used to produce.
+      const card = el.closest ? el.closest('.task.expanded') : null;
+      const anchor = card ? card.querySelector('.task-main') : null;
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+
+      const delta = keyboardScrollAdjustment({
+        caretBottom: rect.bottom,
+        anchorTop,
+        portTop,
+        visibleBottom
+      });
+      if (!delta) return;
+
+      if (scroller) scroller.scrollTop += delta;
+      else window.scrollBy(0, delta);
     };
 
     // The viewport resizes as the keyboard animates in; wait for a frame so the
@@ -5466,12 +6142,27 @@ function LittleFiresApp() {
       frame = requestAnimationFrame(reveal);
     };
 
+    // iOS does its own scroll-into-view when a field takes focus, and that can
+    // land after the last viewport resize - so a correction made only on resize
+    // gets overwritten by the browser a moment later. focusin catches the
+    // gesture, and the delayed pass catches where the browser left things once
+    // the keyboard animation has settled.
+    let settleTimer = null;
+    const onFocusIn = () => {
+      onChange();
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(onChange, 300);
+    };
+
     vv.addEventListener('resize', onChange);
     document.addEventListener('selectionchange', onChange);
+    document.addEventListener('focusin', onFocusIn);
     return () => {
       vv.removeEventListener('resize', onChange);
       document.removeEventListener('selectionchange', onChange);
+      document.removeEventListener('focusin', onFocusIn);
       if (frame) cancelAnimationFrame(frame);
+      if (settleTimer) clearTimeout(settleTimer);
     };
   }, []);
 
@@ -5864,6 +6555,7 @@ function LittleFiresApp() {
         isSharedList,
         includeDetails: !!settings.aiIncludeDetails,
         profile: aiProfile,
+        instructions: aiInstructions,
         now: Date.now()
       }
     );
@@ -6182,22 +6874,6 @@ function LittleFiresApp() {
     return saved ? JSON.parse(saved) : [];
   });
 
-  // Load Tesseract.js for OCR
-  useEffect(() => {
-    if (!window.Tesseract) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-      script.async = true;
-      script.crossOrigin = 'anonymous';
-      script.onload = () => {
-        console.log('Tesseract.js loaded successfully');
-      };
-      script.onerror = () => {
-        console.error('Failed to load Tesseract.js from CDN');
-      };
-      document.body.appendChild(script);
-    }
-  }, []);
   
   const [allLists, setAllLists] = useState(() => {
     const saved = localStorage.getItem('little_fires_lists');
@@ -6572,6 +7248,114 @@ function LittleFiresApp() {
   const [showOpenTasks, setShowOpenTasks] = useState(true);
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [showToDoSection, setShowToDoSection] = useState(true);
+
+  // ---- Section expand / collapse scrolling -------------------------------
+  // Same behaviour the task cards got: opening something that runs off the
+  // bottom brings it into view, and closing it puts the page back where it was.
+  //
+  // The elements register themselves by ref, because the sections are rendered
+  // inline in three different places and threading a ref through each would be
+  // more code than the feature.
+  const sectionNodes = React.useRef({});
+
+  // Registers the element that spans a section's header and its content, which
+  // is what gets measured and scrolled to. A helper rather than an inline
+  // closure at each site: there are a dozen of them across four views, and one
+  // spelling of it is easier to keep right than a dozen.
+  const sectionRef = React.useCallback(
+    (key) => (el) => { sectionNodes.current[key] = el; }, []);
+  const sectionScroll = React.useRef(null);
+
+  // Guards a collapse that is mid-flight, so a second tap on the header cannot
+  // start a second animation racing the first.
+  const sectionBusy = React.useRef(false);
+
+  const toggleSection = React.useCallback((key, isOpen, setOpen) => {
+    if (sectionBusy.current) return;
+    const el = sectionNodes.current[key];
+
+    // Closing, having scrolled to it earlier: travel back BEFORE the content
+    // goes, not after.
+    //
+    // Collapsing first is what made this snap. Removing the content shrinks the
+    // scroller, and if the position is then past the new maximum the browser
+    // clamps it in a single jump - which happens before any smooth scroll can
+    // begin, leaving it nothing to animate. Scrolling while the content is
+    // still there means there is nothing to clamp, and by the time it collapses
+    // everything being removed is below the fold anyway.
+    if (isOpen) {
+      const info = sectionScroll.current;
+      const livePort = info ? ((el && scrollPortFor(el)) || info.port) : null;
+      const shouldReturn = !!info && info.key === key &&
+        shouldRestoreScroll(info, readScrollTop(livePort));
+      sectionScroll.current = null;
+
+      // Re-resolved rather than trusted. The port was found before the section
+      // expanded, when the list may not have been scrolling yet - and a stale
+      // one means scrolling something that isn't moving.
+      const port = livePort;
+
+      if (shouldReturn && !settings.reduceMotion) {
+        sectionBusy.current = true;
+        writeScrollTop(port, info.from, true);
+        onScrollSettled(port, () => {
+          sectionBusy.current = false;
+          setOpen(false);
+        });
+        return;
+      }
+
+      // Nothing to return to, or motion is switched off: close at once.
+      if (shouldReturn) writeScrollTop(port, info.from, false);
+      setOpen(false);
+      return;
+    }
+
+    setOpen(true);
+
+    if (!el) return;
+    const port = scrollPortFor(el);
+    const portRect = () => port
+      ? port.getBoundingClientRect()
+      : { top: 0, bottom: window.innerHeight || 0 };
+
+    {
+      // Opening. Remember where we are before anything moves, then measure
+      // after the content has actually rendered - two frames, because the
+      // section's new height does not exist until layout has run.
+      const from = readScrollTop(port);
+      sectionScroll.current = { key, port, from, landed: null };
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const node = sectionNodes.current[key];
+          if (!node) return;
+          if (!sectionNeedsReveal(node.getBoundingClientRect(), portRect())) {
+            // Nothing moved, so there is nothing to undo on the way back.
+            sectionScroll.current = null;
+            return;
+          }
+          try {
+            node.scrollIntoView({
+              block: 'start',
+              behavior: settings.reduceMotion ? 'auto' : 'smooth'
+            });
+          } catch (err) {
+            node.scrollIntoView(true);
+          }
+          // Where the smooth scroll came to rest, recorded a beat later so a
+          // position the reader chose afterwards can be told from this one.
+          setTimeout(() => {
+            if (sectionScroll.current && sectionScroll.current.key === key) {
+              sectionScroll.current.landed = readScrollTop(port);
+            }
+          }, 450);
+        });
+      });
+      return;
+    }
+
+  }, [settings.reduceMotion]);
+
   const [showBacklogSection, setShowBacklogSection] = useState(true);
   // Which task lists are collapsed in the All Tasks view. Keyed by list key,
   // so custom lists behave like built-ins - this previously used six hardcoded
@@ -6895,7 +7679,16 @@ function LittleFiresApp() {
       // null is "never run", and never-run has to sweep rather than skip.
       if (lastMonth === thisMonth) return;
 
-      autoArchiveCompletedTasks();
+      // Silence here was the problem. The first sweep on any device moves
+      // every completed task from every prior month at once - months of
+      // finished work leaving the list in one go, with nothing said. That
+      // reads as data loss, not as filing.
+      const swept = autoArchiveCompletedTasks();
+      if (swept && swept.count > 0) {
+        const notice = { count: swept.count, months: swept.months, at: new Date().toISOString() };
+        setArchiveNotice(notice);
+        writeJsonStore(ARCHIVE_NOTICE_STORAGE, notice);
+      }
       setLastArchiveCheck(thisMonth);
       safeSetItem('little_fires_last_archive_check', thisMonth);
     };
@@ -7498,70 +8291,57 @@ function LittleFiresApp() {
         return note;
       }));
 
-      // Perform OCR
-      console.log('Starting OCR...');
+      // Read the image. The engine is fetched here, on demand, rather than on
+      // app start - see loadOcrEngine.
+      //
+      // This replaces a poll: a loop that slept 500ms up to thirty times
+      // waiting for a global to appear. It waited the full fifteen seconds
+      // whenever the script was never going to arrive, and on a fast connection
+      // it still slept up to half a second after the script was already there.
+      // Awaiting the load resolves the moment it is ready and fails fast when
+      // it will not.
+      //
+      // Nothing is logged. The old path printed the entire extracted text to
+      // the console - the contents of a photographed document - which is not
+      // something to write down by default.
       try {
-        // Wait for Tesseract to load if needed (up to 15 seconds)
-        let attempts = 0;
-        while (!window.Tesseract && attempts < 30) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-          attempts++;
-        }
-        
-        if (window.Tesseract) {
-          console.log('Tesseract loaded, creating worker...');
-          const worker = await window.Tesseract.createWorker('eng');
-          console.log('Worker created, recognizing...');
-          const { data: { text } } = await worker.recognize(compressedImage);
-          console.log('OCR complete, text:', text);
-          await worker.terminate();
-          
-          // Update with extracted text
-          setNotes(prev => prev.map(note => {
-            if (note.id === noteId) {
-              return {
-                ...note,
-                images: (note.images || []).map(img => 
-                  img.id === imageId 
-                    ? { ...img, extractedText: text.trim() || 'No text detected', isProcessing: false }
-                    : img
-                )
-              };
-            }
-            return note;
-          }));
-        } else {
-          console.error('Tesseract failed to load after waiting');
-          // OCR library not loaded
-          setNotes(prev => prev.map(note => {
-            if (note.id === noteId) {
-              return {
-                ...note,
-                images: (note.images || []).map(img => 
-                  img.id === imageId 
-                    ? { ...img, extractedText: 'OCR library failed to load. Try refreshing the page.', isProcessing: false }
-                    : img
-                )
-              };
-            }
-            return note;
-          }));
-        }
-      } catch (error) {
-        console.error('OCR failed:', error);
-        // Mark as failed
+        const Tesseract = await loadOcrEngine();
+        const worker = await Tesseract.createWorker('eng');
+        const { data: { text } } = await worker.recognize(compressedImage);
+        await worker.terminate();
+
         setNotes(prev => prev.map(note => {
-          if (note.id === noteId) {
-            return {
-              ...note,
-              images: (note.images || []).map(img => 
-                img.id === imageId 
-                  ? { ...img, extractedText: `OCR error: ${error.message || 'Unknown error'}. Try refreshing the page.`, isProcessing: false }
-                  : img
-              )
-            };
-          }
-          return note;
+          if (note.id !== noteId) return note;
+          return {
+            ...note,
+            images: (note.images || []).map(img =>
+              img.id === imageId
+                ? { ...img, extractedText: text.trim() || 'No text detected', isProcessing: false }
+                : img
+            )
+          };
+        }));
+      } catch (error) {
+        // One handler for both failures - the engine not loading and the
+        // recognition itself going wrong. They were separate branches, which
+        // meant two copies of the same state update and, in one of them, a
+        // console.error that nobody on a phone can see.
+        //
+        // The message goes where the extracted text would have gone, because
+        // that is where the person is already looking.
+        const message = /load/i.test(error && error.message || '')
+          ? 'Could not load the text reader. Check your connection and try again.'
+          : 'Could not read text from this image.';
+        setNotes(prev => prev.map(note => {
+          if (note.id !== noteId) return note;
+          return {
+            ...note,
+            images: (note.images || []).map(img =>
+              img.id === imageId
+                ? { ...img, extractedText: message, isProcessing: false }
+                : img
+            )
+          };
         }));
       }
     } catch (error) {
@@ -8101,7 +8881,7 @@ function LittleFiresApp() {
       }
     });
 
-    if (total === 0) return 0;
+    if (total === 0) return { count: 0, months: [] };
 
     // One update per map rather than one per task.
     setArchivedTasks(prev => {
@@ -8138,7 +8918,21 @@ function LittleFiresApp() {
       return next;
     });
 
-    return total;
+    // The months are reported alongside the count so the notice can name them.
+    // The first ever sweep can span several - everything completed before the
+    // current month goes at once - so naming a single one would be a lie
+    // whenever it is more than that.
+    const months = [];
+    Object.keys(moved).forEach(listName => {
+      moved[listName].forEach(t => {
+        const d = new Date(t.completedAt);
+        if (Number.isNaN(d.getTime())) return;
+        const label = d.toLocaleDateString('en-US', { month: 'long' });
+        if (!months.includes(label)) months.push(label);
+      });
+    });
+
+    return { count: total, months };
   };
 
   // Project management functions
@@ -8952,10 +9746,14 @@ function LittleFiresApp() {
         hasAnyTasks = true;
 
         return (
-          <div key={listName} className="list-section">
+          <div key={listName} className="list-section" ref={sectionRef('all-' + listName)}>
             <div 
               className="list-section-header"
-              onClick={() => toggleList(listName)}
+              onClick={() => toggleSection(
+                'all-' + listName,
+                !collapsedLists[listName],
+                (open) => setCollapsedLists(prev => ({ ...prev, [listName]: !open }))
+              )}
               style={{cursor: 'pointer'}}
             >
               <span>{listLabels[listName]}</span>
@@ -9077,10 +9875,10 @@ function LittleFiresApp() {
 
       return (
         <>
-          <div className="list-section">
+          <div className="list-section" ref={sectionRef('todo')}>
             <div 
               className="list-section-header"
-              onClick={() => setShowToDoSection(!showToDoSection)}
+              onClick={() => toggleSection('todo', showToDoSection, setShowToDoSection)}
               style={{cursor: 'pointer'}}
             >
               <span className="section-icon campfire-icon"><CleanFlame /></span>
@@ -9144,23 +9942,32 @@ function LittleFiresApp() {
                     </div>
                   </div>
                 ) : (
-                  todoTasks.map((task) => (
-                      <Task
-                        key={task.id}
-                        task={task}
-                        listName={currentList}
-                        showMoveButtons={true}
-                      />
-                    ))
+                  (() => {
+                    // Drawn after the last flagged task, and only when there is
+                    // something on both sides of it.
+                    const boundaryId = priorityBoundaryId(todoTasks);
+                    return todoTasks.map((task) => (
+                      <React.Fragment key={task.id}>
+                        <Task
+                          task={task}
+                          listName={currentList}
+                          showMoveButtons={true}
+                        />
+                        {task.id === boundaryId && (
+                          <div className="priority-divider" aria-hidden="true" />
+                        )}
+                      </React.Fragment>
+                    ));
+                  })()
                 )}
               </>
             )}
           </div>
 
-          <div className="list-section">
+          <div className="list-section" ref={sectionRef('backlog')}>
             <div 
               className="list-section-header"
-              onClick={() => setShowBacklogSection(!showBacklogSection)}
+              onClick={() => toggleSection('backlog', showBacklogSection, setShowBacklogSection)}
               style={{cursor: 'pointer'}}
             >
               <span className="section-icon logs-icon"><CutLog /></span>
@@ -9237,10 +10044,10 @@ function LittleFiresApp() {
             )}
           </div>
 
-          <div className="list-section">
+          <div className="list-section" ref={sectionRef('complete')}>
             <div 
               className="list-section-header"
-              onClick={() => setShowCompletedTasks(!showCompletedTasks)}
+              onClick={() => toggleSection('complete', showCompletedTasks, setShowCompletedTasks)}
               style={{cursor: 'pointer'}}
             >
               <span className="section-icon checkbox-icon"><CheckedBox /></span>
@@ -10206,6 +11013,30 @@ function LittleFiresApp() {
           opacity: 0.7;
         }
 
+        /* Marks where the flame band ends. Deliberately NOT the accent colour:
+           accent means "interactive or primary" everywhere else in the app, and
+           a rule between two groups of tasks is neither. A hairline in the
+           surface line colour reads as structure rather than as something to
+           press.
+           
+           Sits in the gap between two cards, so it needs no height of its own
+           beyond the border. */
+        .priority-divider {
+          height: 0;
+          margin: 2px 10px 14px;
+          border-top: 1px solid rgba(var(--border-rgb), 0.45);
+        }
+
+        /* A hair more presence on a dark background, where a single hairline at
+           45% disappears. */
+        :root .priority-divider {
+          border-top-color: rgba(var(--border-rgb), 0.6);
+        }
+
+        .theme-light .priority-divider {
+          border-top-color: rgba(var(--border-rgb), 0.45);
+        }
+
         .priority-indicator {
           width: 8px;
           height: 100%;
@@ -10639,6 +11470,30 @@ function LittleFiresApp() {
           flex-shrink: 0;
         }
 
+        /* The box is 20px, which is less than half the 44px a fingertip needs.
+           Rather than draw it bigger - it would dominate a line of text - the
+           TARGET is grown past the paint with a pseudo-element. Tapping the
+           label toggles too (see onCheckboxMouseDown), so this is the second of
+           two ways to hit it rather than the only one.
+           
+           A pseudo-element rather than padding because padding would move the
+           text along with it and re-space every checklist in the app. */
+        .details-richtext .task-checkbox::after {
+          content: '';
+          position: absolute;
+          top: -11px;
+          bottom: -11px;
+          left: -11px;
+          right: -11px;
+        }
+
+        /* Above the line's text, so the enlarged target wins where the two
+           overlap - otherwise the extra reach on the right would be swallowed
+           by the words next to it. */
+        .details-richtext .task-checkbox {
+          z-index: 1;
+        }
+
         /* Hover-only devices. On touch, tapping latches :hover, so the box
            would scale up and settle back on every tap - that's the flash.
            A mouse still gets the effect. */
@@ -10800,6 +11655,13 @@ function LittleFiresApp() {
           transform: scale(0.95);
         }
 
+        /* The list chooser. Sits ABOVE its button: the toolbar is at the top of
+           the details panel, so opening downwards covered the first lines of
+           what you were writing - the one place you need to see while choosing
+           how to mark it up.
+           
+           Its buttons are the toolbar's buttons, styled by the same rules, so
+           the menu reads as the row extending rather than as a dialog over it. */
         /* Shown only where the labels are hidden. On a wide screen "Follow Up"
            is its own best label and a flag beside it is noise - unlike Box and
            Bullets, whose icons double as a preview of what they insert. */
@@ -12984,6 +13846,61 @@ function LittleFiresApp() {
 
       <div className="container">
         {/* Storage failures used to be silent - this makes them impossible to miss */}
+        {/* What the last archive sweep moved.
+        
+            Deliberately not styled as an error - nothing went wrong, and a red
+            box would say otherwise. It reads as a receipt: what happened, where
+            the tasks went, and a way to go and look at them. Dismissing is the
+            acknowledgement, so it never appears twice for the same sweep. */}
+        {archiveNotice && archiveNotice.count > 0 && (
+          <div style={{
+            background: 'rgba(var(--surface-raised-rgb), 0.6)',
+            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+            borderRadius: '10px', padding: '12px 14px', margin: '12px 0',
+            display: 'flex', alignItems: 'flex-start', gap: '12px',
+            fontFamily: 'var(--font-ui)'
+          }}>
+            <div style={{ flex: 1, color: 'var(--text)', fontSize: '0.85rem', lineHeight: 1.55 }}>
+              <strong>
+                {archiveNotice.count} completed {archiveNotice.count === 1 ? 'task' : 'tasks'} moved to your archive
+              </strong>
+              <div style={{ color: 'var(--text-muted)', marginTop: '3px' }}>
+                {/* Naming one month is only honest when there was one. The first
+                    sweep usually spans several. */}
+                {archiveNotice.months && archiveNotice.months.length === 1
+                  ? `Everything you finished in ${archiveNotice.months[0]}. `
+                  : 'Everything you finished before this month. '}
+                Nothing was deleted — it happens at the start of each month to keep
+                your lists to what's current.
+              </div>
+              <button
+                onClick={() => { setAppMode('archive'); dismissArchiveNotice(); }}
+                style={{
+                  marginTop: '8px', padding: '6px 12px', borderRadius: '8px',
+                  border: '2px solid rgba(var(--accent-rgb), 0.35)',
+                  background: 'rgba(var(--surface-rgb), 0.8)',
+                  color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                  fontSize: '0.78rem', cursor: 'pointer'
+                }}
+              >
+                View archive
+              </button>
+            </div>
+            <button
+              aria-label="Dismiss"
+              onClick={dismissArchiveNotice}
+              style={{
+                background: 'transparent', border: 'none', color: 'var(--text-muted)',
+                cursor: 'pointer', fontSize: '1.1rem', padding: '0 4px', lineHeight: 1,
+                flexShrink: 0
+              }}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         {storageError && (
           <div style={{
             background: 'rgba(255, 107, 107, 0.15)',
@@ -13084,18 +14001,23 @@ function LittleFiresApp() {
                     Notes
                   </div>
                 )}
-                {/* Only present once suggestions are switched on in Settings.
-                    In the menu rather than among the list tabs on purpose: it
-                    is a view, not a list, and putting it in TASK_LISTS is what
+                {/* Always present, on or off.
+                    
+                    It used to appear only once suggestions were enabled, which
+                    made it undiscoverable by exactly the people who had not
+                    found it: the only way in was to already know it existed and
+                    go looking in Settings. The view explains itself when the
+                    feature is off.
+                    
+                    In the menu rather than among the list tabs on purpose: it is
+                    a view, not a list, and putting it in TASK_LISTS is what
                     would make every count in the app treat proposals as work. */}
-                {settings.aiSuggestions && (
-                  <div
-                    className={`menu-item ${appMode === 'ai' ? 'active' : ''}`}
-                    onClick={() => { setAppMode('ai'); setMenuOpen(false); }}
-                  >
-                    AI Tasks
-                  </div>
-                )}
+                <div
+                  className={`menu-item ${appMode === 'ai' ? 'active' : ''}`}
+                  onClick={() => { setAppMode('ai'); setMenuOpen(false); }}
+                >
+                  AI Tasks
+                </div>
                 <div className="menu-divider"></div>
                 <div 
                   className={`menu-item ${appMode === 'calendar' ? 'active' : ''}`}
@@ -13324,7 +14246,58 @@ function LittleFiresApp() {
           </>
         )}
 
-        {appMode === 'ai' && (
+        {appMode === 'ai' && !settings.aiSuggestions && (
+          <div className="tasks-container">
+            {/* The off state explains the feature rather than nagging about it.
+                One screen, stated plainly, no badges anywhere else in the app -
+                a personal app that pesters you about its own features is worse
+                than one that hides them. */}
+            <div style={{
+              color: 'var(--text)', fontFamily: 'var(--font-ui)',
+              fontSize: '0.95rem', lineHeight: 1.6, maxWidth: '46ch'
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: '10px' }}>
+                Suggested tasks, from what you're already working on
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.88rem' }}>
+                Reads your projects, goals and the tasks you've been finishing, and
+                proposes things you might do next — grouped by list, three at a time.
+                Nothing it proposes becomes a task until you add it.
+              </div>
+
+              <div style={{
+                marginTop: '16px', color: 'var(--text-muted)', fontSize: '0.88rem'
+              }}>
+                Two things worth knowing before you switch it on:
+                <ul style={{ margin: '8px 0 0', paddingLeft: '20px' }}>
+                  <li style={{ marginBottom: '6px' }}>
+                    It sends the text of your tasks, projects and goals to Anthropic.
+                    Never your notes, and never anything from a shared list.
+                  </li>
+                  <li>
+                    It runs on your own API key from console.anthropic.com, billed to
+                    your account. A refresh costs a fraction of a cent.
+                  </li>
+                </ul>
+              </div>
+
+              <button
+                onClick={() => { setAppMode('settings'); setMenuOpen(false); }}
+                style={{
+                  marginTop: '20px', padding: '10px 18px', borderRadius: '10px',
+                  border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                  background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                  color: '#fff', fontFamily: 'var(--font-ui)', fontSize: '0.85rem',
+                  cursor: 'pointer'
+                }}
+              >
+                Set up in Settings
+              </button>
+            </div>
+          </div>
+        )}
+
+        {appMode === 'ai' && settings.aiSuggestions && (
           <div className="tasks-container">
             <div style={{
               color: 'var(--text-muted)', fontSize: '0.85rem',
@@ -20026,7 +20999,8 @@ function LittleFiresApp() {
                   });
 
                   return Object.entries(grouped).map(([listName, tasks]) => (
-                    <div key={listName} className="archive-list-section">
+                    <div key={listName} className="archive-list-section"
+                         ref={sectionRef(`archive-tasks-${listName}`)}>
                       <div 
                         className="section-header archive-section-header" 
                         style={{
@@ -20036,7 +21010,11 @@ function LittleFiresApp() {
                           justifyContent: 'space-between',
                           cursor: 'pointer'
                         }}
-                        onClick={() => toggleArchiveSection(`archive-tasks-${listName}`)}
+                        onClick={() => toggleSection(
+                          `archive-tasks-${listName}`,
+                          !isArchiveSectionCollapsed(`archive-tasks-${listName}`),
+                          (open) => setCollapsedArchiveSections(prev => ({ ...prev, [`archive-tasks-${listName}`]: !open }))
+                          )}
                       >
                         <span>{listName}</span>
                         <span className={`badge ${listName}`}>{tasks.length}</span>
@@ -20199,7 +21177,8 @@ function LittleFiresApp() {
                     });
 
                     return Object.entries(grouped).map(([listName, goalsList]) => (
-                      <div key={listName} className="archive-list-section">
+                      <div key={listName} className="archive-list-section"
+                           ref={sectionRef(`archive-goals-${listName}`)}>
                         <div 
                           className="section-header archive-section-header" 
                           style={{
@@ -20209,7 +21188,11 @@ function LittleFiresApp() {
                             justifyContent: 'space-between',
                             cursor: 'pointer'
                           }}
-                          onClick={() => toggleArchiveSection(`archive-goals-${listName}`)}
+                          onClick={() => toggleSection(
+                            `archive-goals-${listName}`,
+                            !isArchiveSectionCollapsed(`archive-goals-${listName}`),
+                            (open) => setCollapsedArchiveSections(prev => ({ ...prev, [`archive-goals-${listName}`]: !open }))
+                            )}
                         >
                           <span>{listName}</span>
                           <span className={`badge ${listName}`}>{goalsList.length}</span>
@@ -20402,7 +21385,8 @@ function LittleFiresApp() {
                     });
 
                     return Object.entries(grouped).map(([listName, projectsList]) => (
-                      <div key={listName} className="archive-list-section">
+                      <div key={listName} className="archive-list-section"
+                           ref={sectionRef(`archive-projects-${listName}`)}>
                         <div 
                           className="section-header archive-section-header" 
                           style={{
@@ -20412,7 +21396,11 @@ function LittleFiresApp() {
                             justifyContent: 'space-between',
                             cursor: 'pointer'
                           }}
-                          onClick={() => toggleArchiveSection(`archive-projects-${listName}`)}
+                          onClick={() => toggleSection(
+                            `archive-projects-${listName}`,
+                            !isArchiveSectionCollapsed(`archive-projects-${listName}`),
+                            (open) => setCollapsedArchiveSections(prev => ({ ...prev, [`archive-projects-${listName}`]: !open }))
+                            )}
                         >
                           <span>{listName}</span>
                           <span className={`badge ${listName}`}>{projectsList.length}</span>
@@ -21243,6 +22231,54 @@ function LittleFiresApp() {
                       </div>
                     </div>
 
+                    <div style={{ marginTop: '16px' }}>
+                      <div style={label}>Additional instructions</div>
+                      <div style={hint}>
+                        Standing direction about the suggestions themselves — what to
+                        favour, what to avoid, how big a step should be. Separate from
+                        "About you" above, which is about your circumstances rather than
+                        about what you want proposed.
+                      </div>
+                      <textarea
+                        value={aiInstructions}
+                        onChange={(e) => {
+                          const v = e.target.value.slice(0, AI_INSTRUCTIONS_MAX);
+                          setAiInstructions(v);
+                          writeAiInstructions(v);
+                        }}
+                        rows={3}
+                        placeholder="e.g. Favour things I can finish in under an hour. Nothing that needs a phone call. Push me on the house projects."
+                        style={{
+                          width: '100%', boxSizing: 'border-box', marginTop: '8px',
+                          padding: '10px 14px', borderRadius: '10px',
+                          border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                          background: 'rgba(var(--surface-rgb), 0.8)',
+                          color: 'var(--text)', fontFamily: 'var(--font-body)',
+                          fontSize: '0.9rem', outline: 'none', resize: 'vertical'
+                        }}
+                      />
+                      <div style={{
+                        ...hint, display: 'flex', justifyContent: 'space-between',
+                        alignItems: 'center', gap: '10px'
+                      }}>
+                        <span>{aiInstructions.length}/{AI_INSTRUCTIONS_MAX}</span>
+                        {aiInstructions && (
+                          <button
+                            onClick={() => { setAiInstructions(''); writeAiInstructions(''); }}
+                            style={{
+                              padding: '4px 10px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--border-rgb), 0.3)',
+                              background: 'transparent', color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.72rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
                     <div style={divider} />
 
                     <div style={row}>
@@ -21398,6 +22434,7 @@ function LittleFiresApp() {
                         ? ' Also the details of tasks that are still open, as plain text, shortened — never of completed ones.'
                         : ' Not sent: the details field on a task.'}
                       {aiProfile ? ' Your "about you" note is sent with every request.' : ''}
+                      {aiInstructions ? ' So are your additional instructions.' : ''}
                       {' '}Never sent: your notes, or anything from a shared list.
                     </div>
                   </div>
@@ -21889,16 +22926,19 @@ function LittleFiresApp() {
                 const scan = (arr, fromArchive) => {
                   (Array.isArray(arr) ? arr : []).forEach(t => {
                     if (!t) return;
+                    // The task itself rides along so the drill-down below can
+                    // show exactly what was counted. Deriving it separately
+                    // would mean two filters that have to agree forever.
                     if (t.completed) {
                       if (includeComplete && t.completedAt) {
                         const d = new Date(t.completedAt);
-                        if (!isNaN(d)) completed.push({ list: key, date: d });
+                        if (!isNaN(d)) completed.push({ list: key, date: d, task: t });
                       }
                     } else {
                       // Open tasks: only from active lists, exclude backlog
                       if (includeOpen && !fromArchive && t.section !== 'backlog' && t.createdAt) {
                         const d = new Date(t.createdAt);
-                        if (!isNaN(d)) completed.push({ list: key, date: d });
+                        if (!isNaN(d)) completed.push({ list: key, date: d, task: t });
                       }
                     }
                   });
@@ -21911,11 +22951,19 @@ function LittleFiresApp() {
               // These are point-in-time counts, independent of the timeframe.
               let openTasksCount = 0;
               let backlogTasksCount = 0;
+              // Collected in the same pass as the counts, for the same reason.
+              const openTasksList = [];
+              const backlogTasksList = [];
               listKeys.forEach(key => {
                 (Array.isArray(allLists[key]) ? allLists[key] : []).forEach(t => {
                   if (!t || t.completed) return;
-                  if (t.section === 'backlog') backlogTasksCount += 1;
-                  else openTasksCount += 1; // 'todo' or any non-backlog section
+                  if (t.section === 'backlog') {
+                    backlogTasksCount += 1;
+                    backlogTasksList.push({ list: key, task: t });
+                  } else {
+                    openTasksCount += 1; // 'todo' or any non-backlog section
+                    openTasksList.push({ list: key, task: t });
+                  }
                 });
               });
 
@@ -21976,12 +23024,16 @@ function LittleFiresApp() {
               const totals = {};
               listKeys.forEach(k => totals[k] = 0);
 
+              // What actually landed in a bucket - which is what the headline
+              // number counts, so it is what the drill-down must show.
+              const inRangeTasks = [];
               completed.forEach(c => {
                 if (c.date < buckets[0]?.start || c.date > rangeEnd) return;
                 for (let i = 0; i < buckets.length; i++) {
                   if (c.date >= buckets[i].start && c.date <= buckets[i].end) {
                     series[c.list][i] += 1;
                     totals[c.list] += 1;
+                    inRangeTasks.push(c);
                     break;
                   }
                 }
@@ -22186,47 +23238,195 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
-                  {/* Summary stats */}
-                  <div style={{
-                    order: 3,
-                    display: 'flex', flexWrap: 'wrap', gap: isMobile ? '8px' : '15px', marginBottom: '20px'
-                  }}>
-                    <div style={{
-                      background: 'rgba(var(--surface-raised-rgb), 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
-                      borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
-                    }}>
-                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
-                        {({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus]}
-                      </div>
-                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
-                        {grandTotal}
-                      </div>
-                    </div>
+                  {/* Summary stats - each opens the tasks behind its number.
+                      
+                      The lists come from the same loops that produced the counts,
+                      not from a second filter written to match. A drill-down that
+                      disagrees with the number above it is worse than none.
+                      
+                      Note the two are scoped differently, and deliberately: the
+                      first box is the timeframe and the legend, while Open and
+                      Backlog are point-in-time counts across every list. The
+                      panel says which it is showing rather than leaving the
+                      mismatch to be discovered. */}
+                  {(() => {
+                    const boxes = [
+                      {
+                        key: 'total',
+                        label: ({ complete: 'Tasks Completed', open: 'Tasks Opened', both: 'Open + Complete' })[reportTaskStatus],
+                        value: grandTotal,
+                        entries: inRangeTasks.filter(x => !reportHiddenLists[x.list]),
+                        scope: 'in the selected timeframe'
+                      },
+                      {
+                        key: 'open',
+                        label: 'Open Tasks',
+                        value: openTasksCount,
+                        entries: openTasksList,
+                        scope: 'open right now, across every list'
+                      },
+                      {
+                        key: 'backlog',
+                        label: 'Backlog',
+                        value: backlogTasksCount,
+                        entries: backlogTasksList,
+                        scope: 'in the backlog right now, across every list'
+                      }
+                    ];
+                    const active = boxes.find(b => b.key === reportDrilldown) || null;
 
-                    <div style={{
-                      background: 'rgba(var(--surface-raised-rgb), 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
-                      borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
-                    }}>
-                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
-                        Open Tasks
-                      </div>
-                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
-                        {openTasksCount}
-                      </div>
-                    </div>
+                    return (
+                      <div style={{ order: 3, marginBottom: '20px' }}
+                           ref={sectionRef('report-drilldown')}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? '8px' : '15px' }}>
+                          {boxes.map(box => {
+                            const on = reportDrilldown === box.key;
+                            return (
+                              <div
+                                key={box.key}
+                                role="button"
+                                tabIndex={0}
+                                aria-expanded={on}
+                                onClick={() => toggleSection(
+                                  'report-drilldown',
+                                  on,
+                                  (open) => setReportDrilldown(open ? box.key : null)
+                                )}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    toggleSection(
+                                      'report-drilldown',
+                                      on,
+                                      (open) => setReportDrilldown(open ? box.key : null)
+                                    );
+                                  }
+                                }}
+                                style={{
+                                  background: on
+                                    ? 'rgba(var(--accent-rgb), 0.12)'
+                                    : 'rgba(var(--surface-raised-rgb), 0.4)',
+                                  border: '2px solid rgba(var(--accent-rgb), ' + (on ? '0.5' : '0.2') + ')',
+                                  borderRadius: '12px',
+                                  padding: isMobile ? '14px 12px' : '18px 22px',
+                                  minWidth: isMobile ? '0' : '150px',
+                                  flex: isMobile ? '1 1 0' : '0 1 auto',
+                                  textAlign: isMobile ? 'center' : 'left',
+                                  cursor: box.value > 0 ? 'pointer' : 'default',
+                                  transition: 'background 0.2s ease, border-color 0.2s ease'
+                                }}
+                              >
+                                <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
+                                  {box.label}
+                                </div>
+                                <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
+                                  {box.value}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
 
-                    <div style={{
-                      background: 'rgba(var(--surface-raised-rgb), 0.4)', border: '2px solid rgba(var(--accent-rgb), 0.2)',
-                      borderRadius: '12px', padding: isMobile ? '14px 12px' : '18px 22px', minWidth: isMobile ? '0' : '150px', flex: isMobile ? '1 1 0' : '0 1 auto', textAlign: isMobile ? 'center' : 'left'
-                    }}>
-                      <div style={{ color: 'var(--text-muted)', fontSize: isMobile ? '0.7rem' : '0.85rem', fontFamily: 'var(--font-ui)', marginBottom: '4px', lineHeight: 1.25 }}>
-                        Backlog
+                        {active && (
+                          <div style={{
+                            marginTop: '12px',
+                            background: 'rgba(var(--surface-raised-rgb), 0.4)',
+                            border: '2px solid rgba(var(--accent-rgb), 0.2)',
+                            borderRadius: '12px',
+                            padding: isMobile ? '16px 14px' : '18px 22px'
+                          }}>
+                            <div style={{
+                              display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                              gap: '12px', marginBottom: '14px'
+                            }}>
+                              <div style={{
+                                color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                                fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase'
+                              }}>
+                                {active.label} — {active.scope}
+                              </div>
+                              <button
+                                onClick={() => setReportDrilldown(null)}
+                                style={{
+                                  border: 'none', background: 'transparent', cursor: 'pointer',
+                                  color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                                  fontSize: '0.72rem', padding: '2px 4px', flexShrink: 0
+                                }}
+                              >
+                                Close
+                              </button>
+                            </div>
+
+                            {active.entries.length === 0 ? (
+                              <div style={{ color: 'var(--text-soft)', fontFamily: 'var(--font-ui)', fontSize: '0.85rem' }}>
+                                Nothing here for this selection.
+                              </div>
+                            ) : groupDrilldownByList(active.entries, orderedTaskLists).map(group => (
+                              <div key={group.list} style={{ marginBottom: '16px' }}>
+                                <div style={{
+                                  display: 'flex', alignItems: 'center', gap: '8px',
+                                  paddingBottom: '6px', marginBottom: '8px',
+                                  borderBottom: '1px solid rgba(var(--border-rgb), 0.35)'
+                                }}>
+                                  <span style={{
+                                    width: '8px', height: '8px', borderRadius: '50%',
+                                    background: listColor(group.list), flexShrink: 0
+                                  }} />
+                                  <span style={{
+                                    color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                                    fontSize: '0.8rem', fontWeight: 600
+                                  }}>
+                                    {listLabel(group.list)}
+                                  </span>
+                                  <span style={{
+                                    color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                                    fontSize: '0.75rem', marginLeft: 'auto'
+                                  }}>
+                                    {group.tasks.length}
+                                  </span>
+                                </div>
+
+                                {group.tasks.map(task => {
+                                  const when = task.completed ? task.completedAt : task.createdAt;
+                                  const d = when ? new Date(when) : null;
+                                  const stamp = d && !isNaN(d.getTime())
+                                    ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                                    : null;
+                                  return (
+                                    <div key={task.id} style={{
+                                      display: 'flex', alignItems: 'baseline', gap: '10px',
+                                      padding: '5px 0'
+                                    }}>
+                                      <span style={{
+                                        color: 'var(--text)', fontFamily: 'var(--font-body)',
+                                        fontSize: '0.9rem', lineHeight: 1.4,
+                                        flex: 1, minWidth: 0,
+                                        opacity: task.completed ? 0.72 : 1
+                                      }}>
+                                        {task.text}
+                                      </span>
+                                      {task.priority === 'high' && (
+                                        <span style={{ flexShrink: 0, opacity: 0.8 }}><FlameIcon /></span>
+                                      )}
+                                      {stamp && (
+                                        <span style={{
+                                          color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                                          fontSize: '0.72rem', flexShrink: 0,
+                                          fontVariantNumeric: 'tabular-nums'
+                                        }}>
+                                          {stamp}
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ color: 'var(--text)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', fontFamily: 'var(--font-ui)' }}>
-                        {backlogTasksCount}
-                      </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
 
                   {/* Fire chart - orange fills the flame silhouette by completion */}
                   <div style={{

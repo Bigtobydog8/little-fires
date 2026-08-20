@@ -3,12 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The colour the browser paints BEFORE any of this page exists.
+     A cold start shows a blank canvas while the document is still being
+     fetched, and its colour comes from the browser, not from us - so on a
+     dark-mode phone it is dark, and a light-themed app opens with a dark
+     flash. Nothing in the document can prevent that, because the document is
+     not there yet. These two are the only things read early enough to matter.
+     Biased to the app's own default rather than to the OS: a fresh install is
+     light, and so is the most common setting. The script below still has the
+     final say - it knows the STORED theme, which is the only correct answer -
+     so a dark-themed install corrects within the same parse. The trade is that
+     a dark install may show a pale frame instead of a dark one; that is the
+     less common case and the gentler failure.
+     KEEP IN SYNC with the two --bg-1 tokens. -->
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#faf9f5">
+<style>html { background-color: #faf9f5; }</style>
 <title>Little Fires</title>
-<!-- preconnect opens the TLS connections up front, before the boot script below
-     knows which family it needs; gstatic is where the font files themselves
-     live and needs crossorigin. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Theme and font, resolved before first paint.
      Both used to be applied by passive effects in the app, which meant the
      first commit painted with the :root defaults (dark tokens, Quicksand and
@@ -46,16 +57,20 @@
       try {
         var saved = localStorage.getItem('little_fires_settings');
         if (!saved) {
+          // Fresh install: the app's DEFAULT_SETTINGS look.
           theme = 'light';
-          fontChoice = 'default';
+          fontChoice = 'serif';
         } else {
           var parsed = JSON.parse(saved);
+          // A key missing from a stored blob means it was written before
+          // these became fresh-install defaults, so hold that install on the
+          // previous ones - the same pins the app's settings loader applies.
           theme = parsed.theme === undefined ? 'system' : parsed.theme;
-          fontChoice = parsed.fontChoice || 'default';
+          fontChoice = parsed.fontChoice === undefined ? 'default' : parsed.fontChoice;
         }
       } catch (err) {
         theme = 'light';
-        fontChoice = 'default';
+        fontChoice = 'serif';
       }
 
       var root = document.documentElement;
@@ -91,6 +106,24 @@
     }
   })();
 </script>
+<!-- Icons, declared statically rather than built at runtime.
+     iOS reads the home-screen icon at the moment you tap "Add to Home Screen",
+     which may be before any script has run - and it caches what it finds hard
+     enough that a wrong icon survives a redeploy. A file on disk is the only
+     version of this that is reliably there when it is looked for.
+     apple-touch-icon has no size attribute on purpose: iOS picks the 180 one
+     and scales, and a single declaration is one fewer thing to keep in sync. -->
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+<link rel="manifest" href="/manifest.json">
+<!-- After the boot script on purpose. The script is synchronous and must run
+     as early as possible - every byte parsed before it is time the browser
+     spends showing its own canvas instead of ours. preconnect losing a few
+     milliseconds costs a font a moment; the script losing them costs a visible
+     flash. gstatic is where the font files live and needs crossorigin. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <noscript>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700&display=swap">
 </noscript>

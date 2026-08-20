@@ -7273,6 +7273,10 @@ function LittleFiresApp() {
   const [expandedCalendarNoteId, setExpandedCalendarNoteId] = useState(null);
   const [expandedCalendarProjectId, setExpandedCalendarProjectId] = useState(null);
   const [showOpenTasks, setShowOpenTasks] = useState(true);
+  // The CALENDAR's "show completed tasks" filter. Nothing to do with the task
+  // list's Complete section, though the two shared this one flag until now -
+  // so collapsing the section silently stripped completed tasks from the
+  // calendar, and ticking the calendar filter expanded the section.
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [showToDoSection, setShowToDoSection] = useState(true);
 
@@ -7292,6 +7296,22 @@ function LittleFiresApp() {
   const sectionRef = React.useCallback(
     (key) => (el) => { sectionNodes.current[key] = el; }, []);
   const sectionScroll = React.useRef(null);
+  // Which sections are mid-animation. A section is 'collapsed' on the first
+  // frame of an open and the last of a close - the rest of the time it is
+  // absent and the shell sits at its natural height.
+  const [sectionAnim, setSectionAnim] = React.useState({});
+  const setAnim = React.useCallback((key, value) => {
+    setSectionAnim(prev => {
+      if (value === null) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      return prev[key] === value ? prev : { ...prev, [key]: value };
+    });
+  }, []);
+  const SECTION_ANIM_MS = 240;
 
   // Guards a collapse that is mid-flight, so a second tap on the header cannot
   // start a second animation racing the first.
@@ -7322,23 +7342,36 @@ function LittleFiresApp() {
       // one means scrolling something that isn't moving.
       const port = livePort;
 
-      if (shouldReturn && !settings.reduceMotion) {
-        sectionBusy.current = true;
-        writeScrollTop(port, info.from, true);
-        onScrollSettled(port, () => {
-          sectionBusy.current = false;
-          setOpen(false);
-        });
+      if (settings.reduceMotion) {
+        if (shouldReturn) writeScrollTop(port, info.from, false);
+        setOpen(false);
         return;
       }
 
-      // Nothing to return to, or motion is switched off: close at once.
-      if (shouldReturn) writeScrollTop(port, info.from, false);
-      setOpen(false);
+      // Height animation and scroll-back play together. Run in sequence they
+      // took twice as long and read as two events rather than one; together the
+      // shrink is gradual, so there is no sudden clamp for the scroll to fight.
+      sectionBusy.current = true;
+      setAnim(key, 'collapsed');
+      if (shouldReturn) writeScrollTop(port, info.from, true);
+      setTimeout(() => {
+        setOpen(false);
+        setAnim(key, null);
+        sectionBusy.current = false;
+      }, SECTION_ANIM_MS);
       return;
     }
 
+    // Opening: render the content already collapsed, then let it grow a frame
+    // later. Without a first frame at 0fr there is nothing to transition from
+    // and it appears at full height instantly.
+    setAnim(key, settings.reduceMotion ? null : 'collapsed');
     setOpen(true);
+    if (!settings.reduceMotion) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setAnim(key, null));
+      });
+    }
 
     if (!el) return;
     const port = scrollPortFor(el);
@@ -7381,9 +7414,38 @@ function LittleFiresApp() {
       return;
     }
 
-  }, [settings.reduceMotion]);
+  }, [settings.reduceMotion, setAnim]);
 
-  const [showBacklogSection, setShowBacklogSection] = useState(true);
+  // The task list's Backlog and Complete sections.
+  //
+  // Both start closed on arriving at a list: they are reference material rather
+  // than what you came to look at, and a list that opens showing eighty
+  // finished tasks buries the two you have left.
+  const [showBacklogSection, setShowBacklogSection] = useState(false);
+  const [showCompleteSection, setShowCompleteSection] = useState(false);
+
+  // ...unless you left one open. Remembered per list, because "open the
+  // backlog on Work" says nothing about what you want on Personal.
+  //
+  // A ref rather than state: nothing renders from it directly, and it is read
+  // only when the list changes. It is also deliberately not persisted - the
+  // default on opening the app is closed, every time.
+  const sectionPrefs = React.useRef({});
+  const rememberSection = React.useCallback((which, open) => {
+    const forList = sectionPrefs.current[currentList] || (sectionPrefs.current[currentList] = {});
+    forList[which] = open;
+  }, [currentList]);
+
+  // Arriving at a list: closed, unless this list was left with one open.
+  //
+  // No animation here. Switching lists replaces the whole list anyway, so the
+  // sections are rendering fresh rather than closing - playing a collapse would
+  // be animating something the reader never saw open.
+  React.useEffect(() => {
+    const prefs = sectionPrefs.current[currentList] || {};
+    setShowBacklogSection(!!prefs.backlog);
+    setShowCompleteSection(!!prefs.complete);
+  }, [currentList]);
   // Which task lists are collapsed in the All Tasks view. Keyed by list key,
   // so custom lists behave like built-ins - this previously used six hardcoded
   // booleans, which meant any custom list could never expand and clicking its
@@ -9847,7 +9909,10 @@ function LittleFiresApp() {
                   {/* Hidden when collapsed. The error above stays visible
                       either way - a shelf that failed should say so from the
                       header rather than only once you open it. */}
-                  {!collapsedAiShelves[listName] && (<>
+                  {!collapsedAiShelves[listName] && ((
+                  <div className={`section-shell ${sectionAnim[`ai-${listName}`] ? 'section-collapsed' : ''}`}>
+                    <div className="section-shell-inner">
+                      <>
                   {items.length === 0 ? (
                     <div style={{
                       color: 'var(--text-soft)', fontSize: '0.85rem',
@@ -9971,7 +10036,10 @@ function LittleFiresApp() {
                       </>)}
                     </div>
                   ))}
-                  </>)}
+                  </>
+                    </div>
+                  </div>
+                ))}
                 </div>
               );
             })}
@@ -10014,7 +10082,10 @@ function LittleFiresApp() {
               <span className={`badge ${listName}`}>{tasks.length}</span>
             </div>
             {!collapsedLists[listName] && (
-              <>
+              (
+                  <div className={`section-shell ${sectionAnim['all-' + listName] ? 'section-collapsed' : ''}`}>
+                    <div className="section-shell-inner">
+                      <>
                 {tasks.map((task) => {
                   return (
                     <div key={task.id} style={{position: 'relative'}}>
@@ -10031,6 +10102,9 @@ function LittleFiresApp() {
                   );
                 })}
               </>
+                    </div>
+                  </div>
+                )
             )}
           </div>
         );
@@ -10140,7 +10214,8 @@ function LittleFiresApp() {
               <span className="badge work">{todoTasks.length}</span>
             </div>
             {showToDoSection && (
-              <>
+              <div className={`section-shell ${sectionAnim['todo'] ? 'section-collapsed' : ''}`}>
+                <div className="section-shell-inner">
                 {todoTasks.length === 0 ? (
                   <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
                     <div style={{
@@ -10214,14 +10289,18 @@ function LittleFiresApp() {
                     ));
                   })()
                 )}
-              </>
+                </div>
+              </div>
             )}
           </div>
 
           <div className="list-section" ref={sectionRef('backlog')}>
             <div 
               className="list-section-header"
-              onClick={() => toggleSection('backlog', showBacklogSection, setShowBacklogSection)}
+              onClick={() => toggleSection('backlog', showBacklogSection, (open) => {
+                setShowBacklogSection(open);
+                rememberSection('backlog', open);
+              })}
               style={{cursor: 'pointer'}}
             >
               <span className="section-icon logs-icon"><CutLog /></span>
@@ -10229,7 +10308,8 @@ function LittleFiresApp() {
               <span className="badge personal">{backlogTasks.length}</span>
             </div>
             {showBacklogSection && (
-              <>
+              <div className={`section-shell ${sectionAnim['backlog'] ? 'section-collapsed' : ''}`}>
+                <div className="section-shell-inner">
                 {backlogTasks.length === 0 ? (
                   <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
                     <div style={{
@@ -10294,22 +10374,27 @@ function LittleFiresApp() {
                       />
                     ))
                 )}
-              </>
+                </div>
+              </div>
             )}
           </div>
 
           <div className="list-section" ref={sectionRef('complete')}>
             <div 
               className="list-section-header"
-              onClick={() => toggleSection('complete', showCompletedTasks, setShowCompletedTasks)}
+              onClick={() => toggleSection('complete', showCompleteSection, (open) => {
+                setShowCompleteSection(open);
+                rememberSection('complete', open);
+              })}
               style={{cursor: 'pointer'}}
             >
               <span className="section-icon checkbox-icon"><CheckedBox /></span>
               <span>Complete</span>
               <span className="badge home">{completedTasks.length}</span>
             </div>
-            {showCompletedTasks && (
-              <>
+            {showCompleteSection && (
+              <div className={`section-shell ${sectionAnim['complete'] ? 'section-collapsed' : ''}`}>
+                <div className="section-shell-inner">
                 {completedTasks.length === 0 ? (
                   <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
                     <div style={{
@@ -10374,7 +10459,8 @@ function LittleFiresApp() {
                       />
                     ))
                 )}
-              </>
+                </div>
+              </div>
             )}
           </div>
         </>
@@ -11570,6 +11656,42 @@ function LittleFiresApp() {
            the expand already has a scroll-into-view that measures the card two
            frames later, and animating the height at the same time would mean
            measuring a card still on its way to full size. */
+        /* Section open/close, animated.
+           
+           To Do and Backlog snapped because nothing was moving: the scroll rule
+           deliberately skips a section whose header is already at the top, and
+           the first section always is - so the height changed in one frame with
+           no scroll to soften it.
+           
+           Same trick as .details-shell below: a grid with one row, animated
+           between 1fr and 0fr. It transitions to a height the layout works out,
+           without anyone having to measure it.
+           
+           Content is unmounted when closed, not just clipped - the Complete
+           section can hold eighty task components, and keeping those mounted to
+           save an animation would be a poor trade. So opening renders the
+           content collapsed and expands it a frame later, and closing plays the
+           animation before the unmount. */
+        .section-shell {
+          display: grid;
+          grid-template-rows: 1fr;
+          transition: grid-template-rows 240ms ease;
+        }
+
+        .section-shell-inner {
+          overflow: hidden;
+          min-height: 0;
+        }
+
+        /* The state on the first frame of an open, and the last of a close. */
+        .section-shell.section-collapsed {
+          grid-template-rows: 0fr;
+        }
+
+        .reduce-motion .section-shell {
+          transition: none;
+        }
+
         .details-shell {
           display: grid;
           grid-template-rows: 1fr;
@@ -21200,7 +21322,10 @@ function LittleFiresApp() {
                         <span>{listName}</span>
                         <span className={`badge ${listName}`}>{tasks.length}</span>
                       </div>
-                      {!isArchiveSectionCollapsed(`archive-tasks-${listName}`) && tasks.map((task, idx) => {
+                      {!isArchiveSectionCollapsed(`archive-tasks-${listName}`) && (
+                  <div className={`section-shell ${sectionAnim[`archive-tasks-${listName}`] ? 'section-collapsed' : ''}`}>
+                    <div className="section-shell-inner">
+                      {tasks.map((task, idx) => {
                         return (
                           <div key={task.id ?? idx} className="archived-task">
                             <div className="task-text">{task.text}</div>
@@ -21233,6 +21358,9 @@ function LittleFiresApp() {
                           </div>
                         );
                       })}
+                    </div>
+                  </div>
+                )}
                     </div>
                   ));
                 } else {
@@ -21378,7 +21506,10 @@ function LittleFiresApp() {
                           <span>{listName}</span>
                           <span className={`badge ${listName}`}>{goalsList.length}</span>
                         </div>
-                        {!isArchiveSectionCollapsed(`archive-goals-${listName}`) && goalsList.map((goal, idx) => (
+                        {!isArchiveSectionCollapsed(`archive-goals-${listName}`) && (
+                  <div className={`section-shell ${sectionAnim[`archive-goals-${listName}`] ? 'section-collapsed' : ''}`}>
+                    <div className="section-shell-inner">
+                      {goalsList.map((goal, idx) => (
                           <div key={goal.id} className="archived-task">
                             <div className="task-text" style={{fontWeight: '600'}}>{goal.name.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').trim()}</div>
                             {goal.description && (
@@ -21425,6 +21556,9 @@ function LittleFiresApp() {
                             </div>
                           </div>
                         ))}
+                    </div>
+                  </div>
+                )}
                       </div>
                     ));
                   } else {
@@ -21586,7 +21720,10 @@ function LittleFiresApp() {
                           <span>{listName}</span>
                           <span className={`badge ${listName}`}>{projectsList.length}</span>
                         </div>
-                        {!isArchiveSectionCollapsed(`archive-projects-${listName}`) && projectsList.map((project, idx) => (
+                        {!isArchiveSectionCollapsed(`archive-projects-${listName}`) && (
+                  <div className={`section-shell ${sectionAnim[`archive-projects-${listName}`] ? 'section-collapsed' : ''}`}>
+                    <div className="section-shell-inner">
+                      {projectsList.map((project, idx) => (
                           <div key={project.id} className="archived-task">
                             <div className="task-text" style={{fontWeight: '600'}}><ProjectIcon size={14} /> {project.name}</div>
                             {project.description && (
@@ -21633,6 +21770,9 @@ function LittleFiresApp() {
                             </div>
                           </div>
                         ))}
+                    </div>
+                  </div>
+                )}
                       </div>
                     ));
                   } else {
@@ -23509,7 +23649,10 @@ function LittleFiresApp() {
                         </div>
 
                         {active && (
-                          <div style={{
+                          (
+                          <div className={`section-shell ${sectionAnim['report-drilldown'] ? 'section-collapsed' : ''}`}>
+                            <div className="section-shell-inner">
+                              <div style={{
                             marginTop: '12px',
                             background: 'rgba(var(--surface-raised-rgb), 0.4)',
                             border: '2px solid rgba(var(--accent-rgb), 0.2)',
@@ -23604,6 +23747,9 @@ function LittleFiresApp() {
                               </div>
                             ))}
                           </div>
+                            </div>
+                          </div>
+                        )
                         )}
                       </div>
                     );

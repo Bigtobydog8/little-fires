@@ -11346,14 +11346,33 @@ function LittleFiresApp() {
         }
 
         .checkbox-wrapper input[type="checkbox"]:checked::after {
-          content: '✓';
+          /* Drawn rather than typed.
+             
+             This was the ✓ character, centred with translate(-50%, -50%) -
+             which centres the glyph's BOX, not its ink. U+2713 has uneven side
+             bearings, so the mark sat left of centre, and because the
+             pseudo-element inherits the editor's font it sat differently in
+             each of the five font pairings. A shape has no bearings and no
+             font.
+             
+             Two borders on a rotated rectangle: the right border is the long
+             arm, the bottom border the short one.
+             
+             The -1px is the one measured number here. The L's ink sits down and
+             right of its bounding-box centre by about 0.9px on each axis; after
+             a 45-degree rotation that resolves to roughly 1.3px straight down,
+             so the mark is lifted to put its ink - not its box - in the middle. */
+          content: '';
           position: absolute;
           top: 50%;
           left: 50%;
-          transform: translate(-50%, -50%);
-          color: #ffffff;
-          font-weight: bold;
-          font-size: 14px;
+          width: 5px;
+          height: 10px;
+          border: solid #ffffff;
+          border-width: 0 2px 2px 0;
+          border-radius: 1px;
+          transform: translate(-50%, -50%) rotate(45deg);
+          margin-top: -1px;
         }
 
         .task-content {
@@ -11773,14 +11792,33 @@ function LittleFiresApp() {
         }
 
         .details-richtext .task-checkbox:checked::after {
-          content: '✓';
+          /* Drawn rather than typed.
+             
+             This was the ✓ character, centred with translate(-50%, -50%) -
+             which centres the glyph's BOX, not its ink. U+2713 has uneven side
+             bearings, so the mark sat left of centre, and because the
+             pseudo-element inherits the editor's font it sat differently in
+             each of the five font pairings. A shape has no bearings and no
+             font.
+             
+             Two borders on a rotated rectangle: the right border is the long
+             arm, the bottom border the short one.
+             
+             The -1px is the one measured number here. The L's ink sits down and
+             right of its bounding-box centre by about 0.9px on each axis; after
+             a 45-degree rotation that resolves to roughly 1.3px straight down,
+             so the mark is lifted to put its ink - not its box - in the middle. */
+          content: '';
           position: absolute;
           top: 50%;
           left: 50%;
-          transform: translate(-50%, -50%);
-          color: #ffffff;
-          font-weight: bold;
-          font-size: 14px;
+          width: 5px;
+          height: 10px;
+          border: solid #ffffff;
+          border-width: 0 2px 2px 0;
+          border-radius: 1px;
+          transform: translate(-50%, -50%) rotate(45deg);
+          margin-top: -1px;
         }
 
         .details-richtext .checkbox-line {
@@ -12922,14 +12960,19 @@ function LittleFiresApp() {
         }
 
         .calendar-checkbox input[type="checkbox"]:checked::after {
-          content: '✓';
+          /* Drawn, not typed - see the details editor rule for why. Same
+             shape, sized for a 18px box. */
+          content: '';
           position: absolute;
           top: 50%;
           left: 50%;
-          transform: translate(-50%, -50%);
-          color: #fff;
-          font-size: 12px;
-          font-weight: bold;
+          width: 4px;
+          height: 9px;
+          border: solid #ffffff;
+          border-width: 0 2px 2px 0;
+          border-radius: 1px;
+          transform: translate(-50%, -50%) rotate(45deg);
+          margin-top: -1px;
         }
 
         .month-nav-btn {
@@ -13690,14 +13733,19 @@ function LittleFiresApp() {
         }
 
         .note-content .task-checkbox:checked::after {
-          content: '✓';
+          /* Drawn, not typed - see the details editor rule for why. Same
+             shape, sized for a 20px box. */
+          content: '';
           position: absolute;
           top: 50%;
           left: 50%;
-          transform: translate(-50%, -50%);
-          color: #ffffff;
-          font-weight: bold;
-          font-size: 12px;
+          width: 5px;
+          height: 10px;
+          border: solid #ffffff;
+          border-width: 0 2px 2px 0;
+          border-radius: 1px;
+          transform: translate(-50%, -50%) rotate(45deg);
+          margin-top: -1px;
         }
 
         .reports-section {

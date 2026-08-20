@@ -5499,6 +5499,15 @@ function LittleFiresApp() {
 
   const [appMode, setAppMode] = useState('tasks'); // 'tasks', 'projects', 'notes', 'goals', 'search', 'archive', 'time', 'calendar', 'reports'
   const [menuOpen, setMenuOpen] = useState(false);
+  // Two values in here are NOT lists: 'master' (All Tasks) and this one. Both
+  // are tabs in the same row, neither is in TASK_LISTS, and that is the whole
+  // point - membership of TASK_LISTS means "this is real work" to twenty call
+  // sites, from flame goals to export to the calendar.
+  //
+  // 'master' is the precedent. It has sat in this state since the beginning and
+  // every branch that needs to know already asks about it; the suggestions tab
+  // rides the same rails.
+  const SUGGESTIONS_TAB = 'suggestions';
   const [currentList, setCurrentList] = useState('master');
   const [archiveType, setArchiveType] = useState('tasks'); // 'tasks', 'goals', 'projects'
   const [archiveDropdownOpen, setArchiveDropdownOpen] = useState(false);
@@ -6835,10 +6844,25 @@ function LittleFiresApp() {
 
   // If the list you're viewing gets hidden, fall back to All Tasks
   useEffect(() => {
+    // Archive, Goals and Projects reuse currentList as a real list key. The
+    // suggestions tab exists only in the task view, so leaving that view drops
+    // back to All Tasks rather than asking those views to render a list that
+    // does not exist.
+    if (appMode !== 'tasks' && currentList === SUGGESTIONS_TAB) {
+      setCurrentList('master');
+      return;
+    }
+    // Switched off in Settings while sitting on the tab.
+    if (currentList === SUGGESTIONS_TAB && !settings.aiSuggestions) {
+      setCurrentList('master');
+      return;
+    }
     if (currentList !== 'master' && isListHidden(currentList)) {
       setCurrentList('master');
     }
-  }, [settings.hiddenLists, currentList]);
+    // appMode and aiSuggestions are read above, so both belong here - a guard
+    // that never re-runs is a guard that does not exist.
+  }, [settings.hiddenLists, settings.aiSuggestions, currentList, appMode]);
 
   // Same for whole sections - don't strand the user on a disabled screen
   useEffect(() => {
@@ -6856,7 +6880,10 @@ function LittleFiresApp() {
   const [goalDropdownOpen, setGoalDropdownOpen] = useState(false);
   const [taskListDropdownOpen, setTaskListDropdownOpen] = useState(false);
   const [timeDurationDropdownOpen, setTimeDurationDropdownOpen] = useState(false);
-  const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({}); // Track which archive sections are collapsed
+  const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({});
+  // Which suggestion shelves are collapsed, keyed by list. Absent means open -
+  // a shelf holds three items at most, so the useful default is expanded.
+  const [collapsedAiShelves, setCollapsedAiShelves] = useState({}); // Track which archive sections are collapsed
   const [selectedPriority, setSelectedPriority] = useState('low');
   // Who a task will be assigned to when it's created. Only meaningful on the
   // shared list; reset after each add so an assignment doesn't silently carry
@@ -7874,6 +7901,7 @@ function LittleFiresApp() {
   }, [archiveDropdownOpen, goalDropdownOpen, taskListDropdownOpen, timeDurationDropdownOpen, reportTimeframeDropdownOpen, reportStatusDropdownOpen]);
 
   const getCurrentTasks = () => {
+    if (currentList === SUGGESTIONS_TAB) return [];
     if (currentList === 'master') {
       const masterTasks = [];
       visibleTaskLists.forEach(listName => {
@@ -7902,6 +7930,9 @@ function LittleFiresApp() {
       });
       return masterTasks;
     }
+    // The || [] already covers it, but the explicit check says why: two of the
+    // values this can hold are tabs rather than lists.
+    if (currentList === SUGGESTIONS_TAB) return [];
     return allLists[currentList] || [];
   };
 
@@ -9727,7 +9758,230 @@ function LittleFiresApp() {
     </svg>
   );
 
+  // The suggestion shelves. Extracted so the menu entry and the tab render
+  // the same thing rather than two copies that drift apart.
+  const renderSuggestions = () => (
+          <div className="tasks-container">
+            <div style={{
+              color: 'var(--text-muted)', fontSize: '0.85rem',
+              fontFamily: 'var(--font-ui)', lineHeight: 1.5, marginBottom: '18px'
+            }}>
+              Proposals based on what you've been doing. Nothing here is a task until
+              you add it.
+              {!aiKeySaved && (
+                <div style={{ marginTop: '8px' }}>
+                  {/* Says plainly that this is a demonstration rather than the
+                      feature working. "Echo what you've already written" was
+                      accurate and told you nothing about what to do with it.
+                      
+                      The wording holds when the shelves are empty too: without
+                      a key the generator draws only on challenge and outcome
+                      text you have typed, so a task list with none produces
+                      nothing at all - and "there is nothing here to build an
+                      example from" is a truthful next line rather than a
+                      contradiction of the one above. */}
+                  No API key saved. These are examples generated to demonstrate how
+                  it works. Add a key in Settings → AI Tasks for suggestions that
+                  propose something new.
+                </div>
+              )}
+            </div>
+
+            {suggestionLists().map(listName => {
+              const shelf = aiShelves[listName];
+              const items = (shelf && shelf.items) || [];
+              return (
+                <div key={listName} className="day-list-group" style={{ marginBottom: '22px' }}
+                     ref={sectionRef(`ai-${listName}`)}>
+                  {/* Collapsible like every other section in the app, and using
+                      the same handler - so opening one that runs off the bottom
+                      scrolls to it, and closing returns you. */}
+                  <div
+                    className="list-section-header day-list-header"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => toggleSection(
+                      `ai-${listName}`,
+                      !collapsedAiShelves[listName],
+                      (open) => setCollapsedAiShelves(prev => ({ ...prev, [listName]: !open }))
+                    )}
+                  >
+                    <span>{listLabel(listName)}</span>
+                    <button
+                      // Same class as the card buttons below. Refresh kept its
+                      // shadow at first on the theory that one control per
+                      // shelf reads differently from three per card - but with
+                      // the cards flattened it was the only thing on the screen
+                      // still floating, which made it look like a leftover
+                      // rather than a distinction.
+                      className="suggestion-action"
+                      // Refresh sits inside a header that is now itself a
+                      // button. Without stopping the click, refreshing would
+                      // also collapse the shelf it was refreshing.
+                      onClick={(e) => { e.stopPropagation(); refreshShelf(listName); }}
+                      disabled={!!aiBusy[listName]}
+                      title={`Refresh ${listLabel(listName)} suggestions`}
+                      // Padding, radius, size and letter-spacing all come from
+                      // .suggestion-action now. Only what is particular to this
+                      // button stays here - it is outlined rather than filled,
+                      // because it acts on the shelf rather than on a task.
+                      style={{
+                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                        background: 'rgba(var(--surface-rgb), 0.8)',
+                        color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {aiBusy[listName] ? 'Thinking…' : 'Refresh'}
+                    </button>
+                  </div>
+
+                  {aiErrors[listName] && (
+                    <div style={{
+                      color: '#d15a5a', fontSize: '0.8rem', fontFamily: 'var(--font-ui)',
+                      padding: '8px 2px', lineHeight: 1.4
+                    }}>
+                      {aiErrors[listName]}
+                    </div>
+                  )}
+
+                  {/* Hidden when collapsed. The error above stays visible
+                      either way - a shelf that failed should say so from the
+                      header rather than only once you open it. */}
+                  {!collapsedAiShelves[listName] && (<>
+                  {items.length === 0 ? (
+                    <div style={{
+                      color: 'var(--text-soft)', fontSize: '0.85rem',
+                      fontFamily: 'var(--font-ui)', padding: '10px 2px'
+                    }}>
+                      {!shelf
+                        ? 'No suggestions yet. Tap Refresh.'
+                        : 'Nothing to suggest for this list yet — suggestions are '
+                          + 'built from your projects, goals and the tasks you\'ve '
+                          + 'written down, so a thin list gets fewer of them rather '
+                          + 'than filler.'}
+                    </div>
+                  ) : items.map(item => (
+                    <div key={item.id} className="calendar-item" style={{ marginBottom: '10px' }}>
+                      {aiEditing && aiEditing.id === item.id ? (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <input
+                            value={aiEditing.text}
+                            autoFocus
+                            onChange={(e) => setAiEditing({ id: item.id, text: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                acceptSuggestion(listName, item, aiEditing.text);
+                                setAiEditing(null);
+                              } else if (e.key === 'Escape') {
+                                setAiEditing(null);
+                              }
+                            }}
+                            style={{
+                              flex: 1, minWidth: '160px', padding: '8px 12px',
+                              borderRadius: '8px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.35)',
+                              background: 'rgba(var(--surface-rgb), 0.9)',
+                              color: 'var(--text)', fontFamily: 'var(--font-body)',
+                              fontSize: '0.95rem', outline: 'none'
+                            }}
+                          />
+                          <button
+                            className="suggestion-action"
+                                                      onClick={() => {
+                              acceptSuggestion(listName, item, aiEditing.text);
+                              setAiEditing(null);
+                            }}
+                            disabled={!aiEditing.text.trim()}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                              background: aiEditing.text.trim()
+                                ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                                : 'rgba(var(--surface-rgb), 1)',
+                              color: aiEditing.text.trim() ? '#fff' : 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
+                              cursor: aiEditing.text.trim() ? 'pointer' : 'default'
+                            }}
+                          >
+                            Add
+                          </button>
+                          <button
+                            className="suggestion-action"
+                                                      onClick={() => setAiEditing(null)}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              border: '2px solid rgba(var(--border-rgb), 0.3)',
+                              background: 'transparent', color: 'var(--text-muted)',
+                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (<>
+                      <div className="item-text">
+                        <span className="item-dot" style={{ color: 'var(--accent)' }}>●</span>
+                        {item.text}
+                      </div>
+                      {item.rationale && (
+                        <div className="item-project">{item.rationale}</div>
+                      )}
+                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                        <button
+                          className="suggestion-action"
+                          onClick={() => acceptSuggestion(listName, item)}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
+                            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                            color: '#fff', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Add to {listLabel(listName)}
+                        </button>
+                        <button
+                          className="suggestion-action"
+                          onClick={() => setAiEditing({ id: item.id, text: item.text })}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="suggestion-action"
+                          onClick={() => dismissSuggestion(listName, item)}
+                          style={{
+                            padding: '8px 14px', borderRadius: '8px',
+                            border: '2px solid rgba(var(--border-rgb), 0.3)',
+                            background: 'transparent',
+                            color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                            fontSize: '0.75rem', cursor: 'pointer'
+                          }}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                      </>)}
+                    </div>
+                  ))}
+                  </>)}
+                </div>
+              );
+            })}
+          </div>
+  );
+
   const renderTasks = () => {
+    // The tab that isn't a list. Checked before anything reads allLists,
+    // because there is no allLists['suggestions'] and never will be.
+    if (currentList === SUGGESTIONS_TAB) return renderSuggestions();
     if (currentList === 'master') {
       const listNames = visibleTaskLists;
       const listLabels = Object.fromEntries(TASK_LISTS.map(k => [k, listSectionLabel(k)]));
@@ -10560,12 +10814,21 @@ function LittleFiresApp() {
           border-color: rgba(var(--accent-rgb), 0.4);
         }
 
-        /* Inactive shared tab: tinted enough to read as a different kind of
-           list at a glance, without competing with the active tab. */
+        /* An unselected shared tab looks like any other tab.
+           
+           It used to be tinted at all times, on the reasoning that colour is
+           what identifies a shared list once they are free to sit anywhere in
+           the order. True, but with more than one shared list the row filled
+           with pink and the colour stopped reading as information - it just
+           looked busy. The tint now means "you are in a shared list", which is
+           the moment it actually matters, because that is when adding a task
+           puts it in front of someone else.
+           
+           The rule is kept rather than deleted so the trade is legible: if the
+           distinction is missed, a small partner-coloured dot here is quieter
+           than a full tint and restores it. */
         .tab.shared {
-          border-color: rgba(var(--partner-rgb), 0.45);
-          background: rgba(var(--partner-rgb), 0.12);
-          color: var(--partner);
+          /* deliberately empty - see above */
         }
 
         /* Active shared tab keeps the partner colour rather than reverting to
@@ -12939,6 +13202,29 @@ function LittleFiresApp() {
           text-decoration: none;
         }
 
+        /* The Add / Edit / Dismiss row on a suggestion card.
+           
+           The global button rule gives every button a 6px/20px drop shadow,
+           which is right for the few large actions it was written for and wrong
+           for three small controls repeated down a list - it turned each card
+           into a stack of floating slabs. Refresh keeps its shadow: there is
+           one per shelf, and it reads as the shelf's own control rather than
+           part of the card.
+           
+           Sized to match Refresh so the two read as the same weight of control.
+           !important because the global rule is a bare element selector and
+           this is a class - the inline styles on these buttons would otherwise
+           win on padding, and source order would decide the rest. */
+        .suggestion-action {
+          box-shadow: none !important;
+          padding: 6px 12px !important;
+          border-radius: 8px !important;
+          font-size: 0.72rem !important;
+          font-weight: 600 !important;
+          letter-spacing: 0.04em !important;
+          text-transform: none !important;
+        }
+
         .calendar-item {
           background: rgba(var(--surface-deep-rgb), 0.6);
           border-radius: 12px;
@@ -13740,10 +14026,10 @@ function LittleFiresApp() {
             border-color: rgba(var(--accent-rgb), 0.2);
           }
 
-          .tab.shared:not(.active):hover {
-            background: rgba(var(--partner-rgb), 0.12);
-            border-color: rgba(var(--partner-rgb), 0.45);
-          }
+          /* No shared-specific hover any more. A tap latches :hover on touch,
+             so this would have painted the tint back on the moment a shared
+             tab was tapped - and left it there. An unselected shared tab now
+             hovers like any other. */
 
           /* Background and border too, not just transform. A tap latches
              :hover on touch, so the card stayed visibly highlighted after it
@@ -14191,10 +14477,26 @@ function LittleFiresApp() {
                     {listLabel(key)}
                   </button>
                 ))}
+                {/* Pinned last, and only once suggestions are switched on.
+                    
+                    Not reorderable, deliberately. Order lives in `listOrder`,
+                    which is the list registry - joining it would mean a rename
+                    field, a hide toggle and a slot counted against the ten-list
+                    cap, which is being a list in every way that matters. A
+                    fixed position also keeps the tab that isn't a list visually
+                    apart from the ones that are. */}
+                {settings.aiSuggestions && (
+                  <button
+                    className={`tab ${currentList === SUGGESTIONS_TAB ? 'active' : ''}`}
+                    onClick={() => setCurrentList(SUGGESTIONS_TAB)}
+                  >
+                    AI Tasks
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className={`input-container ${currentList === 'master' ? 'hidden' : ''}`}>
+            <div className={`input-container ${currentList === 'master' || currentList === SUGGESTIONS_TAB ? 'hidden' : ''}`}>
               <div className="task-input-wrapper">
                 <input
                   type="text"
@@ -14297,178 +14599,9 @@ function LittleFiresApp() {
           </div>
         )}
 
-        {appMode === 'ai' && settings.aiSuggestions && (
-          <div className="tasks-container">
-            <div style={{
-              color: 'var(--text-muted)', fontSize: '0.85rem',
-              fontFamily: 'var(--font-ui)', lineHeight: 1.5, marginBottom: '18px'
-            }}>
-              Proposals based on what you've been doing. Nothing here is a task until
-              you add it.
-              {!aiKeySaved && (
-                <div style={{ marginTop: '8px' }}>
-                  No API key saved, so these are generated on this device and can only
-                  echo what you've already written. Add a key in Settings → AI Tasks for
-                  suggestions that propose something new.
-                </div>
-              )}
-            </div>
-
-            {suggestionLists().map(listName => {
-              const shelf = aiShelves[listName];
-              const items = (shelf && shelf.items) || [];
-              return (
-                <div key={listName} className="day-list-group" style={{ marginBottom: '22px' }}>
-                  <div className="list-section-header day-list-header" style={{ cursor: 'default' }}>
-                    <span>{listLabel(listName)}</span>
-                    <button
-                      onClick={() => refreshShelf(listName)}
-                      disabled={!!aiBusy[listName]}
-                      title={`Refresh ${listLabel(listName)} suggestions`}
-                      style={{
-                        padding: '6px 12px', borderRadius: '8px',
-                        border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                        background: 'rgba(var(--surface-rgb), 0.8)',
-                        color: 'var(--text)', fontFamily: 'var(--font-ui)',
-                        fontSize: '0.72rem', cursor: 'pointer', letterSpacing: '0.04em'
-                      }}
-                    >
-                      {aiBusy[listName] ? 'Thinking…' : 'Refresh'}
-                    </button>
-                  </div>
-
-                  {aiErrors[listName] && (
-                    <div style={{
-                      color: '#d15a5a', fontSize: '0.8rem', fontFamily: 'var(--font-ui)',
-                      padding: '8px 2px', lineHeight: 1.4
-                    }}>
-                      {aiErrors[listName]}
-                    </div>
-                  )}
-
-                  {items.length === 0 ? (
-                    <div style={{
-                      color: 'var(--text-soft)', fontSize: '0.85rem',
-                      fontFamily: 'var(--font-ui)', padding: '10px 2px'
-                    }}>
-                      {!shelf
-                        ? 'No suggestions yet. Tap Refresh.'
-                        : 'Nothing to suggest for this list yet — suggestions are '
-                          + 'built from your projects, goals and the tasks you\'ve '
-                          + 'written down, so a thin list gets fewer of them rather '
-                          + 'than filler.'}
-                    </div>
-                  ) : items.map(item => (
-                    <div key={item.id} className="calendar-item" style={{ marginBottom: '10px' }}>
-                      {aiEditing && aiEditing.id === item.id ? (
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                          <input
-                            value={aiEditing.text}
-                            autoFocus
-                            onChange={(e) => setAiEditing({ id: item.id, text: e.target.value })}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                acceptSuggestion(listName, item, aiEditing.text);
-                                setAiEditing(null);
-                              } else if (e.key === 'Escape') {
-                                setAiEditing(null);
-                              }
-                            }}
-                            style={{
-                              flex: 1, minWidth: '160px', padding: '8px 12px',
-                              borderRadius: '8px',
-                              border: '2px solid rgba(var(--accent-rgb), 0.35)',
-                              background: 'rgba(var(--surface-rgb), 0.9)',
-                              color: 'var(--text)', fontFamily: 'var(--font-body)',
-                              fontSize: '0.95rem', outline: 'none'
-                            }}
-                          />
-                          <button
-                            onClick={() => {
-                              acceptSuggestion(listName, item, aiEditing.text);
-                              setAiEditing(null);
-                            }}
-                            disabled={!aiEditing.text.trim()}
-                            style={{
-                              padding: '8px 14px', borderRadius: '8px',
-                              border: '2px solid rgba(var(--accent-rgb), 0.4)',
-                              background: aiEditing.text.trim()
-                                ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
-                                : 'rgba(var(--surface-rgb), 1)',
-                              color: aiEditing.text.trim() ? '#fff' : 'var(--text-muted)',
-                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
-                              cursor: aiEditing.text.trim() ? 'pointer' : 'default'
-                            }}
-                          >
-                            Add
-                          </button>
-                          <button
-                            onClick={() => setAiEditing(null)}
-                            style={{
-                              padding: '8px 14px', borderRadius: '8px',
-                              border: '2px solid rgba(var(--border-rgb), 0.3)',
-                              background: 'transparent', color: 'var(--text-muted)',
-                              fontFamily: 'var(--font-ui)', fontSize: '0.75rem',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (<>
-                      <div className="item-text">
-                        <span className="item-dot" style={{ color: 'var(--accent)' }}>●</span>
-                        {item.text}
-                      </div>
-                      {item.rationale && (
-                        <div className="item-project">{item.rationale}</div>
-                      )}
-                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-                        <button
-                          onClick={() => acceptSuggestion(listName, item)}
-                          style={{
-                            padding: '8px 14px', borderRadius: '8px',
-                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
-                            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
-                            color: '#fff', fontFamily: 'var(--font-ui)',
-                            fontSize: '0.75rem', cursor: 'pointer'
-                          }}
-                        >
-                          Add to {listLabel(listName)}
-                        </button>
-                        <button
-                          onClick={() => setAiEditing({ id: item.id, text: item.text })}
-                          style={{
-                            padding: '8px 14px', borderRadius: '8px',
-                            border: '2px solid rgba(var(--accent-rgb), 0.25)',
-                            background: 'rgba(var(--surface-rgb), 0.8)',
-                            color: 'var(--text)', fontFamily: 'var(--font-ui)',
-                            fontSize: '0.75rem', cursor: 'pointer'
-                          }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => dismissSuggestion(listName, item)}
-                          style={{
-                            padding: '8px 14px', borderRadius: '8px',
-                            border: '2px solid rgba(var(--border-rgb), 0.3)',
-                            background: 'transparent',
-                            color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
-                            fontSize: '0.75rem', cursor: 'pointer'
-                          }}
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                      </>)}
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        )}
+        {/* Reachable two ways: the menu entry, and - once enabled - the last
+            tab in the list row. Same view either way, so it is written once. */}
+        {appMode === 'ai' && settings.aiSuggestions && renderSuggestions()}
 
         {appMode === 'notes' && (
           <div 

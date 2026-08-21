@@ -5287,7 +5287,6 @@ const Task = ({ task, listName, showMoveButtons }) => {
                   <label className="details-label" style={{ margin: 0 }}>Project:</label>
                   <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
                     <div
-                      onClick={(e) => e.stopPropagation()}
                       onMouseDown={(e) => {
                         // Toggled on mousedown, and stopped there, so the
                         // document-level close listener below never sees the

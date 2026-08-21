@@ -90,7 +90,9 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
     padding: '10px 12px', background: 'rgba(var(--surface-rgb), 0.8)',
     backdropFilter: 'blur(10px)',
     border: '2px solid rgba(var(--accent-rgb), 0.2)', borderRadius: '20px',
-    boxShadow: '0 4px 15px rgba(var(--shadow-rgb), 0.3)',
+    // No shadow. Inside an outlined panel a lifted control reads as floating
+    // above the box that contains it; the border already separates it.
+    boxShadow: 'none',
     color: value ? 'var(--text)' : '#8a8a9a', fontFamily: "'Nunito', sans-serif",
     fontSize: '0.95rem', cursor: 'pointer', minWidth: '132px', textAlign: 'left',
     // When a caller sizes the wrapper (width, flex, etc), the button should
@@ -346,6 +348,27 @@ function FollowUpIcon(props) {
 // Indent / outdent for the details toolbar. Lines plus an arrow, matching the
 // stroke weight of their neighbours. currentColor throughout, so they inherit
 // the toolbar button's text colour in both themes and when active.
+// The "where am I" arrow - the filled triangle Maps uses for a heading, rather
+// than a crosshair. A crosshair reads as "aim at a point on the map"; this is a
+// device reporting where it already is.
+//
+// Drawn on the same 16x16 grid as the toolbar icons so it sits at their weight.
+// Slightly asymmetric on purpose: the notch in the base is what stops it
+// reading as a paper plane.
+function LocationArrowIcon(props) {
+  return (
+    <IconBase {...props}>
+      <path
+        d="M14 2L2 7.2l5.1 1.7L8.8 14z"
+        fill="currentColor"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </IconBase>
+  );
+}
+
 function IndentIcon(props) {
   return (
     <IconBase {...props}>
@@ -582,60 +605,6 @@ function maskAiKey(key) {
 // that is not ours to define.
 function looksLikeAnthropicKey(key) {
   return /^sk-ant-/.test((key || '').trim());
-}
-
-// ---- OCR engine ------------------------------------------------------------
-// Self-hosted, and loaded only when an image is actually being read.
-//
-// This used to be a <script> pointing at cdn.jsdelivr.net, appended on every app
-// start whether or not OCR was ever used. Three problems, and the third is the
-// one that matters now.
-//
-// It ran eagerly: everyone paid the download, on every launch, for a feature
-// most sessions never touch. The version was floating (`@5`), so the exact
-// bytes could change under the app at any time. And a script in PAGE context
-// has full access to localStorage - which since the AI work holds the
-// Anthropic API key, the "about you" note and the standing instructions. A
-// third party able to change that file could read all of it.
-//
-// Serving the file from our own origin removes that entirely: no third party,
-// no version drift, nothing to tamper with in transit.
-//
-// What tesseract still fetches at runtime - worker.min.js, the WASM core and
-// the language data - stays on the CDN, and that is a deliberate line rather
-// than an oversight. Those run inside a Web Worker created from a blob URL,
-// which has no DOM and no localStorage; the worst a compromise there could do
-// is see the image being read. They are also large (the English data alone runs
-// to megabytes), only fetched when OCR actually runs, and pinned to 5.1.1 by
-// the version string inside the file we now serve ourselves.
-const OCR_SCRIPT_URL = '/vendor/tesseract-5.1.1.min.js';
-
-// One in-flight load, shared. Two images added at once should wait on the same
-// script rather than injecting two tags.
-let ocrLoadPromise = null;
-
-function loadOcrEngine() {
-  if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
-  if (window.Tesseract) return Promise.resolve(window.Tesseract);
-  if (ocrLoadPromise) return ocrLoadPromise;
-
-  ocrLoadPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = OCR_SCRIPT_URL;
-    script.async = true;
-    script.onload = () => {
-      if (window.Tesseract) resolve(window.Tesseract);
-      else reject(new Error('OCR engine loaded but did not register'));
-    };
-    script.onerror = () => {
-      // Cleared so a later attempt can retry rather than being stuck on a
-      // rejected promise for the rest of the session.
-      ocrLoadPromise = null;
-      reject(new Error('Could not load the OCR engine'));
-    };
-    document.head.appendChild(script);
-  });
-  return ocrLoadPromise;
 }
 
 // ---- Suggestion profile ----------------------------------------------------
@@ -931,9 +900,27 @@ function compactForSuggestions(sources, options) {
 
     completedTasks.sort((a, b) => (a.completedDaysAgo ?? 1e9) - (b.completedDaysAgo ?? 1e9));
 
+    // Empty fields are dropped rather than sent blank.
+    //
+    // `description: ""` reads as "they wrote nothing here, so there is nothing
+    // to work with"; omitting it just says the field is unknown. On a project
+    // that has only a name - which is most of them, most of the time - the
+    // difference is between an object that looks deliberately empty and one
+    // that looks sparse. Only the name is required; everything else earns its
+    // place by having content.
+    const withContent = (obj) => {
+      const out = {};
+      Object.keys(obj).forEach((k) => {
+        const v = obj[k];
+        if (v === null || v === undefined || v === '') return;
+        out[k] = v;
+      });
+      return out;
+    };
+
     const listProjects = (Array.isArray(projects[listName]) ? projects[listName] : [])
       .slice(0, SUGGEST_MAX_PROJECTS_PER_LIST)
-      .map((p) => ({
+      .map((p) => withContent({
         name: trimText(p.name),
         description: trimText(p.description),
         // Stated intent, and the most useful two fields on the object.
@@ -941,13 +928,15 @@ function compactForSuggestions(sources, options) {
         outcome: trimText(p.outcome),
         startDate: p.startDate || null,
         endDate: p.endDate || null,
+        // Kept even at zero: "a project with no open tasks" is a fact worth
+        // knowing, and zero is not the same as unknown.
         openTaskCount: live.filter(t => t && t.projectId === p.id && !t.completed).length
       }))
       .filter((p) => p.name);
 
     const listGoals = (Array.isArray(goals[listName]) ? goals[listName] : [])
       .slice(0, SUGGEST_MAX_GOALS_PER_LIST)
-      .map((g) => ({
+      .map((g) => withContent({
         name: trimText(g.name),
         description: trimText(g.description),
         challenge: trimText(g.challenge),
@@ -1334,6 +1323,13 @@ const SUGGESTION_PROMPT_RULES = [
   'and "evidence" (what they actually do, at what pace, and what recurs).',
   'Where intent exists, anchor most suggestions to a specific goal or project;',
   'use the evidence to judge what is realistic for them and what they have already handled.',
+  'A list with no goals or projects at all is normal, not a reason to stay silent - work from',
+  'the tasks themselves: what they keep doing, what they have just finished, what is sitting',
+  'in the backlog, and what those imply they are in the middle of. Anchor those to the pattern',
+  'or the task they came from.',
+  'A goal or project that has only a NAME is still worth using. The name says what they are',
+  'working on, which is often enough to name a real next step; a blank description means they',
+  'have not written one, not that the thing is unimportant.',
   'Return an anchor on every suggestion saying which goal, project or pattern it came from.',
   'If an "about" note is present, treat it as constraints on what to suggest -',
   'let it rule things out and shape what fits, but do not make it the stated reason:',
@@ -1347,7 +1343,8 @@ const SUGGESTION_PROMPT_RULES = [
   'Prefer suggestions that leave the person better off than busier, and where their own data',
   'supports it, ones that involve other people - but never force that, and never at the cost of',
   'suggesting something irrelevant.',
-  'If a list has too little to go on, return fewer suggestions rather than filler.',
+  'Return fewer suggestions rather than filler - but "too little to go on" means no usable',
+  'signal at all, not merely the absence of goals, projects or descriptions.',
   'One short sentence per suggestion, plus a one-line reason referring to what it came from.'
 ].join(' ');
 
@@ -1942,6 +1939,8 @@ function keyboardScrollAdjustment({ caretBottom, anchorTop, portTop, visibleBott
   return -Math.min(above, slack);
 }
 
+
+
 // Where the flame band ends and the rest begins.
 //
 // The list is already sorted into bands and drag-to-reorder REFUSES moves
@@ -2022,6 +2021,8 @@ function groupTasksByStatus(items, getTask) {
     }))
     .filter(group => group.items.length > 0);
 }
+
+
 
 // ---- Editor history --------------------------------------------------------
 // The editor keeps its own undo stack, because the browser's cannot see most of
@@ -2176,6 +2177,35 @@ function wrapBareLineAt(area, node) {
 // What indent/outdent should act on, wrapping a bare line first if that is
 // what the caret is sitting in. Shared by the toolbar buttons and the Tab key
 // so the two can never disagree about what a line is.
+// Shows or hides a note's outdent button, based on whether there is anything
+// to outdent - the same rule the task editor applies.
+//
+// The task editor drives that from React state. Notes are rendered from a map,
+// so per-note state would mean a map of booleans keyed by note id, recomputed
+// on every caret move, to control one button. This toggles a class on the
+// button instead: the editor's own DOM already holds the answer, and reading it
+// is cheaper than mirroring it.
+function refreshNoteOutdentVisibility(area) {
+  if (!area) return false;
+  const entry = area.closest ? area.closest('.note-entry') : null;
+  const button = entry ? entry.querySelector('.note-outdent-btn') : null;
+  if (!button) return false;
+
+  let atCaret = false;
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount) {
+    const node = sel.getRangeAt(0).startContainer;
+    const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    if (el && area.contains(el)) atCaret = canOutdentAt(area, node);
+  }
+  // Either the caret is somewhere outdentable, or the note has indentation
+  // elsewhere - so reopening a note that was saved indented shows the button
+  // without needing the caret placed first.
+  const show = atCaret || hasAnyIndent(area);
+  button.classList.toggle('is-hidden', !show);
+  return show;
+}
+
 function resolveIndentTarget(area, node) {
   const found = indentTargetAt(area, node);
   if (found) return found;
@@ -2271,6 +2301,68 @@ const LitFlame = () => (
 // Supplies Task with everything it needs from the app, so Task itself can live
 // at module scope and keep one stable identity for the life of the page.
 const TaskContext = React.createContext(null);
+
+// One field of a project or goal detail view, in either mode.
+//
+// AT MODULE SCOPE, and it has to stay there. Declared inside LittleFiresApp it
+// was a new function identity on every render, so React saw a different
+// component type at that position, unmounted the subtree and mounted a fresh
+// one - destroying the textarea on every keystroke. Typing a character threw
+// away the element you were typing into.
+//
+// Exactly the fault the Task hoist fixed, reintroduced in a smaller place. Any
+// component defined inside another component has this problem; the only safe
+// place for one is here.
+const DetailField = ({ label, value, placeholder, editing, onChange, onRequestEdit, autoFocus }) => {
+  // An empty field is not shown at all while reading. "Not set" under a heading
+  // is two lines spent saying nothing, and a heading alone over blank space is
+  // worse. Everything is still there in edit mode, which is where you would go
+  // to fill it in.
+  if (!editing && !value) return null;
+  return (
+    <div className="detail-field">
+      <label className="detail-field-label">{label}:</label>
+      {editing ? (
+        <textarea
+          className="detail-field-input"
+          value={value || ''}
+          onChange={onChange}
+          placeholder={placeholder}
+          // Only the field that was tapped takes focus. autoFocus fires on
+          // mount, and switching to edit mode mounts these fresh, so it lands
+          // on the right one rather than always the first.
+          autoFocus={autoFocus}
+          style={{
+            width: '100%', minHeight: '80px', padding: '12px',
+            background: 'rgba(var(--surface-rgb), 0.8)',
+            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+            borderRadius: '10px', color: 'var(--text)',
+            fontSize: '0.95rem', fontFamily: 'var(--font-body)',
+            resize: 'vertical', boxSizing: 'border-box'
+          }}
+        />
+      ) : (
+        // Tapping the text is the way in. The button at the foot still works,
+        // but reaching for it to change a line you are already looking at is a
+        // detour - and it was the only route once the top control was removed.
+        <div
+          className="detail-field-value"
+          onClick={onRequestEdit}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (onRequestEdit) onRequestEdit();
+            }
+          }}
+        >
+          {value}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const Task = ({ task, listName, showMoveButtons }) => {
   // Everything Task needs from the app. Previously these were closure
@@ -6883,7 +6975,9 @@ function LittleFiresApp() {
   const [collapsedArchiveSections, setCollapsedArchiveSections] = useState({});
   // Which suggestion shelves are collapsed, keyed by list. Absent means open -
   // a shelf holds three items at most, so the useful default is expanded.
-  const [collapsedAiShelves, setCollapsedAiShelves] = useState({}); // Track which archive sections are collapsed
+  const [collapsedAiShelves, setCollapsedAiShelves] = useState({});
+
+ // Track which archive sections are collapsed
   const [selectedPriority, setSelectedPriority] = useState('low');
   // Who a task will be assigned to when it's created. Only meaningful on the
   // shared list; reset after each add so an assignment doesn't silently carry
@@ -7244,6 +7338,57 @@ function LittleFiresApp() {
   const [dragOverProject, setDragOverProject] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
+
+  // Whether the open project or goal is being edited, as opposed to read.
+  //
+  // The detail view WAS the edit form: description, challenge and outcome were
+  // live textareas writing on every keystroke, and the name turned into an
+  // input on a tap. So opening a project to remind yourself what it was put
+  // you inside a form, one stray keystroke from changing it.
+  //
+  // Reading is the common case and is now the default. Editing is a mode you
+  // ask for.
+  const [projectDetailEditing, setProjectDetailEditing] = useState(false);
+  const [goalDetailEditing, setGoalDetailEditing] = useState(false);
+  // Which field the reader tapped to get into edit mode. Cleared when the mode
+  // is left, so the next entry does not focus a field nobody asked for.
+  const [detailFocusField, setDetailFocusField] = useState(null);
+
+  const beginDetailEdit = React.useCallback((which, field) => {
+    setDetailFocusField(field);
+    if (which === 'project') setProjectDetailEditing(true);
+    else setGoalDetailEditing(true);
+  }, []);
+
+  // Opening a different record always starts in reading mode. Without this,
+  // editing one project and then opening another would drop you into a form
+  // for a record you had only just arrived at.
+  React.useEffect(() => { setProjectDetailEditing(false); }, [selectedProject && selectedProject.id]);
+  React.useEffect(() => { setGoalDetailEditing(false); }, [selectedGoal && selectedGoal.id]);
+
+  // Leaving edit mode closes the name input with it, or the heading would stay
+  // a text box in a view that is otherwise read-only.
+  React.useEffect(() => {
+    if (!projectDetailEditing) {
+      setEditingProjectName(false);
+      setDetailFocusField(null);
+    }
+  }, [projectDetailEditing]);
+  React.useEffect(() => {
+    if (!goalDetailEditing) {
+      setEditingGoalName(false);
+      setDetailFocusField(null);
+    }
+  }, [goalDetailEditing]);
+
+  // One field, two modes. Six of these blocks existed as near-identical inline
+  // textareas - three per detail view - so a change had to be made six times
+  // and stay consistent.
+  //
+  // Reading shows the text as prose, and says plainly when there is nothing
+  // there. An empty field that looks like an empty input invites you to fill
+  // it in; one that says "Not set" is a fact.
+
   const [editingProjectName, setEditingProjectName] = useState(false);
   const [editingGoalName, setEditingGoalName] = useState(false);
   const [editingTaskName, setEditingTaskName] = useState(null); // stores taskId when editing
@@ -7415,6 +7560,24 @@ function LittleFiresApp() {
     }
 
   }, [settings.reduceMotion, setAnim]);
+
+  // Which Focus Time sections are open. Absent means closed, which is the
+  // default: on a note or a goal you have opened to read, a running total and
+  // a log of past sessions is reference material rather than what you came for.
+  const [openFocusTime, setOpenFocusTime] = useState({});
+
+  // Which notes have the location field showing. A note with a location always
+  // shows it; an empty one shows an Add Location button instead, so the row
+  // reads like the Photos row above it rather than an empty text box waiting to
+  // be filled in.
+  const [locationOpen, setLocationOpen] = useState({});
+  const toggleFocusTime = React.useCallback((key) => {
+    toggleSection(
+      key,
+      !!openFocusTime[key],
+      (open) => setOpenFocusTime(prev => ({ ...prev, [key]: open }))
+    );
+  }, [openFocusTime, toggleSection]);
 
   // The task list's Backlog and Complete sections.
   //
@@ -8288,12 +8451,30 @@ function LittleFiresApp() {
     const newNote = {
       id: makeId(),
       date: new Date().toISOString(),
+      // Notes had no title at all - the header showed only the date, so a list
+      // of them read as a column of dates. Global search already looked for
+      // note.title, so the field was anticipated in the data model and never
+      // filled in.
+      //
+      // Empty rather than a placeholder string: a note that has not been named
+      // should fall back to its date, not carry the word "Untitled" into
+      // search results and the header.
+      title: '',
       content: '',
       tags: [],
       expanded: true,
       images: []
     };
     setNotes(prev => [newNote, ...prev]);
+  };
+
+  // Titles are plain text. Nothing renders them as HTML, so there is nothing to
+  // sanitize - but they are trimmed on write so a title of spaces is treated as
+  // no title by the fallback.
+  const updateNoteTitle = (id, title) => {
+    setNotes(prev => prev.map(note =>
+      note.id === id ? { ...note, title: title } : note
+    ));
   };
 
   const updateNote = (id, content) => {
@@ -8310,8 +8491,41 @@ function LittleFiresApp() {
     setNotes(prev => prev.map(note =>
       note.id === id ? { ...note, expanded: !note.expanded } : note
     ));
+    // The outdent button renders hidden, because nothing on a fresh note can be
+    // outdented. A note saved WITH indentation is the other half of that: it
+    // has something to outdent from the moment it opens, and the caret handlers
+    // that would normally notice do not fire until the editor is touched.
+    //
+    // Two frames: the editor does not exist until the expand has rendered.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const entry = document.getElementById('note-' + id) ||
+          document.querySelector('[data-note-id="' + id + '"]');
+        const area = entry ? entry.querySelector('.note-content') : null;
+        if (area) refreshNoteOutdentVisibility(area);
+      });
+    });
   };
 
+  // Photos are stored, not read.
+  //
+  // Every image used to be run through Tesseract on upload, and the transcript
+  // shown under the picture. It was removed because the thing it was there for
+  // - making handwritten notes searchable - is not something Tesseract can do:
+  // it is trained on printed text, so handwriting came back as garble, and no
+  // amount of tuning would have changed that.
+  //
+  // What it cost: a page-context script with full localStorage access, several
+  // megabytes of WASM and language data on first use, a self-hosted vendor file
+  // and a CDN entry in the CSP. What it bought: a notes-only search over text
+  // nobody could rely on.
+  //
+  // iOS Live Text reads handwriting well and is already on the phone, so
+  // copying the text across by hand is both more accurate and free. If this is
+  // ever wanted in-app, the model behind AI Tasks reads handwriting and the
+  // image is already base64 in storage - but that sends the picture off-device,
+  // which is a bigger step than sending task text and would want to be opt-in
+  // per photo.
   const addImageToNote = async (noteId, file) => {
     if (!file || !file.type.startsWith('image/')) return;
     
@@ -8375,68 +8589,13 @@ function LittleFiresApp() {
             ...note, 
             images: [...images, { 
               id: imageId, 
-              data: compressedImage,
-              extractedText: '',
-              isProcessing: true
+              data: compressedImage
             }] 
           };
         }
         return note;
       }));
 
-      // Read the image. The engine is fetched here, on demand, rather than on
-      // app start - see loadOcrEngine.
-      //
-      // This replaces a poll: a loop that slept 500ms up to thirty times
-      // waiting for a global to appear. It waited the full fifteen seconds
-      // whenever the script was never going to arrive, and on a fast connection
-      // it still slept up to half a second after the script was already there.
-      // Awaiting the load resolves the moment it is ready and fails fast when
-      // it will not.
-      //
-      // Nothing is logged. The old path printed the entire extracted text to
-      // the console - the contents of a photographed document - which is not
-      // something to write down by default.
-      try {
-        const Tesseract = await loadOcrEngine();
-        const worker = await Tesseract.createWorker('eng');
-        const { data: { text } } = await worker.recognize(compressedImage);
-        await worker.terminate();
-
-        setNotes(prev => prev.map(note => {
-          if (note.id !== noteId) return note;
-          return {
-            ...note,
-            images: (note.images || []).map(img =>
-              img.id === imageId
-                ? { ...img, extractedText: text.trim() || 'No text detected', isProcessing: false }
-                : img
-            )
-          };
-        }));
-      } catch (error) {
-        // One handler for both failures - the engine not loading and the
-        // recognition itself going wrong. They were separate branches, which
-        // meant two copies of the same state update and, in one of them, a
-        // console.error that nobody on a phone can see.
-        //
-        // The message goes where the extracted text would have gone, because
-        // that is where the person is already looking.
-        const message = /load/i.test(error && error.message || '')
-          ? 'Could not load the text reader. Check your connection and try again.'
-          : 'Could not read text from this image.';
-        setNotes(prev => prev.map(note => {
-          if (note.id !== noteId) return note;
-          return {
-            ...note,
-            images: (note.images || []).map(img =>
-              img.id === imageId
-                ? { ...img, extractedText: message, isProcessing: false }
-                : img
-            )
-          };
-        }));
-      }
     } catch (error) {
       console.error('Image compression failed:', error);
       alert('Failed to process image. Please try a smaller image.');
@@ -8648,12 +8807,15 @@ function LittleFiresApp() {
     // Filter by search query
     if (noteSearchQuery) {
       filtered = filtered.filter(note => {
-        const contentMatch = (note.content || '').toLowerCase().includes(noteSearchQuery.toLowerCase());
-        const tagMatch = (note.tags || []).some(tag => tag.toLowerCase().includes(noteSearchQuery.toLowerCase()));
-        const imageTextMatch = (note.images || []).some(img => 
-          (img.extractedText || '').toLowerCase().includes(noteSearchQuery.toLowerCase())
-        );
-        return contentMatch || tagMatch || imageTextMatch;
+        // Photos are no longer read for text, so there is nothing in an image
+        // to match against - see the note beside addImageToNote.
+        const q = noteSearchQuery.toLowerCase();
+        // Title first: it is the shortest field and the one most likely to be
+        // what someone half-remembers.
+        const titleMatch = (note.title || '').toLowerCase().includes(q);
+        const contentMatch = (note.content || '').toLowerCase().includes(q);
+        const tagMatch = (note.tags || []).some(tag => tag.toLowerCase().includes(q));
+        return titleMatch || contentMatch || tagMatch;
       });
     }
     
@@ -10946,7 +11108,10 @@ function LittleFiresApp() {
           display: none;
         }
 
-        .search-box {
+        /* Raised for the same reason, though this one was mostly getting away
+           with it: the global rule and the search box happened to agree on
+           most values. "Happened to agree" is not a thing to rely on. */
+        input[type="text"].search-box {
           flex: 1;
           background: rgba(var(--surface-rgb), 0.8);
           backdrop-filter: blur(10px);
@@ -10960,7 +11125,7 @@ function LittleFiresApp() {
           transition: all 0.3s ease;
         }
 
-        .search-box:focus {
+        input[type="text"].search-box:focus {
           border-color: var(--accent);
           box-shadow: 0 0 20px rgba(var(--accent-rgb), 0.3);
         }
@@ -11107,29 +11272,45 @@ function LittleFiresApp() {
           font-weight: 600;
         }
 
+        /* To Do / Backlog, choosing where a new project task lands.
+           
+           Equal width regardless of label. They were sized by their text, so
+           "To Do" came out visibly narrower than "Backlog" and the pair read as
+           two unrelated controls rather than one either/or. 96px clears the
+           longer word at this size with room to spare. */
         .section-btn {
-          background: rgba(var(--surface-rgb), 0.8);
-          border: 2px solid rgba(var(--accent-rgb), 0.2);
-          padding: 8px 16px;
-          color: var(--text);
-          font-family: var(--font-ui);
-          font-weight: 600;
-          font-size: 0.8rem;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          border-radius: 15px;
+          background: transparent;
+          border: 2px solid rgba(var(--border-rgb), 0.35);
+          color: var(--text-muted);
+          transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
         }
 
-        .section-btn:hover {
-          background: rgba(var(--surface-raised-rgb), 0.9);
-          border-color: rgba(var(--accent-rgb), 0.4);
-          transform: scale(1.05);
+        /* Hover-only. On touch a tap latches :hover, so a background change
+           here would stick to whichever button was last pressed and compete
+           with the selected state. */
+        @media (hover: hover) {
+          .section-btn:hover {
+            border-color: rgba(var(--accent-rgb), 0.45);
+            color: var(--text);
+            background: rgba(var(--surface-rgb), 0.6);
+          }
         }
 
+        /* Selected reads as the inverse of the Add Task button beside it:
+           accent on light rather than white on accent. Two filled green
+           controls in the same row made the choice look like a second action
+           rather than a setting for the first. */
         .section-btn.selected {
-          background: linear-gradient(135deg, var(--accent), var(--accent-light));
-          color: #ffffff;
-          border-color: transparent;
+          background: rgb(var(--surface-rgb));
+          color: var(--accent);
+          border-color: var(--accent);
+        }
+
+        @media (hover: hover) {
+          .section-btn.selected:hover {
+            background: rgb(var(--surface-rgb));
+            color: var(--accent);
+          }
         }
 
         .priority-btn {
@@ -12257,39 +12438,6 @@ function LittleFiresApp() {
           transform: scale(1.1);
         }
 
-        .ocr-status {
-          margin-top: 10px;
-          padding: 8px 12px;
-          background: rgba(var(--accent-rgb), 0.2);
-          border-radius: 8px;
-          color: var(--accent);
-          font-size: 0.9rem;
-          font-weight: 600;
-          text-align: center;
-        }
-
-        .extracted-text {
-          margin-top: 10px;
-          padding: 12px;
-          background: rgba(var(--surface-rgb), 0.6);
-          border-radius: 8px;
-          border-left: 4px solid var(--accent);
-        }
-
-        .extracted-text-label {
-          color: var(--accent);
-          font-size: 0.85rem;
-          font-weight: 600;
-          margin-bottom: 8px;
-        }
-
-        .extracted-text-content {
-          color: var(--text);
-          font-size: 0.9rem;
-          line-height: 1.6;
-          white-space: pre-wrap;
-        }
-
         .empty-state {
           text-align: center;
           padding: 60px 20px;
@@ -12467,7 +12615,11 @@ function LittleFiresApp() {
           /* 30px padding outside a 100% width overflowed the viewport by
              60px on a phone - same class of bug as .project-selector. */
           box-sizing: border-box;
-          background: #1e1e2e;
+          /* Opaque. The token conversion brought the task list's 0.5 alpha
+             with it, which works over a page you are meant to see past - and
+             does not for a detail view, where the tab row and the logo showed
+             through the text. */
+          background: rgb(var(--surface-deep-rgb));
           border-radius: 20px;
           padding: 30px;
           box-shadow: 0 10px 40px rgba(var(--shadow-rgb), 0.3);
@@ -12494,7 +12646,11 @@ function LittleFiresApp() {
           /* 30px padding outside a 100% width overflowed the viewport by
              60px on a phone - same class of bug as .project-selector. */
           box-sizing: border-box;
-          background: #1e1e2e;
+          /* Opaque. The token conversion brought the task list's 0.5 alpha
+             with it, which works over a page you are meant to see past - and
+             does not for a detail view, where the tab row and the logo showed
+             through the text. */
+          background: rgb(var(--surface-deep-rgb));
           border-radius: 20px;
           padding: 30px;
           box-shadow: 0 10px 40px rgba(var(--shadow-rgb), 0.3);
@@ -12602,7 +12758,11 @@ function LittleFiresApp() {
           margin-bottom: 25px;
           display: flex;
           flex-direction: column;
-          align-items: center;
+          /* Left, with the Edit control under it. Centred, the name floated
+             free of everything below it and the button sat marooned in the
+             middle of the panel. */
+          align-items: flex-start;
+          gap: 12px;
         }
 
         .project-detail-header h2 {
@@ -12611,7 +12771,7 @@ function LittleFiresApp() {
           font-weight: 700;
           color: var(--text);
           margin: 15px 0 0 0;
-          text-align: center;
+          text-align: left;
         }
 
         .project-detail-name {
@@ -12776,7 +12936,10 @@ function LittleFiresApp() {
         }
 
         .modal-content {
-          background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
+          /* Was a hardcoded dark gradient, so every dialog - creating a project
+             or a goal above all - opened dark on a light theme. The tokens
+             carry the same two-stop shape in whichever theme is active. */
+          background: linear-gradient(135deg, var(--bg-2) 0%, var(--bg-1) 100%);
           border: 2px solid rgba(var(--border-rgb), 0.4);
           border-radius: 20px;
           padding: 15px;
@@ -12833,6 +12996,233 @@ function LittleFiresApp() {
           box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.3);
         }
 
+        /* One box around description, challenge and outcome together, matched
+           to the dates panel below - same surface, border, radius and padding.
+           
+           A box each made three separate panels of what is one section, and
+           stacked four outlined boxes down the view. Grouping says they belong
+           together, which is what the dates panel does for its own two fields. */
+        /* The primary action inside a section of a detail view - Add Task,
+           Log Time. These borrowed .add-task-btn, which is the full-width
+           pill built for the main task input, complete with its glow: inside a
+           15px-padded panel it read as an oversized slab dropped into the
+           middle of the record.
+           
+           Accent-filled, because it IS the action of its section - but sized
+           like the row at the foot, so the whole view agrees on how big a
+           control is. */
+        /* Shape shared with .section-btn, declared once. Add Task sits in the
+           same row as To Do and Backlog, so a different radius or height made
+           three controls that belong together look like two kinds of thing.
+           Only the colours differ below: the choice is outlined, the action is
+           filled. */
+        /* Shape shared with .section-btn, declared once. Add Task sits in the
+           same row as To Do and Backlog, so a different radius or height made
+           three controls that belong together look like two kinds of thing.
+           Only the colours differ: the choice is outlined, the action filled. */
+        /* Hidden until there is something to outdent. Same rule the task
+           editor uses, so the notes toolbar does not permanently carry a
+           button that would do nothing. */
+        .note-outdent-btn.is-hidden {
+          display: none;
+        }
+
+        .section-btn,
+        .section-action {
+          min-width: 96px;
+          padding: 8px 16px;
+          border-radius: 15px;
+          font-family: var(--font-ui);
+          font-size: 0.8rem;
+          font-weight: 600;
+          text-align: center;
+          text-transform: none;
+          letter-spacing: normal;
+          box-shadow: none;
+          cursor: pointer;
+        }
+
+        .section-action {
+          background: linear-gradient(135deg, var(--accent), var(--accent-light));
+          border: 2px solid rgba(var(--accent-rgb), 0.5);
+          color: #fff;
+        }
+
+        .section-action:hover {
+          box-shadow: none;
+          transform: none;
+          background: linear-gradient(135deg, var(--accent-light), var(--accent));
+        }
+
+        /* The action row at the foot of a project or goal.
+           
+           Four buttons in four treatments: Edit inline-styled, Archive rendering
+           UPPERCASE because the global button rule uppercases and its inline
+           style never overrode that, Close borrowing .edit-btn, Delete on
+           .delete-btn - each a different size, weight and case. Laid out with
+           space-between and allowed to wrap, which on a phone threw them to
+           opposite edges of two ragged rows.
+           
+           One class for all of them, and the row simply wraps in order. */
+        .detail-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          width: 100%;
+          /* 100% width plus vertical padding and a top border. Harmless in
+             theory - only horizontal padding widens a box - but the rule that
+             catches this class of bug does not distinguish, and it is right not
+             to: someone adding side padding later would not think to check. */
+          box-sizing: border-box;
+          margin-top: 18px;
+        }
+
+        /* The separator belongs to a footer at the end of a whole record, not
+           to the row inside a note card - where the card's own edge already
+           does that job and a rule across it just adds a line. */
+        .detail-actions.is-footer {
+          margin-top: 40px;
+          padding-top: 24px;
+          border-top: 2px solid rgba(var(--border-rgb), 0.3);
+        }
+
+        .detail-action {
+          flex: 1 1 auto;
+          /* Wide enough to read, narrow enough that two fit a phone row. */
+          min-width: 96px;
+          padding: 10px 16px;
+          border-radius: 10px;
+          background: rgba(var(--surface-rgb), 0.8);
+          border: 2px solid rgba(var(--border-rgb), 0.35);
+          color: var(--text);
+          font-family: var(--font-ui);
+          font-size: 0.85rem;
+          font-weight: 600;
+          /* The global button rule uppercases, letter-spaces and hangs an
+             accent glow on everything. None of that belongs on a row of
+             secondary actions. */
+          text-transform: none;
+          letter-spacing: normal;
+          box-shadow: none;
+          cursor: pointer;
+          transition: background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .detail-action:hover {
+          background: rgba(var(--surface-hover-rgb), 0.9);
+          border-color: rgba(var(--border-rgb), 0.55);
+          box-shadow: none;
+          transform: none;
+        }
+
+        /* Editing is the one action here you are likely to want, so it carries
+           the accent - tinted rather than filled, since it is still secondary
+           to the record itself. */
+        .detail-action.is-active,
+        .detail-action.primary {
+          background: rgba(var(--accent-rgb), 0.18);
+          border-color: rgba(var(--accent-rgb), 0.45);
+          color: var(--accent);
+        }
+
+        .detail-action.danger {
+          background: rgba(255, 107, 107, 0.14);
+          border-color: rgba(255, 107, 107, 0.35);
+          color: #ff6b6b;
+        }
+
+        .detail-action.danger:hover {
+          background: rgba(255, 107, 107, 0.24);
+          border-color: rgba(255, 107, 107, 0.5);
+        }
+
+        .detail-field-group {
+          margin: 20px 0;
+          padding: 15px;
+          background: rgba(var(--surface-rgb), 0.5);
+          border-radius: 12px;
+          border: 2px solid rgba(var(--border-rgb), 0.3);
+        }
+
+        /* Spacing only - the group carries the border now. */
+        .detail-field {
+          margin-bottom: 18px;
+        }
+
+        .detail-field:last-child {
+          margin-bottom: 0;
+        }
+
+        /* Identical to .project-date-label. The two labels sat at different
+           sizes and weights, which is what made the sections look unrelated. */
+        .detail-field-label {
+          display: block;
+          font-family: var(--font-ui);
+          font-size: 0.95rem;
+          font-weight: 600;
+          color: var(--text-muted);
+          margin-bottom: 8px;
+        }
+
+        /* The value reads as content rather than as another label, so it takes
+           the body font and the full text colour. */
+        .detail-field-value {
+          font-family: var(--font-body);
+          font-size: 0.95rem;
+          color: var(--text);
+          line-height: 1.55;
+          white-space: pre-wrap;
+          /* Tapping the text is how you get into edit mode, so it has to look
+             like it will do something. A text cursor rather than a pointer:
+             what happens next is that you can type here, not that you have
+             pressed a button. */
+          cursor: text;
+          border-radius: 6px;
+          margin: -2px -6px;
+          padding: 2px 6px;
+          transition: background 0.15s ease;
+        }
+
+        /* Hover-only. On touch a tap latches :hover, so the last field read
+           would keep a highlight after the mode had already changed. */
+        @media (hover: hover) {
+          .detail-field-value:hover {
+            background: rgba(var(--accent-rgb), 0.08);
+          }
+        }
+
+        .detail-field-value:focus-visible {
+          outline: 2px solid rgba(var(--accent-rgb), 0.5);
+          outline-offset: 1px;
+        }
+
+        /* Every textarea, not just the one that was reported.
+           
+           Text inputs have been covered since early on - there is a global
+           input[type="text"] rule with outline: none and an accent focus. No
+           equivalent existed for textareas, so all eleven of them fell through
+           to the browser's own focus ring: a blue outline in a green app, on
+           the project and goal fields, the notes editor, the crash reporter and
+           several settings boxes.
+           
+           A bare element selector rather than a class, so the next textarea
+           added inherits it instead of repeating the mistake. Anything wanting
+           its own treatment can still override with a class. */
+        textarea {
+          outline: none;
+          transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        textarea:focus {
+          border-color: var(--accent);
+          box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.3);
+        }
+
+        textarea::placeholder {
+          color: var(--text-muted);
+          opacity: 0.6;
+        }
+
         .modal-actions {
           display: flex;
           flex-wrap: wrap;
@@ -12874,6 +13264,94 @@ function LittleFiresApp() {
 
         .note-entry:hover {
           border-color: rgba(var(--border-rgb), 0.4);
+        }
+
+        /* Inherits the heading's size and weight from the div it sits in, so
+           the title reads as the heading it replaced rather than as a form
+           field dropped into one. Borderless until focused, for the same
+           reason: it is a title you can change, not a box to fill in. */
+        /* The note title.
+           
+           Styled as a field, matching the tags box below it: same background,
+           same border, squared to 12px. It was borderless-until-focused, which
+           read as a heading you could happen to edit - but next to two bordered
+           boxes in the same card it just looked unfinished.
+           
+           12px and 8px 14px are what .tag-input was before it was reduced. The
+           tag box shrank because a row of them stood taller than the fields
+           around it; a title has no such problem and keeps the roomier size.
+           
+           The selector has to be input[type="text"].note-title-input, not a
+           plain class: input[type="text"] is element + attribute, specificity
+           (0,1,1), and beats a class at (0,1,0). As a plain class this rule lost
+           every property it shared with the global input rule, and the title
+           rendered as a 25px pill with a drop shadow. */
+        /* The "Photos:" and "Location:" labels in a note's metadata box.
+           
+           Each sized to its own text, so the shorter word pulled its button
+           left and the two rows started at different places. A shared floor
+           wide enough for the longer label lines them up.
+           
+           Sized in ch rather than px: the unit is the width of a "0" in the
+           current font, so this holds when the font picker changes the face
+           underneath it - which a pixel value would not. */
+        .note-meta-label {
+          display: inline-block;
+          /* 10ch, not 9. "Location:" is nine characters and ch measures the
+             width of a "0", which is wider than most lowercase letters - so
+             nine would fit in the current face and could overflow in a wider
+             one from the font picker. */
+          min-width: 10ch;
+          color: var(--text-muted);
+          font-size: 0.9rem;
+          font-family: var(--font-ui);
+          font-weight: 600;
+          flex-shrink: 0;
+        }
+
+        input[type="text"].note-title-input {
+          width: 100%;
+          box-sizing: border-box;
+          background: rgba(var(--surface-deep-rgb), 0.6);
+          border: 2px solid rgba(var(--accent-rgb), 0.2);
+          border-radius: 12px;
+          padding: 8px 14px;
+          color: var(--text);
+          /* Still a title: the size and weight come from the heading it sits
+             in, so it stays larger than the tag box it borrows its shape from. */
+          font-family: inherit;
+          font-size: inherit;
+          font-weight: inherit;
+          outline: none;
+          box-shadow: none;
+          backdrop-filter: none;
+          transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        input[type="text"].note-title-input:focus {
+          border-color: var(--accent);
+          box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.3);
+        }
+
+        input[type="text"].note-title-input::placeholder {
+          color: var(--text-soft);
+          font-weight: 400;
+        }
+
+        /* The title in a collapsed note. Sits above the date, which drops to a
+           subtitle when there is a title to lead with. */
+        .note-title-display {
+          display: block;
+          font-family: var(--font-ui);
+          font-size: 1.05rem;
+          font-weight: 700;
+          color: var(--text);
+          line-height: 1.35;
+        }
+
+        .note-title-display + .note-date {
+          display: block;
+          margin-top: 2px;
         }
 
         .note-header {
@@ -12959,24 +13437,29 @@ function LittleFiresApp() {
           color: #fff;
         }
 
+        /* Sized to sit level with the location and photo rows around it. At
+           0.85rem with 5px of padding a tag stood taller than every field near
+           it, so a note with two tags had a row that bulged. */
         .note-tag {
           display: inline-flex;
           align-items: center;
-          gap: 6px;
-          padding: 5px 12px;
+          gap: 5px;
+          padding: 3px 10px;
           background: linear-gradient(135deg, #5a7a5f, var(--accent));
-          border-radius: 15px;
+          border-radius: 12px;
           color: #fff;
-          font-size: 0.85rem;
+          font-size: 0.75rem;
           font-weight: 600;
+          line-height: 1.5;
         }
 
         .tag-remove {
           background: rgba(255, 255, 255, 0.2);
           border: none;
           border-radius: 50%;
-          width: 18px;
-          height: 18px;
+          /* Shrinks with the pill, or it sets the row height on its own. */
+          width: 15px;
+          height: 15px;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -12993,9 +13476,27 @@ function LittleFiresApp() {
           transform: scale(1.1);
         }
 
-        .tag-input {
+        /* input[type="text"] is element + attribute, specificity (0,1,1), and
+           beats a plain class at (0,1,0). So this rule lost every property the
+           two shared - radius, padding, size, shadow - and the tag box kept
+           rendering as the big rounded pill built for the main task field.
+           
+           Matching the selector's own shape is what fixes it. An !important
+           would work too and would hide the reason; this way the next person to
+           style an input in here can see what they are up against. */
+        input[type="text"].tag-input {
+          /* The global rule hangs a 4px/15px shadow on every text input, built
+             for the main task field standing alone on the page. Inside a bordered
+             panel it reads as floating above the box that holds it. */
+          box-shadow: none;
+          backdrop-filter: none;
           background: rgba(var(--surface-deep-rgb), 0.6);
           border: 2px solid rgba(var(--accent-rgb), 0.2);
+          /* Back to the original 12px and 8px 14px, matching the title above.
+             Neither affects height - the shrink that mattered was to the tag
+             pills, which is what stood taller than the fields around them - so
+             restoring these costs nothing and stops one card carrying two
+             different corner radii. */
           border-radius: 12px;
           padding: 8px 14px;
           color: var(--text);
@@ -13009,7 +13510,7 @@ function LittleFiresApp() {
           box-sizing: border-box;
         }
 
-        .tag-input:focus {
+        input[type="text"].tag-input:focus {
           border-color: var(--accent);
           box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.3);
         }
@@ -14996,14 +15497,49 @@ function LittleFiresApp() {
                     }}
                   >
                     <div className="note-header" onClick={() => toggleNoteExpanded(note.id)}>
-                      <span className="note-date">
-                        {new Date(note.date).toLocaleDateString('en-US', { 
-                          weekday: 'long', 
-                          year: 'numeric', 
-                          month: 'long', 
-                          day: 'numeric' 
-                        })}
-                      </span>
+                      {/* Collapsed, the title leads and the date drops to a
+                          subtitle - a list of notes used to be a column of
+                          dates, which told you when you wrote something and
+                          nothing about what.
+                          
+                          Expanded, the title is showing in the field a few
+                          pixels below, so repeating it here is the same words
+                          twice. The date is the thing the header can say that
+                          the open note cannot. */}
+                      {note.expanded ? (
+                        <span className="note-date">
+                          {new Date(note.date).toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
+                          })}
+                        </span>
+                      ) : (
+                        <>
+                          <span className="note-title-display">
+                            {/* An unnamed note falls back to its date, so
+                                nothing became harder to find by adding the
+                                field. */}
+                            {(note.title || '').trim() || new Date(note.date).toLocaleDateString('en-US', {
+                              weekday: 'long',
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric'
+                            })}
+                          </span>
+                          {(note.title || '').trim() && (
+                            <span className="note-date">
+                              {new Date(note.date).toLocaleDateString('en-US', {
+                                weekday: 'long',
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric'
+                              })}
+                            </span>
+                          )}
+                        </>
+                      )}
                     </div>
                     {note.expanded && (
                       <>
@@ -15025,7 +15561,20 @@ function LittleFiresApp() {
                             paddingBottom: '10px',
                             borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                           }}>
-                            Note
+                            {/* Where the word "Note" used to sit. A heading that
+                                says what kind of thing you are looking at, on a
+                                screen showing only that kind of thing, is a line
+                                spent saying nothing - so the space now holds the
+                                one piece of text that identifies this note. */}
+                            <input
+                              type="text"
+                              className="note-title-input"
+                              value={note.title || ''}
+                              onChange={(e) => updateNoteTitle(note.id, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              placeholder="Untitled note"
+                              aria-label="Note title"
+                            />
                           </div>
 
                         <div className="richtext-toolbar" onClick={(e) => e.stopPropagation()}>
@@ -15162,30 +15711,85 @@ function LittleFiresApp() {
                                 so the browser was synthesising it. */}
                             <strong style={{fontWeight: 700}}>B</strong>
                           </button>
-                          <button 
-                            className="toolbar-btn"
-                            onClick={(e) => {
+                          {/* Indent / outdent, matching the task editor.
+                              
+                              Same two representations everything else uses:
+                              nesting for bullets, marginLeft for every other
+                              line. resolveIndentTarget decides which, so a
+                              bulleted note indents as a list and a plain line
+                              indents as a margin - and Tab, the drag gesture
+                              and these buttons all agree.
+                              
+                              Icon-only, so the toolbar does not grow two more
+                              word-width buttons. */}
+                          <button
+                            className="toolbar-btn toolbar-btn-icon"
+                            onMouseDown={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              const input = document.createElement('input');
-                              input.type = 'file';
-                              input.accept = 'image/*';
-                              input.onchange = (evt) => {
-                                const file = evt.target.files[0];
-                                if (file) {
-                                  addImageToNote(note.id, file);
-                                }
-                              };
-                              input.click();
+                              const area = e.target.closest('.note-entry')
+                                .querySelector('.note-content');
+                              if (!area) return;
+                              area.focus();
+                              const selection = window.getSelection();
+                              if (!selection.rangeCount || !area.contains(selection.anchorNode)) {
+                                // Nothing to act on: put the caret somewhere
+                                // sensible rather than indenting a line the
+                                // reader cannot see.
+                                const range = document.createRange();
+                                range.selectNodeContents(area);
+                                range.collapse(false);
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                                return;
+                              }
+                              const target = resolveIndentTarget(area, selection.getRangeAt(0).startContainer);
+                              if (!target) return;
+                              if (target.kind === 'bullet') {
+                                document.execCommand('indent', false, null);
+                              } else {
+                                target.line.style.marginLeft =
+                                  (blockIndent(target.line) + EDITOR_INDENT_STEP) + 'px';
+                              }
+                              refreshNoteOutdentVisibility(area);
                             }}
-                            title="Upload Image"
+                            title="Indent"
+                            aria-label="Indent"
                           >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                              <circle cx="12" cy="13" r="4"></circle>
-                              <line x1="17" y1="3" x2="17" y2="6"></line>
-                              <circle cx="17" cy="2" r="1"></circle>
-                            </svg>
+                            <IndentIcon />
+                          </button>
+                          <button
+                            // Starts hidden. Nothing on a fresh note can be
+                            // outdented, and the visibility check does not run
+                            // until the editor is focused or typed in - so
+                            // rendering it visible meant an empty note showed a
+                            // button that would do nothing until you interacted
+                            // with something else.
+                            className="toolbar-btn toolbar-btn-icon note-outdent-btn is-hidden"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const area = e.target.closest('.note-entry')
+                                .querySelector('.note-content');
+                              if (!area) return;
+                              area.focus();
+                              const selection = window.getSelection();
+                              if (!selection.rangeCount || !area.contains(selection.anchorNode)) return;
+                              const target = resolveIndentTarget(area, selection.getRangeAt(0).startContainer);
+                              if (!target) return;
+                              if (target.kind === 'bullet') {
+                                document.execCommand('outdent', false, null);
+                              } else {
+                                const next = Math.max(0, blockIndent(target.line) - EDITOR_INDENT_STEP);
+                                if (next === 0) target.line.style.removeProperty('margin-left');
+                                else target.line.style.marginLeft = next + 'px';
+                              }
+                              refreshNoteOutdentVisibility(area);
+                            }}
+                            title="Outdent"
+                            aria-label="Outdent"
+                          >
+                            <OutdentIcon />
                           </button>
                         </div>
 
@@ -15202,17 +15806,6 @@ function LittleFiresApp() {
                                 >
                                   ×
                                 </button>
-                                {img.isProcessing && (
-                                  <div className="ocr-status">Extracting text...</div>
-                                )}
-                                {!img.isProcessing && img.extractedText && (
-                                  <div className="extracted-text">
-                                    <div className="extracted-text-label">Extracted Text:</div>
-                                    <div className="extracted-text-content">
-                                      {img.extractedText}
-                                    </div>
-                                  </div>
-                                )}
                               </div>
                             ))}
                           </div>
@@ -15220,10 +15813,17 @@ function LittleFiresApp() {
 
                         <div 
                           className="note-content"
+                          // The caret can move without the content changing -
+                          // an arrow key, a tap on another line - and whether
+                          // there is anything to outdent moves with it.
+                          onKeyUp={(e) => refreshNoteOutdentVisibility(e.currentTarget)}
+                          onMouseUp={(e) => refreshNoteOutdentVisibility(e.currentTarget)}
+                          onFocus={(e) => refreshNoteOutdentVisibility(e.currentTarget)}
                           contentEditable
                           suppressContentEditableWarning
                           onInput={(e) => {
                             const area = e.currentTarget;
+                            refreshNoteOutdentVisibility(area);
                             try {
                               const lines = Array.from(area.querySelectorAll('.checkbox-line'));
                               const gi = (l) => parseInt(l.style.marginLeft || '0') || 0;
@@ -15302,6 +15902,51 @@ function LittleFiresApp() {
                               currentNode.closest('.checkbox-line') : 
                               currentNode.parentElement?.closest('.checkbox-line');
                             
+                            // Tab, on any line - not just a checkbox line.
+                            //
+                            // This was gated on checkboxLine, so a bullet or a
+                            // plain paragraph could not be indented from the
+                            // keyboard at all. The task editor was fixed months
+                            // ago; notes kept the old rule, which is why the
+                            // handoff lists them as diverged.
+                            //
+                            // Routed through resolveIndentTarget so the buttons
+                            // above, Tab here, and the drag gesture all produce
+                            // the same two representations: nesting for
+                            // bullets, marginLeft for everything else.
+                            if (e.key === 'Tab' && !checkboxLine) {
+                              e.preventDefault();
+                              const area = e.currentTarget;
+                              const sel = window.getSelection();
+                              if (!sel.rangeCount || !area.contains(sel.anchorNode)) return;
+                              const target = resolveIndentTarget(area, sel.getRangeAt(0).startContainer);
+                              if (!target) return;
+                              if (target.kind === 'bullet') {
+                                document.execCommand(e.shiftKey ? 'outdent' : 'indent', false, null);
+                              } else if (e.shiftKey) {
+                                const next = Math.max(0, blockIndent(target.line) - EDITOR_INDENT_STEP);
+                                if (next === 0) target.line.style.removeProperty('margin-left');
+                                else target.line.style.marginLeft = next + 'px';
+                              } else {
+                                target.line.style.marginLeft =
+                                  (blockIndent(target.line) + EDITOR_INDENT_STEP) + 'px';
+                              }
+                              refreshNoteOutdentVisibility(area);
+                              return;
+                            }
+
+                            // Shift+Tab on a checkbox line outdents it; the
+                            // branch below only ever indented.
+                            if (e.key === 'Tab' && checkboxLine && e.shiftKey) {
+                              e.preventDefault();
+                              const current = parseInt(checkboxLine.style.marginLeft || '0') || 0;
+                              const next = Math.max(0, current - 20);
+                              if (next === 0) checkboxLine.style.removeProperty('margin-left');
+                              else checkboxLine.style.marginLeft = next + 'px';
+                              refreshNoteOutdentVisibility(e.currentTarget);
+                              return;
+                            }
+
                             // Handle Tab key - indent checkbox
                             if (e.key === 'Tab' && checkboxLine) {
                               e.preventDefault();
@@ -15469,219 +16114,293 @@ function LittleFiresApp() {
                           dangerouslySetInnerHTML={{ __html: sanitizeRichText(note.content) }}
                         />
 
-                        {/* Photo Gallery Section */}
-                        <div style={{marginTop: '20px'}}>
-                          <div style={{
-                            display: 'flex',
-                            flexWrap: 'wrap',
-                            alignItems: 'center',
-                            gap: '10px',
-                            marginBottom: '10px'
-                          }}>
-                            <label style={{
-                              color: 'var(--text-muted)',
-                              fontSize: '0.9rem',
-                              fontFamily: 'var(--font-ui)',
-                              fontWeight: '600'
-                            }}>
-                              Photos:
-                            </label>
-                            <button
-                              className="toolbar-btn"
-                              onClick={() => {
-                                const input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = 'image/*';
-                                input.multiple = true;
-                                input.onchange = (evt) => {
-                                  const files = Array.from(evt.target.files);
-                                  files.forEach(file => {
-                                    if (file) {
-                                      addGalleryPhotoToNote(note.id, file);
-                                    }
-                                  });
-                                };
-                                input.click();
-                              }}
-                              style={{
-                                padding: '6px 12px',
-                                fontSize: '0.85rem',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px'
-                              }}
-                            >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                                <circle cx="12" cy="13" r="4"></circle>
-                                <line x1="17" y1="3" x2="17" y2="6"></line>
-                                <circle cx="17" cy="2" r="1"></circle>
-                              </svg>
-                              Add Photos
-                            </button>
-                          </div>
-                          
-                          {/* Display gallery photos */}
-                          {note.gallery && note.gallery.length > 0 && (
+                        {/* Photos, location and tags, boxed together.
+                            
+                            Three loose blocks under the editor with nothing
+                            marking where one ended and the next began. They
+                            are all metadata about the note rather than the
+                            note itself, so one box says that - and matches
+                            the Focus Time panel below, which already did.
+                            
+                            Padding and border come from .detail-field-group,
+                            so a change to one section of a record still
+                            reaches the rest. */}
+                        <div className="detail-field-group">
+                          {/* Photo Gallery Section */}
+                          {/* No top margin: the box's own padding already
+                              separates it from the editor above, and doubling
+                              the two left a gap at the top the other sections
+                              do not have. */}
+                          <div>
                             <div style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
                               gap: '10px',
-                              marginTop: '10px'
+                              marginBottom: '10px'
                             }}>
-                              {note.gallery.map(photo => (
-                                <div 
-                                  key={photo.id} 
+                              <label className="note-meta-label">
+                                Photos:
+                              </label>
+                              <button
+                                className="toolbar-btn"
+                                onClick={() => {
+                                  const input = document.createElement('input');
+                                  input.type = 'file';
+                                  input.accept = 'image/*';
+                                  input.multiple = true;
+                                  input.onchange = (evt) => {
+                                    const files = Array.from(evt.target.files);
+                                    files.forEach(file => {
+                                      if (file) {
+                                        addGalleryPhotoToNote(note.id, file);
+                                      }
+                                    });
+                                  };
+                                  input.click();
+                                }}
+                                style={{
+                                  padding: '6px 12px',
+                                  fontSize: '0.85rem'
+                                }}
+                              >
+                                Add Photos
+                              </button>
+                            </div>
+                          
+                            {/* Display gallery photos */}
+                            {note.gallery && note.gallery.length > 0 && (
+                              <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                                gap: '10px',
+                                marginTop: '10px'
+                              }}>
+                                {note.gallery.map(photo => (
+                                  <div 
+                                    key={photo.id} 
+                                    style={{
+                                      position: 'relative',
+                                      borderRadius: '8px',
+                                      overflow: 'hidden',
+                                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                      aspectRatio: '1',
+                                    }}
+                                  >
+                                    <img 
+                                      src={photo.data} 
+                                      alt="Gallery" 
+                                      style={{
+                                        width: '100%',
+                                        height: '100%',
+                                        objectFit: 'cover',
+                                        display: 'block'
+                                      }}
+                                    />
+                                    <button 
+                                      aria-label="Remove photo"
+                                      onClick={() => removeGalleryPhotoFromNote(note.id, photo.id)}
+                                      style={{
+                                        position: 'absolute',
+                                        top: '5px',
+                                        right: '5px',
+                                        background: 'rgba(0, 0, 0, 0.7)',
+                                        color: '#fff',
+                                        border: 'none',
+                                        borderRadius: '50%',
+                                        width: '24px',
+                                        height: '24px',
+                                        cursor: 'pointer',
+                                        fontSize: '16px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        padding: 0,
+                                        lineHeight: 1
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Location Field */}
+                          <div style={{marginTop: '15px'}}>
+                            <div style={{
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              gap: '10px'
+                            }}>
+                              <label className="note-meta-label">
+                                Location:
+                              </label>
+                              {/* Empty and unopened: one button, exactly like
+                                  the Photos row above. A bare text box invites
+                                  you to fill it in; a button is something you
+                                  can ignore. Once there is a location, or once
+                                  you have asked for the field, it stays. */}
+                              {!(locationOpen[note.id] || note.location) ? (
+                                <button
+                                  className="toolbar-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setLocationOpen(prev => ({ ...prev, [note.id]: true }));
+                                  }}
                                   style={{
-                                    position: 'relative',
-                                    borderRadius: '8px',
-                                    overflow: 'hidden',
-                                    border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                                    aspectRatio: '1',
+                                    padding: '6px 12px',
+                                    fontSize: '0.85rem'
                                   }}
                                 >
-                                  <img 
-                                    src={photo.data} 
-                                    alt="Gallery" 
+                                  Add Location
+                                </button>
+                              ) : (
+                                <>
+                                  <input
+                                    type="text"
+                                    value={note.location || ''}
+                                    onChange={(e) => updateNoteLocation(note.id, e.target.value)}
+                                    // Matches the button that revealed it. The
+                                    // question invited an answer the field
+                                    // cannot take - "at my desk", "on the train"
+                                    // - where what goes here is a place.
+                                    placeholder="Add Location"
+                                    onClick={(e) => e.stopPropagation()}
+                                    // Focused on open, since asking for the
+                                    // field is asking to type in it.
+                                    autoFocus={!!locationOpen[note.id] && !note.location}
                                     style={{
-                                      width: '100%',
-                                      height: '100%',
-                                      objectFit: 'cover',
-                                      display: 'block'
+                                      flex: '1 1 140px',
+                                      minWidth: 0,
+                                      padding: '8px 12px',
+                                      background: 'rgba(var(--surface-rgb), 0.8)',
+                                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                      borderRadius: '8px',
+                                      color: 'var(--text)',
+                                      fontSize: '0.9rem',
+                                      fontFamily: 'var(--font-ui)',
+                                      // Same reason as .tag-input: the global
+                                      // input rule's shadow makes a field inside
+                                      // a panel look like it is hovering over it.
+                                      boxShadow: 'none',
+                                      boxSizing: 'border-box'
                                     }}
                                   />
-                                  <button 
-                                    aria-label="Remove photo"
-                                    onClick={() => removeGalleryPhotoFromNote(note.id, photo.id)}
-                                    style={{
-                                      position: 'absolute',
-                                      top: '5px',
-                                      right: '5px',
-                                      background: 'rgba(0, 0, 0, 0.7)',
-                                      color: '#fff',
-                                      border: 'none',
-                                      borderRadius: '50%',
-                                      width: '24px',
-                                      height: '24px',
-                                      cursor: 'pointer',
-                                      fontSize: '16px',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      padding: 0,
-                                      lineHeight: 1
+                                  {/* Detecting is a button, not something that
+                                      happens because you tapped the field to
+                                      type - focusing it used to fire a
+                                      geolocation request. */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      fetchLocationForNote(note.id);
                                     }}
+                                    title="Use my current location"
+                                    aria-label="Use current location"
+                                    style={{
+                                      flexShrink: 0,
+                                      padding: '8px 14px',
+                                      borderRadius: '8px',
+                                      background: 'rgba(var(--surface-rgb), 0.8)',
+                                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                      color: 'var(--text)',
+                                      fontFamily: 'var(--font-ui)',
+                                      fontSize: '0.8rem',
+                                      fontWeight: 600,
+                                      textTransform: 'none',
+                                      letterSpacing: 'normal',
+                                      boxShadow: 'none',
+                                      cursor: 'pointer',
+                                      // The icon earns its place here, unlike
+                                      // the camera on Add Photos: that one
+                                      // repeated the word beside it, this one
+                                      // says which KIND of location - the one
+                                      // you are standing in, not one you type.
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '6px'
+                                    }}
+                                  >
+                                    <LocationArrowIcon />
+                                    Current Location
+                                  </button>
+                                  {/* Clearing puts the row back to a button.
+                                      Emptying the field is saying you do not
+                                      want a location, so leaving an empty box
+                                      behind would ignore that. */}
+                                  <button
+                                    aria-label="Clear location"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      updateNoteLocation(note.id, '');
+                                      setLocationOpen(prev => ({ ...prev, [note.id]: false }));
+                                    }}
+                                    style={{
+                                      background: 'transparent',
+                                      border: 'none',
+                                      color: 'var(--text-muted)',
+                                      cursor: 'pointer',
+                                      fontSize: '1.2rem',
+                                      padding: '4px 8px',
+                                      boxShadow: 'none',
+                                      flexShrink: 0
+                                    }}
+                                    title="Clear location"
                                   >
                                     ×
                                   </button>
-                                </div>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Tags section */}
+                          <div style={{marginTop: '15px'}}>
+                            <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px'}}>
+                              {(note.tags || []).map(tag => (
+                                <span key={tag} className="note-tag">
+                                  {tag}
+                                  <button 
+                                    aria-label="Remove tag"
+                                    className="tag-remove"
+                                    onClick={() => removeTagFromNote(note.id, tag)}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
                               ))}
                             </div>
-                          )}
-                        </div>
-
-                        {/* Location Field */}
-                        <div style={{marginTop: '15px'}}>
-                          <div style={{
-                            display: 'flex',
-                            flexWrap: 'wrap',
-                            alignItems: 'center',
-                            gap: '10px'
-                          }}>
-                            <label style={{
-                              color: 'var(--text-muted)',
-                              fontSize: '0.9rem',
-                              fontFamily: 'var(--font-ui)',
-                              fontWeight: '600',
-                              minWidth: 'fit-content'
-                            }}>
-                              Location:
-                            </label>
+                          
                             <input
                               type="text"
-                              value={note.location || ''}
-                              onChange={(e) => updateNoteLocation(note.id, e.target.value)}
-                              onFocus={() => {
-                                // Auto-fetch location if empty
-                                if (!note.location || note.location === '') {
-                                  fetchLocationForNote(note.id);
+                              placeholder="Tags"
+                              className="tag-input"
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter') {
+                                  addTagToNote(note.id, e.target.value);
+                                  e.target.value = '';
                                 }
                               }}
-                              placeholder="Click to auto-detect or type location..."
                               onClick={(e) => e.stopPropagation()}
-                              style={{
-                                width: '100%',
-                                padding: '8px 12px',
-                                background: 'rgba(var(--surface-rgb), 0.8)',
-                                border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                                borderRadius: '8px',
-                                color: 'var(--text)',
-                                fontSize: '0.9rem',
-                                fontFamily: 'var(--font-ui)',
-                                boxSizing: 'border-box'
-                              }}
                             />
-                            {note.location && (
-                              <button
-                                aria-label="Clear location"
-                                onClick={() => updateNoteLocation(note.id, '')}
-                                style={{
-                                  background: 'transparent',
-                                  border: 'none',
-                                  color: 'var(--text-muted)',
-                                  cursor: 'pointer',
-                                  fontSize: '1.2rem',
-                                  padding: '4px 8px'
-                                }}
-                                title="Clear location"
-                              >
-                                ×
-                              </button>
-                            )}
+                          </div>
                           </div>
                         </div>
 
-                        {/* Tags section */}
-                        <div style={{marginTop: '15px'}}>
-                          <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px'}}>
-                            {(note.tags || []).map(tag => (
-                              <span key={tag} className="note-tag">
-                                {tag}
-                                <button 
-                                  aria-label="Remove tag"
-                                  className="tag-remove"
-                                  onClick={() => removeTagFromNote(note.id, tag)}
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                          
-                          <input
-                            type="text"
-                            placeholder="Tags"
-                            className="tag-input"
-                            onKeyPress={(e) => {
-                              if (e.key === 'Enter') {
-                                addTagToNote(note.id, e.target.value);
-                                e.target.value = '';
-                              }
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        </div>
-                        </div>
-
-                        {/* Time Logged Section */}
-                        <div style={{
+                        {/* Focus Time */}
+                        <div ref={sectionRef(`focus-note-${note.id}`)} style={{
                           marginTop: '20px',
                           padding: '20px',
                           background: 'rgba(var(--surface-rgb), 0.8)',
                           borderRadius: '15px',
                           border: '2px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
-                          <div style={{
+                          <div
+                          onClick={() => toggleFocusTime(`focus-note-${note.id}`)}
+                          style={{cursor: 'pointer', 
                             fontFamily: 'var(--font-ui)',
                             fontSize: '1.3rem',
                             fontWeight: '700',
@@ -15690,9 +16409,12 @@ function LittleFiresApp() {
                             paddingBottom: '10px',
                             borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                           }}>
-                            Time Logged
+                            Focus Time
                           </div>
-                          {(note.timeLogged || 0) > 0 && (
+                          {openFocusTime[`focus-note-${note.id}`] && (
+                          <div className={`section-shell ${sectionAnim[`focus-note-${note.id}`] ? 'section-collapsed' : ''}`}>
+                            <div className="section-shell-inner">
+{(note.timeLogged || 0) > 0 && (
                             <div style={{
                               fontFamily: 'var(--font-ui)',
                               fontSize: '2rem',
@@ -15714,7 +16436,7 @@ function LittleFiresApp() {
                           )}
                           <div style={{textAlign: 'center'}}>
                             <button 
-                              className="add-task-btn"
+                              className="section-action"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setTimeLoggerContext({ type: 'note', id: note.id });
@@ -15725,16 +16447,23 @@ function LittleFiresApp() {
                                 setLogStartTime(null);
                         setPausedTime(0);
                               }}
-                              style={{width: 'auto', padding: '12px 30px'}}
                             >
-                              Log Time
+                              Add Time
                             </button>
                           </div>
+                            </div>
+                          </div>
+                        )}
                         </div>
 
-                        <div style={{display: 'flex', gap: '15px', marginTop: '10px', justifyContent: 'flex-end'}}>
+                        {/* Same row a project or goal has at its foot: one
+                            class, wrapping in order, no glow. It was
+                            .edit-btn primary-action next to .delete-btn,
+                            right-aligned with a 15px gap - two different
+                            shapes at two different sizes. */}
+                        <div className="detail-actions">
                           <button 
-                            className="edit-btn primary-action"
+                            className="detail-action primary"
                             onClick={(e) => {
                               const noteContent = e.target.closest('.note-entry').querySelector('.note-content');
                               updateNote(note.id, noteContent.innerHTML);
@@ -15747,7 +16476,7 @@ function LittleFiresApp() {
                             Save
                           </button>
                           <button 
-                            className="delete-btn"
+                            className="detail-action danger"
                             onClick={() => setNoteToDelete(note.id)}
                           >
                             Delete
@@ -16219,104 +16948,58 @@ function LittleFiresApp() {
                               className="project-name-edit"
                             />
                           ) : (
-                            <h2 onClick={() => setEditingProjectName(true)} style={{cursor: 'pointer'}} className="project-detail-name">
+                            <h2
+                              // Same rule as the fields below: tap the thing
+                              // you want to change.
+                              onClick={() => {
+                                beginDetailEdit('project', null);
+                                setEditingProjectName(true);
+                              }}
+                              style={{ cursor: 'pointer' }}
+                              className="project-detail-name"
+                            >
                               {project.name}
                             </h2>
                           )}
+
                         </div>
 
                         {/* Description Field */}
-                        <div style={{marginTop: '20px', marginBottom: '20px'}}>
-                          <label style={{
-                            display: 'block',
-                            color: 'var(--text-muted)',
-                            fontSize: '0.9rem',
-                            marginBottom: '8px',
-                            fontFamily: 'var(--font-ui)'
-                          }}>
-                            Description:
-                          </label>
-                          <textarea
-                            value={project.description || ''}
-                            onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { description: e.target.value })}
-                            placeholder="Add project description..."
-                            style={{
-                              width: '100%',
-                              minHeight: '80px',
-                              padding: '12px',
-                              background: 'rgba(var(--surface-rgb), 0.8)',
-                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                              borderRadius: '10px',
-                              color: 'var(--text)',
-                            fontSize: '0.95rem',
-                            fontFamily: 'var(--font-ui)',
-                            resize: 'vertical',
-                            boxSizing: 'border-box'
-                          }}
+                        {(projectDetailEditing || project.description || project.challenge || project.outcome) && (
+                        <div className="detail-field-group">
+<DetailField
+                          label="Description"
+                          value={project.description}
+                          placeholder="Add project description..."
+                          editing={projectDetailEditing}
+                          onRequestEdit={() => beginDetailEdit('project', 'description')}
+                          autoFocus={detailFocusField === 'description'}
+                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { description: e.target.value })}
                         />
-                      </div>
 
                       {/* Challenge Field */}
-                      <div style={{marginBottom: '20px'}}>
-                        <label style={{
-                          display: 'block',
-                          color: 'var(--text-muted)',
-                          fontSize: '0.9rem',
-                          marginBottom: '8px',
-                          fontFamily: 'var(--font-ui)'
-                        }}>
-                          Challenge:
-                        </label>
-                        <textarea
-                          value={project.challenge || ''}
-                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { challenge: e.target.value })}
+                      <DetailField
+                          label="Challenge"
+                          value={project.challenge}
                           placeholder="Add a challenge..."
-                          style={{
-                            width: '100%',
-                            minHeight: '80px',
-                            padding: '12px',
-                            background: 'rgba(var(--surface-rgb), 0.8)',
-                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                            borderRadius: '10px',
-                            color: 'var(--text)',
-                            fontSize: '0.95rem',
-                            fontFamily: 'var(--font-ui)',
-                            resize: 'vertical',
-                            boxSizing: 'border-box'
-                          }}
+                          editing={projectDetailEditing}
+                          onRequestEdit={() => beginDetailEdit('project', 'challenge')}
+                          autoFocus={detailFocusField === 'challenge'}
+                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { challenge: e.target.value })}
                         />
-                      </div>
 
                       {/* Outcome Field */}
-                      <div style={{marginBottom: '20px'}}>
-                        <label style={{
-                          display: 'block',
-                          color: 'var(--text-muted)',
-                          fontSize: '0.9rem',
-                          marginBottom: '8px',
-                          fontFamily: 'var(--font-ui)'
-                        }}>
-                          Outcome:
-                        </label>
-                        <textarea
-                          value={project.outcome || ''}
-                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { outcome: e.target.value })}
+                      <DetailField
+                          label="Outcome"
+                          value={project.outcome}
                           placeholder="What does success look like for this project?"
-                          style={{
-                            width: '100%',
-                            minHeight: '80px',
-                            padding: '12px',
-                            background: 'rgba(var(--surface-rgb), 0.8)',
-                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                            borderRadius: '10px',
-                            color: 'var(--text)',
-                            fontSize: '0.95rem',
-                            fontFamily: 'var(--font-ui)',
-                            resize: 'vertical',
-                            boxSizing: 'border-box'
-                          }}
+                          editing={projectDetailEditing}
+                          onRequestEdit={() => beginDetailEdit('project', 'outcome')}
+                          autoFocus={detailFocusField === 'outcome'}
+                          onChange={(e) => updateProject(selectedProject.listName, selectedProject.id, { outcome: e.target.value })}
                         />
-                      </div>
+                        </div>
+                      )}
 
                       {/* Project Dates */}
                       <div className="project-dates-section" style={{marginBottom: '20px'}}>
@@ -16384,18 +17067,9 @@ function LittleFiresApp() {
                             }}
                             style={{
                               padding: '6px 12px',
-                              fontSize: '0.85rem',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '6px'
+                              fontSize: '0.85rem'
                             }}
                           >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                              <circle cx="12" cy="13" r="4"></circle>
-                              <line x1="17" y1="3" x2="17" y2="6"></line>
-                              <circle cx="17" cy="2" r="1"></circle>
-                            </svg>
                             Add Photos
                           </button>
                         </div>
@@ -16503,18 +17177,9 @@ function LittleFiresApp() {
                             }}
                             style={{
                               padding: '6px 12px',
-                              fontSize: '0.85rem',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '6px'
+                              fontSize: '0.85rem'
                             }}
                           >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                              <circle cx="12" cy="13" r="4"></circle>
-                              <line x1="17" y1="3" x2="17" y2="6"></line>
-                              <circle cx="17" cy="2" r="1"></circle>
-                            </svg>
                             Add Photos
                           </button>
                         </div>
@@ -16830,7 +17495,7 @@ function LittleFiresApp() {
                           </button>
                         </div>
                         <button 
-                          className="add-task-btn" 
+                          className="section-action" 
                           onClick={() => addTaskToProject(selectedProject.id, projectTaskList)}
                           style={{width: '100%', padding: '14px', fontSize: '0.9rem'}}
                         >
@@ -17085,29 +17750,33 @@ function LittleFiresApp() {
                       </div>
 
                       {/* Project Actions */}
-                      <div className="project-actions" style={{display: 'flex', justifyContent: 'space-between', width: '100%'}}>
-                        <button 
-                          className="archive-btn"
+                      <div className="detail-actions is-footer">
+                        {/* One treatment for all four. Order is the order you
+                            are likely to want them: edit, then leave, then the
+                            two that change what the record is. */}
+                        <button
+                          className={`detail-action ${projectDetailEditing ? 'is-active' : ''}`}
+                          onClick={() => setProjectDetailEditing(v => !v)}
+                        >
+                          {projectDetailEditing ? 'Done' : 'Edit'}
+                        </button>
+                        <button
+                          className="detail-action"
+                          onClick={() => setSelectedProject(null)}
+                        >
+                          Close
+                        </button>
+                        <button
+                          className="detail-action"
                           onClick={() => {
                             archiveProject(selectedProject.listName, selectedProject.id);
                             setSelectedProject(null);
                           }}
-                          style={{
-                            padding: '10px 20px',
-                            background: 'rgba(var(--accent-rgb), 0.2)',
-                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
-                            borderRadius: '8px',
-                            color: 'var(--accent)',
-                            fontSize: '0.9rem',
-                            fontWeight: '600',
-                            fontFamily: 'var(--font-ui)',
-                            cursor: 'pointer'
-                          }}
                         >
                           Archive
                         </button>
-                        <button 
-                          className="delete-project-btn"
+                        <button
+                          className="detail-action danger"
                           onClick={() => {
                             setProjectToDelete({
                               id: selectedProject.id,
@@ -18176,86 +18845,56 @@ function LittleFiresApp() {
                               className="project-name-edit"
                             />
                           ) : (
-                            <h2 onClick={() => setEditingGoalName(true)} style={{cursor: 'pointer'}} className="project-detail-name">
+                            <h2
+                              onClick={() => {
+                                beginDetailEdit('goal', null);
+                                setEditingGoalName(true);
+                              }}
+                              style={{ cursor: 'pointer' }}
+                              className="project-detail-name"
+                            >
                               {goal.name}
                             </h2>
                           )}
+
                         </div>
 
                         {/* Description Field */}
-                        <div style={{marginBottom: '20px'}}>
-                          <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
-                            Description:
-                          </label>
-                          <textarea
-                            value={goal.description || ''}
-                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { description: e.target.value })}
-                            placeholder="Add a description..."
-                            style={{
-                              width: '100%',
-                              minHeight: '100px',
-                              padding: '12px',
-                              background: 'rgba(var(--surface-rgb), 0.8)',
-                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                              borderRadius: '10px',
-                              color: 'var(--text)',
-                              fontSize: '0.95rem',
-                              fontFamily: 'inherit',
-                              resize: 'vertical',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
+                        {(goalDetailEditing || goal.description || goal.challenge || goal.outcome) && (
+                        <div className="detail-field-group">
+<DetailField
+                          label="Description"
+                          value={goal.description}
+                          placeholder="Add a description..."
+                          editing={goalDetailEditing}
+                          onRequestEdit={() => beginDetailEdit('goal', 'description')}
+                          autoFocus={detailFocusField === 'description'}
+                          onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { description: e.target.value })}
+                        />
 
                         {/* Challenge Field */}
-                        <div style={{marginBottom: '20px'}}>
-                          <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
-                            Challenge:
-                          </label>
-                          <textarea
-                            value={goal.challenge || ''}
-                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { challenge: e.target.value })}
-                            placeholder="Add a challenge..."
-                            style={{
-                              width: '100%',
-                              minHeight: '100px',
-                              padding: '12px',
-                              background: 'rgba(var(--surface-rgb), 0.8)',
-                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                              borderRadius: '10px',
-                              color: 'var(--text)',
-                              fontSize: '0.95rem',
-                              fontFamily: 'inherit',
-                              resize: 'vertical',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
+                        <DetailField
+                          label="Challenge"
+                          value={goal.challenge}
+                          placeholder="Add a challenge..."
+                          editing={goalDetailEditing}
+                          onRequestEdit={() => beginDetailEdit('goal', 'challenge')}
+                          autoFocus={detailFocusField === 'challenge'}
+                          onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { challenge: e.target.value })}
+                        />
 
                         {/* Outcome Field */}
-                        <div style={{marginBottom: '20px'}}>
-                          <label className="project-date-label" style={{display: 'block', marginBottom: '8px'}}>
-                            Outcome:
-                          </label>
-                          <textarea
-                            value={goal.outcome || ''}
-                            onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { outcome: e.target.value })}
-                            placeholder="Add the desired outcome..."
-                            style={{
-                              width: '100%',
-                              minHeight: '100px',
-                              padding: '12px',
-                              background: 'rgba(var(--surface-rgb), 0.8)',
-                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                              borderRadius: '10px',
-                              color: 'var(--text)',
-                              fontSize: '0.95rem',
-                              fontFamily: 'inherit',
-                              resize: 'vertical',
-                              boxSizing: 'border-box'
-                            }}
-                          />
+                        <DetailField
+                          label="Outcome"
+                          value={goal.outcome}
+                          placeholder="Add the desired outcome..."
+                          editing={goalDetailEditing}
+                          onRequestEdit={() => beginDetailEdit('goal', 'outcome')}
+                          autoFocus={detailFocusField === 'outcome'}
+                          onChange={(e) => updateGoal(selectedGoal.listName, selectedGoal.id, { outcome: e.target.value })}
+                        />
                         </div>
+                      )}
 
                         {/* Goal Dates */}
                         <div className="project-dates-section">
@@ -18316,18 +18955,9 @@ function LittleFiresApp() {
                               }}
                               style={{
                                 padding: '6px 12px',
-                                fontSize: '0.85rem',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px'
+                                fontSize: '0.85rem'
                               }}
                             >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                                <circle cx="12" cy="13" r="4"></circle>
-                                <line x1="17" y1="3" x2="17" y2="6"></line>
-                                <circle cx="17" cy="2" r="1"></circle>
-                              </svg>
                               Add Photos
                             </button>
                           </div>
@@ -18428,18 +19058,9 @@ function LittleFiresApp() {
                               }}
                               style={{
                                 padding: '6px 12px',
-                                fontSize: '0.85rem',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px'
+                                fontSize: '0.85rem'
                               }}
                             >
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                                <circle cx="12" cy="13" r="4"></circle>
-                                <line x1="17" y1="3" x2="17" y2="6"></line>
-                                <circle cx="17" cy="2" r="1"></circle>
-                              </svg>
                               Add Photos
                             </button>
                           </div>
@@ -18576,15 +19197,17 @@ function LittleFiresApp() {
                         )}
                       </div>
 
-                      {/* Time Logged */}
-                      <div style={{
+                      {/* Focus Time */}
+                      <div ref={sectionRef('focus-goal')} style={{
                         marginTop: '30px',
                         padding: '20px',
                         background: 'rgba(var(--surface-rgb), 0.8)',
                         borderRadius: '15px',
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
-                        <div style={{
+                        <div
+                          onClick={() => toggleFocusTime('focus-goal')}
+                          style={{cursor: 'pointer', 
                           fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
@@ -18593,9 +19216,12 @@ function LittleFiresApp() {
                           paddingBottom: '10px',
                           borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
                         }}>
-                          Time Logged
+                          Focus Time
                         </div>
-                        {(goal.timeLogged || 0) > 0 && (
+                        {openFocusTime['focus-goal'] && (
+                          <div className={`section-shell ${sectionAnim['focus-goal'] ? 'section-collapsed' : ''}`}>
+                            <div className="section-shell-inner">
+{(goal.timeLogged || 0) > 0 && (
                           <div style={{
                             fontFamily: 'var(--font-ui)',
                             fontSize: '2.5rem',
@@ -18617,7 +19243,7 @@ function LittleFiresApp() {
                         )}
                         <div style={{textAlign: 'center'}}>
                           <button 
-                            className="add-task-btn"
+                            className="section-action"
                             onClick={() => {
                               setTimeLoggerContext({ type: 'goal', id: selectedGoal.id, listName: selectedGoal.listName });
                               setShowTimeLogger(true);
@@ -18629,7 +19255,7 @@ function LittleFiresApp() {
                             }}
                             style={{width: 'auto', padding: '12px 30px'}}
                           >
-                            Log Time
+                            Add Time
                           </button>
                         </div>
 
@@ -18755,44 +19381,49 @@ function LittleFiresApp() {
                             ))}
                           </div>
                         )}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       {/* Goal Actions */}
-                      <div className="project-actions" style={{display: 'flex', justifyContent: 'space-between', width: '100%'}}>
-                        <button 
-                          className="archive-btn"
+                      <div className="detail-actions is-footer">
+                        {/* One treatment for all four. Order is the order you
+                            are likely to want them: edit, then leave, then the
+                            two that change what the record is. */}
+                        <button
+                          className={`detail-action ${goalDetailEditing ? 'is-active' : ''}`}
+                          onClick={() => setGoalDetailEditing(v => !v)}
+                        >
+                          {goalDetailEditing ? 'Done' : 'Edit'}
+                        </button>
+                        <button
+                          className="detail-action"
+                          onClick={() => setSelectedGoal(null)}
+                        >
+                          Close
+                        </button>
+                        <button
+                          className="detail-action"
                           onClick={() => {
-                            archiveGoal(selectedGoal.listName, goal.id);
+                            archiveGoal(selectedGoal.listName, selectedGoal.id);
                             setSelectedGoal(null);
-                          }}
-                          style={{
-                            padding: '10px 20px',
-                            background: 'rgba(var(--accent-rgb), 0.2)',
-                            border: '2px solid rgba(var(--accent-rgb), 0.4)',
-                            borderRadius: '8px',
-                            color: 'var(--accent)',
-                            fontSize: '0.9rem',
-                            fontWeight: '600',
-                            fontFamily: 'var(--font-ui)',
-                            cursor: 'pointer'
                           }}
                         >
                           Archive
                         </button>
-                        <div style={{display: 'flex', gap: '10px'}}>
-                          <button 
-                            className="edit-btn"
-                            onClick={() => setSelectedGoal(null)}
-                          >
-                            Close
-                          </button>
-                          <button 
-                            className="delete-btn"
-                            onClick={() => setGoalToDelete({ id: goal.id, listName: selectedGoal.listName, name: goal.name })}
-                          >
-                            Delete
-                          </button>
-                        </div>
+                        <button
+                          className="detail-action danger"
+                          onClick={() => {
+                            setGoalToDelete({
+                              id: selectedGoal.id,
+                              listName: selectedGoal.listName,
+                              name: goal.name
+                            });
+                          }}
+                        >
+                          Delete
+                        </button>
                       </div>
                       </div>
                     </div>
@@ -19642,14 +20273,16 @@ function LittleFiresApp() {
 
         {appMode === 'time' && (
           <div className="time-section">
-            {/* Log Time Button */}
+            {/* The main action of the Time view. Kept as the full-width pill,
+                unlike the Add Time buttons inside a record: this one stands
+                alone on the page rather than sitting in a panel. */}
             <div style={{display: 'block', textAlign: 'center', marginBottom: '30px'}}>
               <button 
                 className="add-task-btn" 
                 onClick={() => setShowTimeLogger(true)}
                 style={{width: '70%', display: 'inline-block'}}
               >
-                Log Time
+                Add Time
               </button>
             </div>
 
@@ -24187,7 +24820,10 @@ class LittleFiresErrorBoundary extends React.Component {
 
     return (
       <div style={{
-        minHeight: '100vh', background: 'linear-gradient(135deg, #1a1a2e 0%, #2d2d44 100%)',
+        // Tokens, not literals. The crash screen appeared dark on a light theme -
+        // which is a jarring way to meet the one screen whose whole job is to
+        // reassure you that your data is fine.
+        minHeight: '100vh', background: 'linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 100%)',
         color: 'var(--text)', fontFamily: 'var(--font-ui)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px'
       }}>

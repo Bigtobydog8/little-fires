@@ -4731,7 +4731,78 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 range.collapse(true);
                 selection.removeAllRanges();
                 selection.addRange(range);
-                
+
+                // Bring it into view.
+                //
+                // The section is appended to the END of the editor, which on a
+                // task with any content at all is below the fold - so the
+                // caret landed somewhere invisible and the button appeared to
+                // do nothing until you scrolled.
+                //
+                // Two ports move, and they are different problems. The editor
+                // scrolls internally, so its own scrollTop has to change; and
+                // the editor itself may sit below the window fold, which is
+                // the page's scroll, not the editor's. scrollPortFor finds
+                // whichever container is actually doing the scrolling.
+                // Moving the viewport while the click is still in flight is
+                // what collapsed the task: mousedown lands on this button, the
+                // page scrolls under it, mouseup lands somewhere else, and the
+                // click resolves against whatever is now under the pointer.
+                //
+                // collapseGuardRef exists for exactly this - "this gesture
+                // already did its job, ignore the next one" - and clears itself
+                // after 400ms. Setting it here means a stray click gets
+                // swallowed once instead of closing the task.
+                collapseGuardRef.current = true;
+                // Cleared on a timer, because nothing else will. The guard is
+                // otherwise consumed by the tap it swallows - and if no stray
+                // click arrives, leaving it set would eat the reader's next
+                // genuine tap on the card instead. 400ms matches the window
+                // the collapse handler uses for the same job.
+                setTimeout(() => { collapseGuardRef.current = false; }, 400);
+
+                requestAnimationFrame(() => {
+                  try {
+                    const port = scrollPortFor(heading);
+                    if (port) {
+                      const portRect = port.getBoundingClientRect();
+                      const headRect = heading.getBoundingClientRect();
+                      // Move the least amount that brings the new section into
+                      // view, rather than lifting it to the top.
+                      //
+                      // Scrolling the heading to the top edge worked, and threw
+                      // away the context: the details above it went off-screen,
+                      // and a Follow Up list only means anything next to the
+                      // thing it follows. Same rule the section reveal uses -
+                      // reveal what is hidden, disturb nothing else.
+                      const sectionBottom = list.getBoundingClientRect().bottom;
+                      const overshoot = sectionBottom - portRect.bottom + 12;
+                      if (overshoot > 0) {
+                        // Never past the point where the heading itself would
+                        // leave the top - that happens when the section is
+                        // taller than the editor, and scrolling its bottom into
+                        // view would hide the thing being revealed.
+                        const maxScroll = headRect.top - portRect.top - 12;
+                        writeScrollTop(port,
+                          port.scrollTop + Math.min(overshoot, Math.max(0, maxScroll)),
+                          !settings.reduceMotion);
+                      }
+                    }
+                    // And if the editor is itself off-screen, the page has to
+                    // move as well - scrolling the editor cannot reveal it.
+                    const box = detailsArea.getBoundingClientRect();
+                    if (box.bottom > window.innerHeight || box.top < 0) {
+                      detailsArea.scrollIntoView({
+                        block: 'nearest',
+                        behavior: settings.reduceMotion ? 'auto' : 'smooth'
+                      });
+                    }
+                  } catch (err) {
+                    // Never let a scroll failure lose the section that was
+                    // just inserted.
+                  }
+                });
+
                 // Refresh markers so everything stays consistent
                 setTimeout(() => refreshListMarkers(detailsArea), 0);
               }}

@@ -3051,7 +3051,16 @@ const Task = ({ task, listName, showMoveButtons }) => {
         }
         // End-of-list boundary: a top-level line that comes right after a
         // more-indented (child) line - i.e. indentation stepped back to 0.
-        if (indent === 0 && prevIndent > 0) {
+        //
+        // Same adjacency requirement as the parent rule above, and for the same
+        // reason. `lines` comes from querySelectorAll, so a heading or an empty
+        // line between two checkboxes is invisible to it: a top-level checkbox
+        // under a "Follow Up" heading was drawing a rule above itself because
+        // the last checkbox ANYWHERE earlier in the editor happened to be
+        // indented. The guard was added to the parent rule and not to this one.
+        const prevIsAdjacent = i > 0 &&
+          lines[i - 1].nextElementSibling === lines[i];
+        if (indent === 0 && prevIndent > 0 && prevIsAdjacent) {
           lines[i].classList.add('ends-list');
           lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
           lines[i].style.paddingTop = '8px';

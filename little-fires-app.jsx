@@ -7570,6 +7570,43 @@ function LittleFiresApp() {
   // reads like the Photos row above it rather than an empty text box waiting to
   // be filled in.
   const [locationOpen, setLocationOpen] = useState({});
+
+  // Which note is open, if any. Component state, not a field on the note.
+  //
+  // It used to be `note.expanded`, stored and persisted - which meant opening a
+  // note was a write, and would have meant opening one on the phone silently
+  // opening it on the desktop once notes sync. Whether a card happens to be
+  // open here is not data about the note.
+  //
+  // Tasks and projects already work this way; SYNC-PLAN.md flags the stored
+  // version as something to fix before Session 3. This removes it.
+  const [selectedNoteId, setSelectedNoteId] = useState(null);
+
+  // Hold the page still behind the overlay, and put it back exactly where it
+  // was on close. Without this, scrolling the note scrolls the list underneath
+  // once the note's own content runs out - and closing then lands you somewhere
+  // you never chose.
+  React.useEffect(() => {
+    if (!selectedNoteId) return;
+    const y = window.scrollY;
+    const body = document.body;
+    const prev = {
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width
+    };
+    body.style.position = 'fixed';
+    body.style.top = -y + 'px';
+    body.style.width = '100%';
+    return () => {
+      body.style.position = prev.position;
+      body.style.top = prev.top;
+      body.style.width = prev.width;
+      // Instant, not smooth: this is restoring a position, not travelling to
+      // one, and a smooth scroll here reads as the page drifting on close.
+      window.scrollTo(0, y);
+    };
+  }, [selectedNoteId]);
   const toggleFocusTime = React.useCallback((key) => {
     toggleSection(
       key,
@@ -8461,10 +8498,11 @@ function LittleFiresApp() {
       title: '',
       content: '',
       tags: [],
-      expanded: true,
       images: []
     };
     setNotes(prev => [newNote, ...prev]);
+    // Straight into the record. Creating a note is asking to write one.
+    setSelectedNoteId(newNote.id);
   };
 
   // Titles are plain text. Nothing renders them as HTML, so there is nothing to
@@ -8487,9 +8525,7 @@ function LittleFiresApp() {
   };
 
   const toggleNoteExpanded = (id) => {
-    setNotes(prev => prev.map(note =>
-      note.id === id ? { ...note, expanded: !note.expanded } : note
-    ));
+    setSelectedNoteId(prev => (prev === id ? null : id));
     // The outdent button renders hidden, because nothing on a fresh note can be
     // outdented. A note saved WITH indentation is the other half of that: it
     // has something to outdent from the moment it opens, and the caret handlers
@@ -13339,6 +13375,93 @@ function LittleFiresApp() {
 
         /* The title in a collapsed note. Sits above the date, which drops to a
            subtitle when there is a title to lead with. */
+        /* A note opens as a record you are inside, rather than a card that
+           grows in place.
+           
+           Expanding inline was flat because nothing changed except height: the
+           list stayed, the page kept its scroll, and a long note pushed
+           everything below it out of the way. Projects and goals already
+           replace the list with a detail view; this is the same idea, done as
+           an overlay so the 940 lines of note content did not have to move in
+           the source. */
+        .note-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 900;
+          display: flex;
+          align-items: flex-start;
+          justify-content: center;
+          padding: 20px;
+          box-sizing: border-box;
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+          /* The same tint the existing dialogs use. --bg-1-rgb does not exist;
+             writing it with a fallback would have worked by accident in dark
+             mode and gone wrong in light. */
+          background: rgba(0, 0, 0, 0.55);
+          backdrop-filter: blur(6px);
+          animation: note-overlay-in 180ms ease;
+        }
+
+        @keyframes note-overlay-in {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        .reduce-motion .note-overlay {
+          animation: none;
+        }
+
+        .note-overlay-panel {
+          position: relative;
+          width: 100%;
+          max-width: 760px;
+          box-sizing: border-box;
+          background: rgb(var(--surface-deep-rgb));
+          border: 2px solid rgba(var(--border-rgb), 0.35);
+          border-radius: 18px;
+          padding: 46px 20px 24px;
+          /* A real shadow here, unlike the fields inside it: this panel IS
+             floating above the page, which is the whole point. */
+          box-shadow: 0 18px 50px rgba(var(--shadow-rgb), 0.35);
+          margin: 0 auto;
+        }
+
+        .note-overlay-close {
+          position: absolute;
+          top: 10px;
+          right: 12px;
+          width: 34px;
+          height: 34px;
+          padding: 0;
+          border-radius: 50%;
+          background: rgba(var(--surface-rgb), 0.9);
+          border: 2px solid rgba(var(--border-rgb), 0.35);
+          color: var(--text);
+          font-size: 1.25rem;
+          line-height: 1;
+          letter-spacing: normal;
+          text-transform: none;
+          box-shadow: none;
+          cursor: pointer;
+          z-index: 1;
+        }
+
+        @media (max-width: 600px) {
+          .note-overlay {
+            padding: 0;
+          }
+          /* Full-bleed on a phone: a 20px margin around a record you are
+             meant to be inside just wastes the narrowest screen. */
+          .note-overlay-panel {
+            min-height: 100%;
+            border-radius: 0;
+            border-left: none;
+            border-right: none;
+            padding: 46px 14px 24px;
+          }
+        }
+
         .note-title-display {
           display: block;
           font-family: var(--font-ui);
@@ -15286,7 +15409,7 @@ function LittleFiresApp() {
                 const clickedSelect = e.target.closest('select');
                 
                 if (!clickedButton && !clickedInput && !clickedSelect) {
-                  setNotes(notes.map(note => ({ ...note, expanded: false })));
+                  setSelectedNoteId(null);
                 }
               }
             }}
@@ -15488,7 +15611,7 @@ function LittleFiresApp() {
                     onClick={(e) => {
                       // If clicking directly on note-entry (padding area), collapse
                       if (e.target.classList.contains('note-entry') && e.target === e.currentTarget) {
-                        setNotes(notes.map(n => ({ ...n, expanded: false })));
+                        setSelectedNoteId(null);
                       } else {
                         // Clicking on content - stop propagation to keep note open
                         e.stopPropagation();
@@ -15505,7 +15628,7 @@ function LittleFiresApp() {
                           pixels below, so repeating it here is the same words
                           twice. The date is the thing the header can say that
                           the open note cannot. */}
-                      {note.expanded ? (
+                      {selectedNoteId === note.id ? (
                         <span className="note-date">
                           {new Date(note.date).toLocaleDateString('en-US', {
                             weekday: 'long',
@@ -15540,8 +15663,18 @@ function LittleFiresApp() {
                         </>
                       )}
                     </div>
-                    {note.expanded && (
-                      <>
+                    {selectedNoteId === note.id && (
+                      <div className="note-overlay" onClick={(e) => { if (e.target === e.currentTarget) setSelectedNoteId(null); }}>
+                        <div className="note-overlay-panel" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            className="note-overlay-close"
+                            onClick={() => setSelectedNoteId(null)}
+                            aria-label="Close note"
+                            title="Close note"
+                          >
+                            ×
+                          </button>
+<>
                         {/* Note Section */}
                         <div style={{
                           marginBottom: '20px',
@@ -16468,8 +16601,9 @@ function LittleFiresApp() {
                               updateNote(note.id, noteContent.innerHTML);
                               // Collapse the note after saving
                               setNotes(prev => prev.map(n => 
-                                n.id === note.id ? { ...n, expanded: false } : n
+                                n.id === note.id ? n : n
                               ));
+                              setSelectedNoteId(null);
                             }}
                           >
                             Save
@@ -16482,6 +16616,8 @@ function LittleFiresApp() {
                           </button>
                         </div>
                       </>
+                        </div>
+                      </div>
                     )}
                   </div>
                 ))}
@@ -18292,7 +18428,7 @@ function LittleFiresApp() {
                                             });
                                             // Expand the note
                                             const currentNote = notes.find(n => n.id === item.data.id);
-                                            if (currentNote && !currentNote.expanded) {
+                                            if (currentNote && selectedNoteId !== currentNote.id) {
                                               toggleNoteExpanded(item.data.id);
                                             }
                                           }

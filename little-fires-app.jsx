@@ -3051,16 +3051,7 @@ const Task = ({ task, listName, showMoveButtons }) => {
         }
         // End-of-list boundary: a top-level line that comes right after a
         // more-indented (child) line - i.e. indentation stepped back to 0.
-        //
-        // Same adjacency requirement as the parent rule above, and for the same
-        // reason. `lines` comes from querySelectorAll, so a heading or an empty
-        // line between two checkboxes is invisible to it: a top-level checkbox
-        // under a "Follow Up" heading was drawing a rule above itself because
-        // the last checkbox ANYWHERE earlier in the editor happened to be
-        // indented. The guard was added to the parent rule and not to this one.
-        const prevIsAdjacent = i > 0 &&
-          lines[i - 1].nextElementSibling === lines[i];
-        if (indent === 0 && prevIndent > 0 && prevIsAdjacent) {
+        if (indent === 0 && prevIndent > 0) {
           lines[i].classList.add('ends-list');
           lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
           lines[i].style.paddingTop = '8px';
@@ -4689,16 +4680,66 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 e.stopPropagation();
                 
                 const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
-                // Snapshot before mutating. This handler builds DOM directly, so
-                // it never fires beforeinput and the history would not see it.
-                pushHistory(detailsArea);
+                if (!detailsArea) return;
+
                 // One Follow Up section per task. The heading is tagged with
                 // its own class and that survives into the saved HTML, so its
                 // presence is the check - and it holds for a task reopened
-                // later, not just within this editing session. Bailing before
-                // focus() keeps a repeat press a true no-op: no cursor jump,
-                // no scroll, nothing.
-                if (!detailsArea || detailsArea.querySelector('.follow-up-heading')) return;
+                // later, not just within this editing session.
+                const existingHeading = detailsArea.querySelector('.follow-up-heading');
+                if (existingHeading) {
+                  // Toggle off - but only while the section is still empty.
+                  // Once anything has been typed into it, the press goes back
+                  // to being a no-op: a toolbar button must never remove
+                  // content someone wrote. "Empty" is judged on the list that
+                  // the insert path created; if the next sibling isn't that
+                  // list any more, the section has been rearranged by hand and
+                  // is treated as content, not scaffolding.
+                  const list = existingHeading.nextElementSibling;
+                  const listIsUl = !!list && list.tagName === 'UL';
+                  const removable = !list || (listIsUl && list.textContent.trim() === '');
+                  if (!removable) return;
+
+                  // Snapshot before mutating - this handler builds and removes
+                  // DOM directly, so it never fires beforeinput and the undo
+                  // history would not see it otherwise.
+                  pushHistory(detailsArea);
+
+                  // If the caret is inside what is about to be removed, it
+                  // must be moved out first - otherwise the selection is left
+                  // pointing at detached nodes.
+                  const selection = window.getSelection();
+                  const caretInside = !!(selection && selection.anchorNode && (
+                    existingHeading.contains(selection.anchorNode) ||
+                    (list && list.contains(selection.anchorNode))
+                  ));
+
+                  // The spacer line the insert path added above the heading
+                  // goes too, but only if it is still an empty line - an
+                  // empty div is scaffolding, anything else is content.
+                  const spacer = existingHeading.previousElementSibling;
+                  if (listIsUl) list.remove();
+                  existingHeading.remove();
+                  if (spacer && spacer.tagName === 'DIV' && spacer.textContent.trim() === '') {
+                    spacer.remove();
+                  }
+
+                  if (caretInside) {
+                    const range = document.createRange();
+                    range.selectNodeContents(detailsArea);
+                    range.collapse(false);
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                  }
+
+                  // Refresh markers so everything stays consistent
+                  setTimeout(() => refreshListMarkers(detailsArea), 0);
+                  return;
+                }
+
+                // Snapshot before mutating. This handler builds DOM directly, so
+                // it never fires beforeinput and the history would not see it.
+                pushHistory(detailsArea);
                 detailsArea.focus();
 
                 // Build a "Follow Up" heading line with the matcha underline
@@ -4731,83 +4772,12 @@ const Task = ({ task, listName, showMoveButtons }) => {
                 range.collapse(true);
                 selection.removeAllRanges();
                 selection.addRange(range);
-
-                // Bring it into view.
-                //
-                // The section is appended to the END of the editor, which on a
-                // task with any content at all is below the fold - so the
-                // caret landed somewhere invisible and the button appeared to
-                // do nothing until you scrolled.
-                //
-                // Two ports move, and they are different problems. The editor
-                // scrolls internally, so its own scrollTop has to change; and
-                // the editor itself may sit below the window fold, which is
-                // the page's scroll, not the editor's. scrollPortFor finds
-                // whichever container is actually doing the scrolling.
-                // Moving the viewport while the click is still in flight is
-                // what collapsed the task: mousedown lands on this button, the
-                // page scrolls under it, mouseup lands somewhere else, and the
-                // click resolves against whatever is now under the pointer.
-                //
-                // collapseGuardRef exists for exactly this - "this gesture
-                // already did its job, ignore the next one" - and clears itself
-                // after 400ms. Setting it here means a stray click gets
-                // swallowed once instead of closing the task.
-                collapseGuardRef.current = true;
-                // Cleared on a timer, because nothing else will. The guard is
-                // otherwise consumed by the tap it swallows - and if no stray
-                // click arrives, leaving it set would eat the reader's next
-                // genuine tap on the card instead. 400ms matches the window
-                // the collapse handler uses for the same job.
-                setTimeout(() => { collapseGuardRef.current = false; }, 400);
-
-                requestAnimationFrame(() => {
-                  try {
-                    const port = scrollPortFor(heading);
-                    if (port) {
-                      const portRect = port.getBoundingClientRect();
-                      const headRect = heading.getBoundingClientRect();
-                      // Move the least amount that brings the new section into
-                      // view, rather than lifting it to the top.
-                      //
-                      // Scrolling the heading to the top edge worked, and threw
-                      // away the context: the details above it went off-screen,
-                      // and a Follow Up list only means anything next to the
-                      // thing it follows. Same rule the section reveal uses -
-                      // reveal what is hidden, disturb nothing else.
-                      const sectionBottom = list.getBoundingClientRect().bottom;
-                      const overshoot = sectionBottom - portRect.bottom + 12;
-                      if (overshoot > 0) {
-                        // Never past the point where the heading itself would
-                        // leave the top - that happens when the section is
-                        // taller than the editor, and scrolling its bottom into
-                        // view would hide the thing being revealed.
-                        const maxScroll = headRect.top - portRect.top - 12;
-                        writeScrollTop(port,
-                          port.scrollTop + Math.min(overshoot, Math.max(0, maxScroll)),
-                          !settings.reduceMotion);
-                      }
-                    }
-                    // And if the editor is itself off-screen, the page has to
-                    // move as well - scrolling the editor cannot reveal it.
-                    const box = detailsArea.getBoundingClientRect();
-                    if (box.bottom > window.innerHeight || box.top < 0) {
-                      detailsArea.scrollIntoView({
-                        block: 'nearest',
-                        behavior: settings.reduceMotion ? 'auto' : 'smooth'
-                      });
-                    }
-                  } catch (err) {
-                    // Never let a scroll failure lose the section that was
-                    // just inserted.
-                  }
-                });
-
+                
                 // Refresh markers so everything stays consistent
                 setTimeout(() => refreshListMarkers(detailsArea), 0);
               }}
-              title="Add Follow Up section"
-              aria-label="Add Follow Up section"
+              title="Add or remove Follow Up section"
+              aria-label="Add or remove Follow Up section"
             >
               <span className="toolbar-btn-compact-icon"><FollowUpIcon /></span>
               <span className="toolbar-btn-label">Follow Up</span>
@@ -7428,6 +7398,20 @@ function LittleFiresApp() {
   // Reading is the common case and is now the default. Editing is a mode you
   // ask for.
   const [projectDetailEditing, setProjectDetailEditing] = useState(false);
+
+  // The Goal and Tasks cards in a project collapse. Both start closed: a
+  // project's own description, challenge and outcome are what you came to
+  // read, and with the task list expanded they sat below a screenful of
+  // other people's content.
+  //
+  // Deliberately NOT keyed by project id. Whether you want to see tasks is a
+  // preference about how you are working right now, not a fact about one
+  // project - keyed per project, opening tasks on this project would leave
+  // them shut on the next one, and you would reopen the same card all day.
+  // Session state, not persisted: reopening the app starts collapsed again,
+  // which is the default this asks for.
+  const [projectGoalOpen, setProjectGoalOpen] = useState(false);
+  const [projectTasksOpen, setProjectTasksOpen] = useState(false);
   const [goalDetailEditing, setGoalDetailEditing] = useState(false);
   // Which field the reader tapped to get into edit mode. Cleared when the mode
   // is left, so the next entry does not focus a field nobody asked for.
@@ -10105,7 +10089,7 @@ function LittleFiresApp() {
               color: 'var(--text-muted)', fontSize: '0.85rem',
               fontFamily: 'var(--font-ui)', lineHeight: 1.5, marginBottom: '18px'
             }}>
-              Proposals based on what you've been doing. Nothing here is a task until
+              AI suggestions based on what you've been doing. Nothing here is a task until
               you add it.
               {!aiKeySaved && (
                 <div style={{ marginTop: '8px' }}>
@@ -10136,7 +10120,7 @@ function LittleFiresApp() {
                       the same handler - so opening one that runs off the bottom
                       scrolls to it, and closing returns you. */}
                   <div
-                    className="list-section-header day-list-header"
+                    className="list-section-header day-list-header ai-shelf-header"
                     style={{ cursor: 'pointer' }}
                     onClick={() => toggleSection(
                       `ai-${listName}`,
@@ -10262,14 +10246,17 @@ function LittleFiresApp() {
                           </button>
                         </div>
                       ) : (<>
+                      {/* No leading dot here. The calendar uses .item-dot to
+                          distinguish task/project/goal rows at a glance; a
+                          suggestion shelf holds one kind of thing only, so the
+                          bullet marked nothing and just indented the text. */}
                       <div className="item-text">
-                        <span className="item-dot" style={{ color: 'var(--accent)' }}>●</span>
                         {item.text}
                       </div>
                       {item.rationale && (
                         <div className="item-project">{item.rationale}</div>
                       )}
-                      <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                      <div className="suggestion-actions" style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
                         <button
                           className="suggestion-action"
                           onClick={() => acceptSuggestion(listName, item)}
@@ -12799,6 +12786,32 @@ function LittleFiresApp() {
           gap: 20px;
         }
 
+        .goal-project-row {
+          /* Deliberately the same metrics as .task - padding, radius, border
+             weight and colour - so a goal's projects read as a list of the
+             same kind of thing as a list of tasks, rather than as a stack of
+             cards in a different visual language. Gap is on the flex parent
+             (12px) instead of margin-bottom, which is why there is no margin
+             here. No backdrop-filter: these sit on a plain panel, and the blur
+             cost nothing visible while making long lists heavier to scroll. */
+          background: rgba(var(--surface-raised-rgb), 0.6);
+          border: 2px solid rgba(var(--accent-rgb), 0.15);
+          border-radius: 15px;
+          padding: 16px;
+          cursor: pointer;
+          transition: border-color 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        /* Hover only, and guarded - a tap latches :hover on touchscreens, which
+           would leave a row stuck in its lifted state after you tapped through
+           to the project. Same guard the task rows use. */
+        @media (hover: hover) {
+          .goal-project-row:hover {
+            border-color: rgba(var(--accent-rgb), 0.4);
+            transform: translateY(-2px);
+          }
+        }
+
         .project-card {
           background: rgba(var(--surface-raised-rgb), 0.6);
           backdrop-filter: blur(10px);
@@ -14091,6 +14104,34 @@ function LittleFiresApp() {
           font-weight: 600 !important;
           letter-spacing: 0.04em !important;
           text-transform: none !important;
+        }
+
+        /* The AI shelf heading carries more weight than a calendar day header
+           does: on this tab the list name is the only thing telling you which
+           set of suggestions you are reading, and there is no task list
+           underneath it competing for the eye. Scoped to its own class rather
+           than raising .day-list-header, which the calendar also uses. */
+        .ai-shelf-header {
+          font-size: 1.45rem;
+          line-height: 1.3;
+          padding-bottom: 8px;
+          margin-bottom: 12px;
+        }
+
+        /* Mobile: Add goes on its own line, Edit and Dismiss share the line
+           beneath it. "Add to <list name>" is the widest of the three and the
+           one you press most, so giving it the full width stops it wrapping
+           mid-label and keeps the destructive-ish pair visually separate from
+           the action you actually want. Wrapping alone couldn't guarantee this
+           - where the break landed depended on how long the list name was. */
+        @media (max-width: 600px) {
+          .suggestion-actions {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr;
+          }
+          .suggestion-actions > button:first-child {
+            grid-column: 1 / -1;
+          }
         }
 
         .calendar-item {
@@ -17458,26 +17499,51 @@ function LittleFiresApp() {
                       </div>
 
                       {/* Goal Assignment */}
-                      <div style={{
+                      <div ref={sectionRef('project-goal')} style={{
                         marginBottom: '30px',
                         padding: '20px',
                         background: 'rgba(var(--surface-rgb), 0.8)',
                         borderRadius: '15px',
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
-                        <div style={{
+                        <div
+                          onClick={() => toggleSection(
+                            'project-goal',
+                            projectGoalOpen,
+                            setProjectGoalOpen
+                          )}
+                          style={{
                           fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
-                          marginBottom: '15px',
+                          marginBottom: projectGoalOpen ? '15px' : 0,
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '10px',
+                          // The bottom margin closes up with the card so a
+                          // collapsed section is a header and nothing else,
+                          // rather than a header floating above dead space.
+                          transition: 'margin-bottom 240ms ease'
                         }}>
-                          Goal
+                          <span>Goal</span>
+                          <span style={{
+                            fontSize: '0.9rem',
+                            color: 'var(--text-muted)',
+                            transform: projectGoalOpen ? 'rotate(0deg)' : 'rotate(-90deg)',
+                            transition: 'transform 0.24s ease',
+                            lineHeight: 1
+                          }}>▾</span>
                         </div>
-                        <div className="project-date-field" data-goal-dropdown style={{width: '100%', position: 'relative'}}>
+                        {projectGoalOpen && (
+                        <div className={`section-shell ${sectionAnim['project-goal'] ? 'section-collapsed' : ''}`}>
+                          <div className="section-shell-inner">
+                          <div className="project-date-field" data-goal-dropdown style={{width: '100%', position: 'relative'}}>
                           <div
                             onClick={() => setGoalDropdownOpen(!goalDropdownOpen)}
                             style={{
@@ -17567,28 +17633,61 @@ function LittleFiresApp() {
                             </div>
                           )}
                         </div>
+                          </div>
+                        </div>
+                        )}
                       </div>
 
                       {/* Tasks Section */}
-                      <div style={{
+                      <div ref={sectionRef('project-tasks')} style={{
                         marginBottom: '30px',
                         padding: '20px',
                         background: 'rgba(var(--surface-rgb), 0.8)',
                         borderRadius: '15px',
                         border: '2px solid rgba(var(--accent-rgb), 0.3)'
                       }}>
-                        <div style={{
+                        <div
+                          onClick={() => toggleSection(
+                            'project-tasks',
+                            projectTasksOpen,
+                            setProjectTasksOpen
+                          )}
+                          style={{
                           fontFamily: 'var(--font-ui)',
                           fontSize: '1.3rem',
                           fontWeight: '700',
                           color: 'var(--text)',
-                          marginBottom: '15px',
+                          marginBottom: projectTasksOpen ? '15px' : 0,
                           marginTop: 0,
                           paddingBottom: '10px',
-                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)'
+                          borderBottom: '4px solid rgba(var(--accent-rgb), 0.3)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '10px',
+                          transition: 'margin-bottom 240ms ease'
                         }}>
-                          Tasks
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span>Tasks</span>
+                            {/* The count is what makes a collapsed card still
+                                worth reading - otherwise closing it hides
+                                whether there is anything in there at all. */}
+                            {tasks.length > 0 && (
+                              <span className="badge work">{tasks.length}</span>
+                            )}
+                          </span>
+                          <span style={{
+                            fontSize: '0.9rem',
+                            color: 'var(--text-muted)',
+                            transform: projectTasksOpen ? 'rotate(0deg)' : 'rotate(-90deg)',
+                            transition: 'transform 0.24s ease',
+                            lineHeight: 1
+                          }}>▾</span>
                         </div>
+                        {projectTasksOpen && (
+                        <div className={`section-shell ${sectionAnim['project-tasks'] ? 'section-collapsed' : ''}`}>
+                          <div className="section-shell-inner">
 
                       {/* Add Task to Project */}
                       <div className="project-task-input">
@@ -17962,6 +18061,9 @@ function LittleFiresApp() {
                           </div>
                         </>
                       )}
+                          </div>
+                        </div>
+                        )}
                       </div>
 
                       {/* Project Actions */}
@@ -19365,41 +19467,39 @@ function LittleFiresApp() {
                             No projects associated with this goal yet
                           </div>
                         ) : (
-                          <div style={{display: 'flex', flexDirection: 'column', gap: '15px'}}>
+                          <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
                             {goalProjects.map(project => {
                               const projectListName = ['personal', 'work', 'home', 'travel', 'kids'].find(
                                 list => projects[list]?.some(p => p.id === project.id)
                               );
-                              
+
+                              // A row, not a card. Everything on a goal's
+                              // Projects list already belongs to that goal, so
+                              // the list pill was labelling something nobody
+                              // was asking about, and the description turned
+                              // three projects into three screenfuls. Name and
+                              // dates only - tap through for the rest.
+                              // projectListName is still needed to navigate.
                               return (
-                                <div 
-                                  key={project.id} 
-                                  className="project-card"
+                                <div
+                                  key={project.id}
+                                  className="goal-project-row"
                                   onClick={() => {
                                     setSelectedGoal(null);
                                     setSelectedProject({ id: project.id, listName: projectListName });
                                     setAppMode('projects');
                                   }}
-                                  style={{cursor: 'pointer'}}
                                 >
-                                  <div className="project-header">
-                                    <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
-                                      <span className={`list-badge ${projectListName}`}>{projectListName}</span>
-                                      <h3>{project.name}</h3>
-                                    </div>
-                                  </div>
-                                  {project.description && (
-                                    <p className="project-description">{project.description}</p>
-                                  )}
+                                  <div className="task-text">{project.name}</div>
                                   {(project.startDate || project.endDate) && (
-                                    <div className="project-meta">
+                                    <div className="task-meta">
                                       {project.startDate && (
-                                        <span className="project-meta-item">
+                                        <span className="task-due-date">
                                           Start: {new Date(project.startDate).toLocaleDateString()}
                                         </span>
                                       )}
                                       {project.endDate && (
-                                        <span className="project-meta-item">
+                                        <span className="task-due-date">
                                           End: {new Date(project.endDate).toLocaleDateString()}
                                         </span>
                                       )}
@@ -23334,7 +23434,7 @@ function LittleFiresApp() {
                     <div style={heading}>AI Tasks</div>
                     <div style={sub}>
                       Suggests tasks based on what you've been creating, completing and
-                      leaving in your backlog. Suggestions are proposals only — nothing
+                      leaving in your backlog. These are AI suggestions only — nothing
                       is added to a list until you accept it.
                     </div>
 

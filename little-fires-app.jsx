@@ -11687,12 +11687,19 @@ function LittleFiresApp() {
           font-weight: 700;
           color: var(--text);
           margin-bottom: 15px;
-          padding-bottom: 10px;
           display: flex;
           align-items: center;
           gap: 10px;
           background: transparent;
           padding: 0;
+          /* No rule under list headings - tried and rejected. A rule works on
+             a detail card, where one heading sits above one card's worth of
+             content. In a list there are three stacked in a scroll, directly
+             above task cards whose own borders are about the same weight, so
+             the heading argued with the content instead of introducing it, and
+             a collapsed section was left underlining nothing. 4px and 2px both
+             read as too much. The padding below stays: it is the spacing the
+             heading needs, not leftovers from the border. */
           padding-bottom: 10px;
         }
 
@@ -23252,6 +23259,11 @@ function LittleFiresApp() {
               const label = {
                 color: 'var(--text)', fontSize: '0.92rem', fontFamily: 'var(--font-ui)'
               };
+              // Same weight as `subheading`, for row labels that head a block
+              // of controls rather than sitting beside a single one. Kept as a
+              // variant instead of bolding `label`, which 20-odd rows across
+              // the other settings cards share.
+              const labelStrong = { ...label, fontWeight: '700' };
               const hint = {
                 color: 'var(--text-muted)', fontSize: '0.76rem',
                 fontFamily: 'var(--font-ui)', marginTop: '2px'
@@ -23294,7 +23306,7 @@ function LittleFiresApp() {
 
                     <div style={row}>
                       <div style={{ flex: 1, minWidth: '160px' }}>
-                        <div style={label}>Theme</div>
+                        <div style={labelStrong}>Theme</div>
                         <div style={hint}>
                           System follows your phone's light/dark setting.
                         </div>
@@ -23368,7 +23380,7 @@ function LittleFiresApp() {
 
                     <div style={{ ...row, marginBottom: 0 }}>
                       <div style={{ flex: 1, minWidth: '160px' }}>
-                        <div style={label}>Custom color</div>
+                        <div style={labelStrong}>Custom color</div>
                         <div style={hint}>
                           Pick your own. Very light colors may reduce text contrast on buttons.
                         </div>
@@ -23616,7 +23628,33 @@ function LittleFiresApp() {
 
                     <div style={row}>
                       <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={label}>Name</div>
+                        <div style={labelStrong}>Linked account</div>
+                        <div style={hint}>
+                          Saved for when shared lists start syncing between devices.
+                          Nothing is sent anywhere yet, and this list stays on this
+                          device only.
+                        </div>
+                      </div>
+                      <input
+                        type="email"
+                        inputMode="email"
+                        autoComplete="off"
+                        value={settings.partnerAccountEmail}
+                        onChange={(e) => updateSetting('partnerAccountEmail', e.target.value)}
+                        placeholder="name@example.com"
+                        style={{
+                          width: '210px', maxWidth: '100%', padding: '9px 10px',
+                          background: 'rgba(var(--surface-rgb), 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                          borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
+                          fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
+                        }}
+                      />
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={labelStrong}>Partner Name</div>
                         <div style={hint}>
                           Shown on shared tasks instead of "Partner". Renaming the list
                           itself is separate, under Lists.
@@ -23638,12 +23676,12 @@ function LittleFiresApp() {
                       />
                     </div>
 
-                    <div style={row}>
+                    <div style={{ ...row, marginBottom: 0 }}>
                       <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={label}>Color</div>
+                        <div style={labelStrong}>Shared Color</div>
                         <div style={hint}>
-                          Used for their badge and the Assigned pill, so it reads apart
-                          from your own tasks at a glance.
+                          Used for shared lists, badge and assigned pill, so it reads
+                          apart from your own tasks at a glance.
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -23678,31 +23716,6 @@ function LittleFiresApp() {
                       </div>
                     </div>
 
-                    <div style={{ ...row, marginBottom: 0 }}>
-                      <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={label}>Linked account</div>
-                        <div style={hint}>
-                          Saved for when shared lists start syncing between devices.
-                          Nothing is sent anywhere yet, and this list stays on this
-                          device only.
-                        </div>
-                      </div>
-                      <input
-                        type="email"
-                        inputMode="email"
-                        autoComplete="off"
-                        value={settings.partnerAccountEmail}
-                        onChange={(e) => updateSetting('partnerAccountEmail', e.target.value)}
-                        placeholder="name@example.com"
-                        style={{
-                          width: '210px', maxWidth: '100%', padding: '9px 10px',
-                          background: 'rgba(var(--surface-rgb), 1)',
-                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                          borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
-                          fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
-                        }}
-                      />
-                    </div>
 
                     <div style={{
                       marginTop: '14px', paddingTop: '12px',
@@ -23723,9 +23736,10 @@ function LittleFiresApp() {
                   <div style={card}>
                     <div style={heading}>AI Tasks</div>
                     <div style={sub}>
-                      Suggests tasks based on what you've been creating, completing and
-                      leaving in your backlog. These are AI suggestions only — nothing
-                      is added to a list until you accept it.
+                      Suggests tasks based on the goals, projects, and tasks you've
+                      been creating, completing and leaving in your backlog. These are
+                      AI suggestions only — nothing is added to a list until you
+                      accept it.
                     </div>
 
                     <div style={row}>

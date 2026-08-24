@@ -617,6 +617,20 @@ function sanitizeRichText(html) {
 // deliberately not part of anything that will sync: a key belongs to a device
 // and a person, not to a household.
 const AI_KEY_STORAGE = 'little_fires_ai_key';
+// First-run intro. Two separate keys on purpose.
+//
+// INTRO_DISMISSED_STORAGE is a per-device preference, like the AI key - it is
+// deliberately NOT in `settings`, because settings are serialised into every
+// exported backup, and importing someone else's backup should not tell your
+// app whether you have seen an intro.
+//
+// SAMPLE_IDS_STORAGE holds the ids of seeded sample records so they can be
+// removed cleanly. This is a side table rather than an `isSample` flag on the
+// records themselves: a flag would need `updatedAt` handling, would sync to a
+// partner later, and would sit in exported backups forever. Nothing about
+// "these were samples" belongs in the object schema.
+const INTRO_DISMISSED_STORAGE = 'little_fires_intro_dismissed';
+const SAMPLE_IDS_STORAGE = 'little_fires_sample_ids';
 
 function readAiKey() {
   try {
@@ -7100,6 +7114,31 @@ function LittleFiresApp() {
   });
 
   
+  // ---- First run (Session A) --------------------------------------------
+  // Read once at mount. If storage is unavailable the intro simply shows -
+  // failing toward "explain the app" is the harmless direction.
+  const [introDismissed, setIntroDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(INTRO_DISMISSED_STORAGE) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [sampleIds, setSampleIds] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SAMPLE_IDS_STORAGE);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const dismissIntro = () => {
+    setIntroDismissed(true);
+    try { localStorage.setItem(INTRO_DISMISSED_STORAGE, '1'); } catch {}
+  };
+
   const [allLists, setAllLists] = useState(() => {
     const saved = localStorage.getItem('little_fires_lists');
     const parsed = saved ? JSON.parse(saved) : {
@@ -8380,6 +8419,209 @@ function LittleFiresApp() {
 
     return filtered;
   };
+
+  // ---- Sample data (Session A) -------------------------------------------
+  // Seeds a small, realistic set so a first-time visitor has something to poke
+  // at instead of a blank app. Records are built exactly like the real ones -
+  // same shape, same fields - so nothing downstream can tell them apart, and
+  // nothing special has to know about them.
+  //
+  // Two safety properties matter more than the content:
+  //
+  //  1. It refuses to run if there is any existing data. The button is only
+  //     rendered on an empty app, but a stale render or a double tap must not
+  //     be able to drop samples on top of real work.
+  //  2. The ids are remembered in a side key, so "Clear samples" removes
+  //     exactly what was added and nothing else. If a sample was edited or
+  //     deleted by hand in the meantime, clearing simply skips it.
+  const loadSampleData = () => {
+    const hasTasks = Object.values(allLists).some(l => Array.isArray(l) && l.length > 0);
+    const hasProjects = Object.values(projects).some(l => Array.isArray(l) && l.length > 0);
+    const hasGoals = Object.values(goals).some(l => Array.isArray(l) && l.length > 0);
+    if (hasTasks || hasProjects || hasGoals) return;
+
+    const now = new Date();
+    const iso = now.toISOString();
+    const inDays = (n) => {
+      const d = new Date(now);
+      d.setDate(d.getDate() + n);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+
+    const goalId = makeId();
+    const projectId = makeId();
+
+    const mkTask = (text, extra = {}) => ({
+      text,
+      completed: false,
+      priority: 'low',
+      section: 'todo',
+      dueDate: null,
+      dueTime: null,
+      details: '',
+      id: makeId(),
+      createdAt: iso,
+      updatedAt: iso,
+      projectId: null,
+      ...extra
+    });
+
+    const personalTasks = [
+      mkTask('Try tapping a task to open it', { priority: 'high' }),
+      mkTask('Book the venue', { projectId, dueDate: inDays(6) }),
+      mkTask('Send invitations', { projectId }),
+      mkTask('Something for later', { section: 'backlog' }),
+      mkTask('Look at the flame icon to flag what matters', { completed: true, completedAt: iso })
+    ];
+    const workTasks = [
+      mkTask('Draft the quarterly update', { dueDate: inDays(2) }),
+      mkTask('Reply to the vendor')
+    ];
+
+    const sampleProject = {
+      id: projectId,
+      name: 'Birthday dinner',
+      description: 'A worked example - projects group tasks and can sit under a goal.',
+      challenge: '',
+      outcome: '',
+      startDate: inDays(0),
+      endDate: inDays(14),
+      goalId,
+      section: 'active',
+      completedAt: null,
+      createdAt: iso
+    };
+
+    const sampleGoal = {
+      id: goalId,
+      name: 'Host more often',
+      description: 'Goals are the why. Projects hang off them.',
+      challenge: '',
+      outcome: '',
+      startDate: inDays(0),
+      endDate: inDays(90),
+      timeLogged: 0,
+      timeLogs: [],
+      section: 'active',
+      completedAt: null,
+      createdAt: iso
+    };
+
+    setAllLists(prev => ({
+      ...prev,
+      personal: [...personalTasks, ...(prev.personal || [])],
+      work: [...workTasks, ...(prev.work || [])]
+    }));
+    setProjects(prev => ({ ...prev, personal: [sampleProject, ...(prev.personal || [])] }));
+    setGoals(prev => ({ ...prev, personal: [sampleGoal, ...(prev.personal || [])] }));
+
+    // Master view collapses every list by default, so without this the reward
+    // for pressing "Load sample tasks" is two collapsed headers and no visible
+    // tasks. Clearing the object rather than writing false leaves expanded as
+    // the default, matching toggleAllLists.
+    setCollapsedLists({});
+
+    const ids = {
+      tasks: [...personalTasks, ...workTasks].map(t => t.id),
+      projects: [projectId],
+      goals: [goalId]
+    };
+    setSampleIds(ids);
+    try { localStorage.setItem(SAMPLE_IDS_STORAGE, JSON.stringify(ids)); } catch {}
+  };
+
+  const clearSampleData = () => {
+    if (!sampleIds) return;
+    const taskIds = new Set(sampleIds.tasks || []);
+    const projectIds = new Set(sampleIds.projects || []);
+    const goalIds = new Set(sampleIds.goals || []);
+
+    // Filtered by id, so anything the person added themselves stays - including
+    // a task they created inside the sample project.
+    const strip = (obj, ids) => Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k, Array.isArray(v) ? v.filter(item => !ids.has(item.id)) : v
+      ])
+    );
+
+    setAllLists(prev => strip(prev, taskIds));
+    setProjects(prev => strip(prev, projectIds));
+    setGoals(prev => strip(prev, goalIds));
+
+    setSampleIds(null);
+    try { localStorage.removeItem(SAMPLE_IDS_STORAGE); } catch {}
+  };
+
+  // ---- First-run intro (Session A) ---------------------------------------
+  // Shown under the empty-state flame until dismissed once. Defined here
+  // rather than at module scope because it reads app state directly; it holds
+  // no state of its own, so there is no remount hazard of the kind that bit
+  // the nested-component bug.
+  const FirstRunIntro = () => (
+    <div style={{
+      maxWidth: '460px', margin: '0 auto 28px', padding: '20px 22px',
+      background: 'rgba(var(--surface-rgb), 0.8)',
+      border: '2px solid rgba(var(--accent-rgb), 0.25)',
+      borderRadius: '15px', textAlign: 'left'
+    }}>
+      <div style={{
+        fontFamily: 'var(--font-ui)', fontSize: '1.15rem', fontWeight: 700,
+        color: 'var(--text)', marginBottom: '8px'
+      }}>
+        Welcome to Little Fires
+      </div>
+      <p style={{
+        fontFamily: 'var(--font-ui)', fontSize: '0.9rem', lineHeight: 1.5,
+        color: 'var(--text-muted)', margin: '0 0 10px'
+      }}>
+        A place for the small things that need tending. Tasks live on lists.
+        Projects group tasks that belong together. Goals are the why behind
+        the projects.
+      </p>
+      <p style={{
+        fontFamily: 'var(--font-ui)', fontSize: '0.9rem', lineHeight: 1.5,
+        color: 'var(--text-muted)', margin: '0 0 16px'
+      }}>
+        Type in the box above to add your first task — or load a few examples
+        to look around first.
+      </p>
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <button
+          onClick={loadSampleData}
+          style={{
+            padding: '10px 16px', borderRadius: '8px', cursor: 'pointer',
+            background: 'rgba(var(--accent-rgb), 0.9)',
+            border: '2px solid rgba(var(--accent-rgb), 0.9)',
+            color: 'var(--bg)', fontSize: '0.82rem',
+            fontFamily: 'var(--font-ui)', fontWeight: 600,
+            textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none'
+          }}
+        >
+          Load sample tasks
+        </button>
+        <button
+          onClick={dismissIntro}
+          style={{
+            padding: '10px 16px', borderRadius: '8px', cursor: 'pointer',
+            background: 'rgba(var(--surface-rgb), 1)',
+            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+            color: 'var(--text-muted)', fontSize: '0.82rem',
+            fontFamily: 'var(--font-ui)',
+            textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none'
+          }}
+        >
+          Got it
+        </button>
+      </div>
+      <p style={{
+        fontFamily: 'var(--font-ui)', fontSize: '0.74rem', lineHeight: 1.45,
+        color: 'var(--text-muted)', margin: '14px 0 0'
+      }}>
+        Everything stays on this device. Nothing is sent anywhere, and there is
+        no account to create — so back up from Settings if it matters to you.
+      </p>
+    </div>
+  );
 
   const addTask = () => {
     if (!taskInput.trim()) return;
@@ -10516,6 +10758,7 @@ function LittleFiresApp() {
 
       if (!hasAnyTasks) {
         return (
+          <>
           <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
             <div style={{
               width: '180px',
@@ -10583,6 +10826,8 @@ function LittleFiresApp() {
               </svg>
             </div>
           </div>
+          {!introDismissed && <FirstRunIntro />}
+          </>
         );
       }
 
@@ -24295,6 +24540,33 @@ function LittleFiresApp() {
                       />
                     </div>
                   </div>
+
+                  {/* ---- Sample data (Session A) ----
+                      Only rendered while seeded samples are actually present,
+                      so it is invisible to anyone who never loaded them and
+                      disappears the moment they are cleared. */}
+                  {sampleIds && (
+                    <div style={card}>
+                      <div style={heading}>Sample data</div>
+                      <div style={sub}>
+                        The example tasks, project and goal that were loaded to show
+                        you around. Removing them leaves anything you added yourself
+                        untouched.
+                      </div>
+                      <button
+                        onClick={clearSampleData}
+                        style={{
+                          padding: '12px 18px', borderRadius: '8px', cursor: 'pointer',
+                          background: 'rgba(var(--surface-rgb), 1)',
+                          border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                          color: 'var(--text)', fontSize: '0.85rem',
+                          fontFamily: 'var(--font-ui)'
+                        }}
+                      >
+                        Clear sample data
+                      </button>
+                    </div>
+                  )}
 
                   {/* ---- Backup ---- */}
                   <div style={card}>

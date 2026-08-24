@@ -11,12 +11,64 @@ import React, { useState, useEffect } from 'react';
 function InlineDatePicker({ value, onChange, style, onOpenChange }) {
   const [open, setOpen] = React.useState(false);
   const rootRef = React.useRef(null);
+  const popupRef = React.useRef(null);
+
+  // Where the calendar hangs relative to its trigger. It opens downward by
+  // default, which is wrong for a date field near the bottom of a scrolling
+  // modal - the popup lands past the modal's edge and is clipped, so you get
+  // a sliver of calendar and no way to reach the days.
+  //
+  // Two things fix it together, because neither is enough alone: flip above
+  // the trigger when there is more room up there, and then scroll whatever is
+  // actually scrolling until the whole popup is on screen. Flipping alone
+  // fails when there is not enough room in either direction; scrolling alone
+  // fails when the popup would have to sit below the end of the content.
+  const [placement, setPlacement] = React.useState('below');
 
   // The card above needs to know a popup is open inside it, so the tap that
   // dismisses this calendar isn't also read as a tap on the card.
   React.useEffect(() => {
     if (onOpenChange) onOpenChange(open);
   }, [open, onOpenChange]);
+
+  // Placement is decided before paint so the calendar never appears in one
+  // spot and jumps to another.
+  React.useLayoutEffect(() => {
+    if (!open) { setPlacement('below'); return; }
+    const trigger = rootRef.current;
+    const popup = popupRef.current;
+    if (!trigger || !popup) return;
+    const t = trigger.getBoundingClientRect();
+    const popupH = popup.offsetHeight;
+    const GAP = 12;
+    const roomBelow = window.innerHeight - t.bottom;
+    const roomAbove = t.top;
+    // Only flip when below genuinely doesn't fit AND above does. A flip that
+    // trades one clipped edge for another just moves the problem.
+    if (roomBelow < popupH + GAP && roomAbove > popupH + GAP) {
+      setPlacement('above');
+    } else {
+      setPlacement('below');
+    }
+  }, [open]);
+
+  // Then scroll it fully into view. block:'nearest' moves the nearest
+  // scrollable ancestor by the smallest amount that reveals the element, so a
+  // picker that is already visible doesn't get yanked around.
+  React.useEffect(() => {
+    if (!open) return;
+    const id = requestAnimationFrame(() => {
+      const popup = popupRef.current;
+      if (!popup || !popup.scrollIntoView) return;
+      try {
+        popup.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+      } catch {
+        // Older Safari rejects the options object rather than ignoring it.
+        popup.scrollIntoView(false);
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [open, placement]);
 
   // There was no outside-tap close at all: the only ways out were the Close
   // button and picking a date. Tapping anywhere else went straight through to
@@ -134,8 +186,11 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
       )}
 
       {open && (
-        <div style={{
-          position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 2000,
+        <div ref={popupRef} style={{
+          position: 'absolute', left: 0, zIndex: 2000,
+          ...(placement === 'above'
+            ? { bottom: 'calc(100% + 6px)' }
+            : { top: 'calc(100% + 6px)' }),
           background: 'rgba(var(--surface-deep-rgb), 0.99)',
           border: '2px solid rgba(var(--accent-rgb), 0.4)',
           borderRadius: '12px', padding: '12px', width: '252px',
@@ -7411,7 +7466,40 @@ function LittleFiresApp() {
   // Session state, not persisted: reopening the app starts collapsed again,
   // which is the default this asks for.
   const [projectGoalOpen, setProjectGoalOpen] = useState(false);
+  // The Goal card holds a dropdown that opens downward, out past the bottom of
+  // the section. The slide animation needs overflow:hidden on the shell to
+  // clip the growing content, and that same clip decapitates the dropdown.
+  //
+  // Both are needed, just not at the same moment: the clip only matters while
+  // the height is moving. So the shell releases overflow once the animation
+  // has finished, and takes it back the instant a close begins. Scoped to
+  // this one section deliberately - overflow:hidden is load-bearing for every
+  // other .section-shell in the app and this is the only one containing
+  // something that has to escape its own bounds.
+  const [goalShellSettled, setGoalShellSettled] = useState(false);
   const [projectTasksOpen, setProjectTasksOpen] = useState(false);
+  // Backlog and Complete inside a project's Tasks card. Same reasoning and
+  // same default as the two above, and the same as the main task list, where
+  // both of these also start closed: To Do is what you came to see, and the
+  // other two were pushing it off the screen. Global rather than per project,
+  // consistent with the cards that contain them.
+  const [projectBacklogOpen, setProjectBacklogOpen] = useState(false);
+  // To Do differs from its two siblings: it opens by default. It is the part
+  // of a project you came to look at, and collapsing it too would mean
+  // opening the Tasks card only to find three shut headers and nothing to
+  // read. Still collapsible - just not hidden to begin with.
+  const [projectTodoOpen, setProjectTodoOpen] = useState(true);
+
+  // The three project groups on an individual list. Same defaults as their
+  // task equivalents: Active open, the other two closed.
+  const [projectsActiveOpen, setProjectsActiveOpen] = useState(true);
+  const [projectsBacklogOpen, setProjectsBacklogOpen] = useState(false);
+  const [projectsCompleteOpen, setProjectsCompleteOpen] = useState(false);
+
+  // The same three groups on an individual goal list.
+  const [goalsActiveOpen, setGoalsActiveOpen] = useState(true);
+  const [goalsBacklogOpen, setGoalsBacklogOpen] = useState(false);
+  const [goalsCompleteOpen, setGoalsCompleteOpen] = useState(false);
   const [goalDetailEditing, setGoalDetailEditing] = useState(false);
   // Which field the reader tapped to get into edit mode. Cleared when the mode
   // is left, so the next entry does not focus a field nobody asked for.
@@ -7520,6 +7608,25 @@ function LittleFiresApp() {
     });
   }, []);
   const SECTION_ANIM_MS = 240;
+
+  // Release the Goal shell's clip once it has finished opening; reinstate it
+  // immediately on close so the collapse still clips. Closing is the case that
+  // has to be synchronous - waiting even a frame would let the content spill
+  // out of the shrinking box.
+  React.useEffect(() => {
+    if (!projectGoalOpen) {
+      setGoalShellSettled(false);
+      return;
+    }
+    if (settings.reduceMotion) {
+      setGoalShellSettled(true);
+      return;
+    }
+    // A little past the transition, not exactly on it - landing on the same
+    // frame the animation ends can flash the clip off a beat early.
+    const timer = setTimeout(() => setGoalShellSettled(true), SECTION_ANIM_MS + 40);
+    return () => clearTimeout(timer);
+  }, [projectGoalOpen, settings.reduceMotion]);
 
   // Guards a collapse that is mid-flight, so a second tap on the header cannot
   // start a second animation racing the first.
@@ -9299,6 +9406,12 @@ function LittleFiresApp() {
       outcome: '',
       startDate: startDate || null,
       endDate: endDate || null,
+      // Active / Backlog / Complete, mirroring the task sections. Projects
+      // created before this existed have no section at all - everything that
+      // reads it treats undefined as 'active', so there is no migration and
+      // an old backup imports unchanged.
+      section: 'active',
+      completedAt: null,
       createdAt: new Date().toISOString()
     };
     setProjects(prev => ({
@@ -9342,6 +9455,19 @@ function LittleFiresApp() {
         project.id === id ? { ...project, ...updates } : project
       )
     }));
+  };
+
+  // Active <-> Backlog <-> Complete. Archive is deliberately untouched by this:
+  // Complete says the work is finished, Archive says stop showing it to me.
+  // A project can be complete and still visible, which is the point of having
+  // a Complete group rather than just archiving finished work.
+  const moveProjectToSection = (listName, id, newSection) => {
+    updateProject(listName, id, {
+      section: newSection,
+      // Stamped on the way in, cleared on the way out, so reopening a project
+      // does not leave a stale completion date behind on the record.
+      completedAt: newSection === 'complete' ? new Date().toISOString() : null
+    });
   };
 
   const addPhotoToProject = async (listName, projectId, file, photoType) => {
@@ -9469,6 +9595,11 @@ function LittleFiresApp() {
       endDate: endDate || null,
       timeLogged: 0,
       timeLogs: [],
+      // Active / Backlog / Complete, matching projects and tasks. Goals made
+      // before this have no section; every read treats undefined as 'active',
+      // so old records and old backups need no migration.
+      section: 'active',
+      completedAt: null,
       createdAt: new Date().toISOString()
     };
     setGoals(prev => ({
@@ -9485,6 +9616,15 @@ function LittleFiresApp() {
         goal.id === id ? { ...goal, ...updates } : goal
       )
     }));
+  };
+
+  // Same split as projects: Complete means the work is done, Archive means
+  // stop showing it to me. A goal can be complete and still on the list.
+  const moveGoalToSection = (listName, id, newSection) => {
+    updateGoal(listName, id, {
+      section: newSection,
+      completedAt: newSection === 'complete' ? new Date().toISOString() : null
+    });
   };
 
   const addPhotoToGoal = async (listName, goalId, file, photoType) => {
@@ -11964,6 +12104,14 @@ function LittleFiresApp() {
         .section-shell-inner {
           overflow: hidden;
           min-height: 0;
+        }
+
+        /* Opt-in, for a settled section holding something that must escape its
+           own box - the project Goal dropdown. Only ever applied once the
+           height transition has finished, so the animation still clips
+           normally on the way open and on the way closed. */
+        .section-shell.shell-allow-overflow > .section-shell-inner {
+          overflow: visible;
         }
 
         /* The state on the first frame of an open, and the last of a close. */
@@ -17020,18 +17168,11 @@ function LittleFiresApp() {
                             {showStates[listName] && (
                               <>
                                 {listProjects.map(project => {
-                                  const projectTasks = getProjectTasks(project.id);
-                                  const completedTasks = projectTasks.filter(t => t.completed).length;
-                                  const totalTasks = projectTasks.length;
-                                  
                                   return (
                                     <div key={project.id} className="project-card">
                                       <div className="project-header" onClick={() => setSelectedProject({ id: project.id, listName })}>
                                         <div>
                                           <h3>{project.name}</h3>
-                                          {project.description && (
-                                            <p className="project-description">{project.description}</p>
-                                          )}
                                         </div>
                                         <div className="project-meta">
                                           {(project.startDate || project.endDate) && (
@@ -17041,9 +17182,6 @@ function LittleFiresApp() {
                                               {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                             </span>
                                           )}
-                                          <span className="project-task-count">
-                                            {completedTasks}/{totalTasks} tasks
-                                          </span>
                                         </div>
                                       </div>
                                     </div>
@@ -17057,90 +17195,147 @@ function LittleFiresApp() {
                     })()
                   ) : (
                     // Individual list view
-                    getCurrentProjects().map((project, index) => {
-                      const projectTasks = getProjectTasks(project.id);
-                      const completedTasks = projectTasks.filter(t => t.completed).length;
-                      const totalTasks = projectTasks.length;
-                      const isDragging = draggedProject?.id === project.id;
-                      const isDragOver = dragOverProject?.id === project.id;
-                      
-                      return (
-                        <div 
-                          key={project.id} 
-                          className="project-card"
-                          draggable={currentProjectList !== 'master'}
-                          onDragStart={(e) => {
-                            if (currentProjectList === 'master') return;
-                            setDraggedProject({ ...project, index, listName: currentProjectList });
-                            e.dataTransfer.effectAllowed = 'move';
-                          }}
-                          onDragEnd={() => {
-                            setDraggedProject(null);
-                            setDragOverProject(null);
-                          }}
-                          onDragOver={(e) => {
-                            if (currentProjectList === 'master') return;
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = 'move';
-                            if (draggedProject && draggedProject.id !== project.id) {
-                              setDragOverProject({ ...project, index });
-                            }
-                          }}
-                          onDragLeave={() => {
-                            setDragOverProject(null);
-                          }}
-                          onDrop={(e) => {
-                            if (currentProjectList === 'master') return;
-                            e.preventDefault();
-                            if (draggedProject && draggedProject.id !== project.id) {
-                              reorderProjects(currentProjectList, draggedProject.index, index);
-                            }
-                            setDraggedProject(null);
-                            setDragOverProject(null);
-                          }}
-                          onTouchStart={(e) => {
-                            if (currentProjectList === 'master') return;
-                            handleTouchStart(e, project, index, currentProjectList, 'project');
-                          }}
-                          onTouchMove={(e) => {
-                            if (currentProjectList === 'master') return;
-                            handleTouchMove(e, getCurrentProjects(), 'project');
-                          }}
-                          onTouchEnd={(e) => {
-                            if (currentProjectList === 'master') return;
-                            handleTouchEnd(e, currentProjectList, 'project');
-                          }}
-                          style={{
-                            opacity: isDragging ? 0.5 : 1,
-                            cursor: currentProjectList !== 'master' ? 'move' : 'default',
-                            borderTop: isDragOver && draggedProject?.index > index ? '3px solid var(--accent)' : undefined,
-                            borderBottom: isDragOver && draggedProject?.index < index ? '3px solid var(--accent)' : undefined,
-                            transition: 'opacity 0.2s, border 0.2s'
-                          }}
-                        >
-                          <div className="project-header" onClick={() => setSelectedProject({ id: project.id, listName: currentProjectList })}>
-                            <div>
-                              <h3>{project.name}</h3>
-                              {project.description && (
-                                <p className="project-description">{project.description}</p>
-                              )}
+                    (() => {
+                      // Grouped into Active / Backlog / Complete, mirroring the
+                      // task list. Two things make this more than a filter:
+                      //
+                      // 1. Drag-and-drop reorders by index. Grouping renumbers
+                      //    the rows on screen, so each entry carries the index
+                      //    it had in the ungrouped list and the drag handlers
+                      //    use that, not its position within the group.
+                      //    Without this, dragging inside Backlog would
+                      //    silently reorder whatever sat at those positions.
+                      //    (That index is into getCurrentProjects(), which
+                      //    already drops archived projects - so reordering a
+                      //    list containing archived projects was off before
+                      //    this change and still is. Left alone here rather
+                      //    than fixed silently in a UI commit.)
+                      //
+                      // 2. Reordering only makes sense between rows in the same
+                      //    group. A drop from one group onto another is ignored
+                      //    rather than half-applied - moving between groups is
+                      //    what the buttons are for.
+                      const all = getCurrentProjects().map((project, index) => ({ project, index }));
+                      const sectionOf = (p) => p.section || 'active';
+                      const groups = {
+                        active: all.filter(e => sectionOf(e.project) === 'active'),
+                        backlog: all.filter(e => sectionOf(e.project) === 'backlog'),
+                        complete: all.filter(e => sectionOf(e.project) === 'complete')
+                      };
+
+                      const groupMeta = [
+                        { key: 'active', label: 'Active', icon: <CleanFlame />, iconClass: 'campfire-icon',
+                          badge: 'work', open: projectsActiveOpen, setOpen: setProjectsActiveOpen },
+                        { key: 'backlog', label: 'Backlog', icon: <CutLog />, iconClass: 'logs-icon',
+                          badge: 'personal', open: projectsBacklogOpen, setOpen: setProjectsBacklogOpen },
+                        { key: 'complete', label: 'Complete', icon: <CheckedBox />, iconClass: 'checkbox-icon',
+                          badge: 'home', open: projectsCompleteOpen, setOpen: setProjectsCompleteOpen }
+                      ];
+
+                      const renderCard = ({ project, index }, groupKey) => {
+                        const isDragging = draggedProject?.id === project.id;
+                        const isDragOver = dragOverProject?.id === project.id;
+                        const canReorder = currentProjectList !== 'master';
+                        // Only rows already in this group may be dropped here.
+                        const sameGroup = draggedProject && draggedProject.groupKey === groupKey;
+
+                        return (
+                          <div
+                            key={project.id}
+                            className="project-card"
+                            draggable={canReorder}
+                            onDragStart={(e) => {
+                              if (!canReorder) return;
+                              setDraggedProject({ ...project, index, listName: currentProjectList, groupKey });
+                              e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onDragEnd={() => {
+                              setDraggedProject(null);
+                              setDragOverProject(null);
+                            }}
+                            onDragOver={(e) => {
+                              if (!canReorder || !sameGroup) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                              if (draggedProject && draggedProject.id !== project.id) {
+                                setDragOverProject({ ...project, index });
+                              }
+                            }}
+                            onDragLeave={() => {
+                              setDragOverProject(null);
+                            }}
+                            onDrop={(e) => {
+                              if (!canReorder || !sameGroup) return;
+                              e.preventDefault();
+                              if (draggedProject && draggedProject.id !== project.id) {
+                                reorderProjects(currentProjectList, draggedProject.index, index);
+                              }
+                              setDraggedProject(null);
+                              setDragOverProject(null);
+                            }}
+                            onTouchStart={(e) => {
+                              if (!canReorder) return;
+                              handleTouchStart(e, { ...project, groupKey }, index, currentProjectList, 'project');
+                            }}
+                            onTouchMove={(e) => {
+                              if (!canReorder) return;
+                              handleTouchMove(e, getCurrentProjects(), 'project');
+                            }}
+                            onTouchEnd={(e) => {
+                              if (!canReorder) return;
+                              handleTouchEnd(e, currentProjectList, 'project');
+                            }}
+                            style={{
+                              opacity: isDragging ? 0.5 : 1,
+                              cursor: canReorder ? 'move' : 'default',
+                              borderTop: isDragOver && draggedProject?.index > index ? '3px solid var(--accent)' : undefined,
+                              borderBottom: isDragOver && draggedProject?.index < index ? '3px solid var(--accent)' : undefined,
+                              transition: 'opacity 0.2s, border 0.2s'
+                            }}
+                          >
+                            <div className="project-header" onClick={() => setSelectedProject({ id: project.id, listName: currentProjectList })}>
+                              <div>
+                                <h3>{project.name}</h3>
+                              </div>
+                              <div className="project-meta">
+                                {(project.startDate || project.endDate) && (
+                                  <span className="project-due-date">
+                                    <CalendarIcon /> {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                    {project.startDate && project.endDate && ' - '}
+                                    {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                            <div className="project-meta">
-                              {(project.startDate || project.endDate) && (
-                                <span className="project-due-date">
-                                  <CalendarIcon /> {project.startDate && parseLocalDate(project.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                  {project.startDate && project.endDate && ' - '}
-                                  {project.endDate && parseLocalDate(project.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                </span>
-                              )}
-                              <span className="project-task-count">
-                                {completedTasks}/{totalTasks} tasks
-                              </span>
-                            </div>
+
                           </div>
+                        );
+                      };
+
+                      return groupMeta.map(g => (
+                        <div key={g.key} className="list-section" ref={sectionRef(`projects-${g.key}`)}>
+                          <div
+                            className="list-section-header"
+                            onClick={() => toggleSection(`projects-${g.key}`, g.open, g.setOpen)}
+                            style={{cursor: 'pointer'}}
+                          >
+                            <span className={`section-icon ${g.iconClass}`}>{g.icon}</span>
+                            <span>{g.label}</span>
+                            <span className={`badge ${g.badge}`}>{groups[g.key].length}</span>
+                          </div>
+                          {g.open && (
+                            <div className={`section-shell ${sectionAnim[`projects-${g.key}`] ? 'section-collapsed' : ''}`}>
+                              <div className="section-shell-inner">
+                                {/* No empty-state line. The count in the header
+                                    already says the group is empty, so a
+                                    sentence repeating it is just noise. */}
+                                {groups[g.key].map(entry => renderCard(entry, g.key))}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      );
-                    })
+                      ));
+                    })()
                   )}
                 </div>
               </>
@@ -17532,16 +17727,9 @@ function LittleFiresApp() {
                           transition: 'margin-bottom 240ms ease'
                         }}>
                           <span>Goal</span>
-                          <span style={{
-                            fontSize: '0.9rem',
-                            color: 'var(--text-muted)',
-                            transform: projectGoalOpen ? 'rotate(0deg)' : 'rotate(-90deg)',
-                            transition: 'transform 0.24s ease',
-                            lineHeight: 1
-                          }}>▾</span>
                         </div>
                         {projectGoalOpen && (
-                        <div className={`section-shell ${sectionAnim['project-goal'] ? 'section-collapsed' : ''}`}>
+                        <div className={`section-shell ${sectionAnim['project-goal'] ? 'section-collapsed' : ''} ${goalShellSettled ? 'shell-allow-overflow' : ''}`}>
                           <div className="section-shell-inner">
                           <div className="project-date-field" data-goal-dropdown style={{width: '100%', position: 'relative'}}>
                           <div
@@ -17668,22 +17856,7 @@ function LittleFiresApp() {
                           gap: '10px',
                           transition: 'margin-bottom 240ms ease'
                         }}>
-                          <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <span>Tasks</span>
-                            {/* The count is what makes a collapsed card still
-                                worth reading - otherwise closing it hides
-                                whether there is anything in there at all. */}
-                            {tasks.length > 0 && (
-                              <span className="badge work">{tasks.length}</span>
-                            )}
-                          </span>
-                          <span style={{
-                            fontSize: '0.9rem',
-                            color: 'var(--text-muted)',
-                            transform: projectTasksOpen ? 'rotate(0deg)' : 'rotate(-90deg)',
-                            transition: 'transform 0.24s ease',
-                            lineHeight: 1
-                          }}>▾</span>
+                          <span>Tasks</span>
                         </div>
                         {projectTasksOpen && (
                         <div className={`section-shell ${sectionAnim['project-tasks'] ? 'section-collapsed' : ''}`}>
@@ -17821,11 +17994,22 @@ function LittleFiresApp() {
                       {tasks.length > 0 && (
                         <>
                           {/* To Do Section */}
-                          <div className="list-section">
-                            <div className="list-section-header">
+                          <div className="list-section" ref={sectionRef('project-todo')}>
+                            <div
+                              className="list-section-header"
+                              onClick={() => toggleSection(
+                                'project-todo',
+                                projectTodoOpen,
+                                setProjectTodoOpen
+                              )}
+                              style={{cursor: 'pointer'}}
+                            >
                               <span>To Do</span>
                               <span className="badge work">{todoTasks.length}</span>
                             </div>
+                            {projectTodoOpen && (
+                            <div className={`section-shell ${sectionAnim['project-todo'] ? 'section-collapsed' : ''}`}>
+                              <div className="section-shell-inner">
                             {todoTasks.length === 0 ? (
                               <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
                                 <div style={{
@@ -17904,15 +18088,29 @@ function LittleFiresApp() {
                                 />
                               ))
                             )}
+                              </div>
+                            </div>
+                            )}
                           </div>
 
                           {/* Backlog Section */}
-                          <div className="list-section">
-                            <div className="list-section-header">
+                          <div className="list-section" ref={sectionRef('project-backlog')}>
+                            <div
+                              className="list-section-header"
+                              onClick={() => toggleSection(
+                                'project-backlog',
+                                projectBacklogOpen,
+                                setProjectBacklogOpen
+                              )}
+                              style={{cursor: 'pointer'}}
+                            >
                               <span className="section-icon logs-icon"><CutLog /></span>
                               <span>Backlog</span>
                               <span className="badge personal">{backlogTasks.length}</span>
                             </div>
+                            {projectBacklogOpen && (
+                            <div className={`section-shell ${sectionAnim['project-backlog'] ? 'section-collapsed' : ''}`}>
+                              <div className="section-shell-inner">
                             {backlogTasks.length === 0 ? (
                               <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
                                 <div style={{
@@ -17977,13 +18175,20 @@ function LittleFiresApp() {
                                 />
                               ))
                             )}
+                              </div>
+                            </div>
+                            )}
                           </div>
 
                           {/* Complete Section */}
-                          <div className="list-section">
+                          <div className="list-section" ref={sectionRef('project-complete')}>
                             <div 
                               className="list-section-header"
-                              onClick={() => setShowProjectCompletedTasks(!showProjectCompletedTasks)}
+                              onClick={() => toggleSection(
+                                'project-complete',
+                                showProjectCompletedTasks,
+                                setShowProjectCompletedTasks
+                              )}
                               style={{cursor: 'pointer'}}
                             >
                               <span className="section-icon checkbox-icon"><CheckedBox /></span>
@@ -17991,7 +18196,8 @@ function LittleFiresApp() {
                               <span className="badge home">{completedTasks.length}</span>
                             </div>
                             {showProjectCompletedTasks && (
-                              <>
+                              <div className={`section-shell ${sectionAnim['project-complete'] ? 'section-collapsed' : ''}`}>
+                                <div className="section-shell-inner">
                                 {completedTasks.length === 0 ? (
                                   <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px'}}>
                                     <div style={{
@@ -18056,7 +18262,8 @@ function LittleFiresApp() {
                                     />
                                   ))
                                 )}
-                              </>
+                                </div>
+                              </div>
                             )}
                           </div>
                         </>
@@ -18068,9 +18275,12 @@ function LittleFiresApp() {
 
                       {/* Project Actions */}
                       <div className="detail-actions is-footer">
-                        {/* One treatment for all four. Order is the order you
-                            are likely to want them: edit, then leave, then the
-                            two that change what the record is. */}
+                        {/* Edit, then leave, then the ones that change what the
+                            record is. The move buttons live here rather than on
+                            the list card: on the card they sat under every
+                            project at once, which turned a list into a wall of
+                            buttons and put "Complete" one stray tap from a row
+                            you were only scrolling past. */}
                         <button
                           className={`detail-action ${projectDetailEditing ? 'is-active' : ''}`}
                           onClick={() => setProjectDetailEditing(v => !v)}
@@ -18083,6 +18293,30 @@ function LittleFiresApp() {
                         >
                           Close
                         </button>
+                        {(project.section || 'active') !== 'active' && (
+                          <button
+                            className="detail-action"
+                            onClick={() => moveProjectToSection(selectedProject.listName, selectedProject.id, 'active')}
+                          >
+                            {(project.section || 'active') === 'complete' ? '↩ Reopen' : '→ Active'}
+                          </button>
+                        )}
+                        {(project.section || 'active') === 'active' && (
+                          <button
+                            className="detail-action"
+                            onClick={() => moveProjectToSection(selectedProject.listName, selectedProject.id, 'backlog')}
+                          >
+                            → Backlog
+                          </button>
+                        )}
+                        {(project.section || 'active') !== 'complete' && (
+                          <button
+                            className="detail-action"
+                            onClick={() => moveProjectToSection(selectedProject.listName, selectedProject.id, 'complete')}
+                          >
+                            ✓ Complete
+                          </button>
+                        )}
                         <button
                           className="detail-action"
                           onClick={() => {
@@ -18937,7 +19171,6 @@ function LittleFiresApp() {
                             {showStates[listName] && (
                               <>
                                 {listGoals.map((goal, index) => {
-                                  const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
                                   const isDragging = draggedGoal?.id === goal.id;
                                   const isDragOver = dragOverGoal?.id === goal.id;
                                   
@@ -18987,9 +19220,6 @@ function LittleFiresApp() {
                                       >
                                         <div>
                                           <h3 style={{margin: '0 0 8px 0'}}>{goal.name}</h3>
-                                          {goal.description && (
-                                            <p className="project-description">{goal.description}</p>
-                                          )}
                                         </div>
                                         <div className="project-meta">
                                           {(goal.startDate || goal.endDate) && (
@@ -18999,9 +19229,6 @@ function LittleFiresApp() {
                                               {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                             </span>
                                           )}
-                                          <span className="goal-project-count">
-                                            {goalProjects.length} project{goalProjects.length !== 1 ? 's' : ''}
-                                          </span>
                                         </div>
                                       </div>
                                     </div>
@@ -19015,93 +19242,132 @@ function LittleFiresApp() {
                     })()
                   ) : (
                     // Individual list view
-                    getCurrentGoals().map((goal, index) => {
+                    (() => {
+                      // Grouped like projects. Same two constraints: each entry
+                      // carries its index in the ungrouped list so reordering
+                      // still targets the right record, and a drop is only
+                      // honoured between rows of the same group.
+                      const all = getCurrentGoals().map((goal, index) => ({ goal, index }));
+                      const sectionOf = (g) => g.section || 'active';
+                      const groups = {
+                        active: all.filter(e => sectionOf(e.goal) === 'active'),
+                        backlog: all.filter(e => sectionOf(e.goal) === 'backlog'),
+                        complete: all.filter(e => sectionOf(e.goal) === 'complete')
+                      };
+
+                      const groupMeta = [
+                        { key: 'active', label: 'Active', icon: <CleanFlame />, iconClass: 'campfire-icon',
+                          badge: 'work', open: goalsActiveOpen, setOpen: setGoalsActiveOpen },
+                        { key: 'backlog', label: 'Backlog', icon: <CutLog />, iconClass: 'logs-icon',
+                          badge: 'personal', open: goalsBacklogOpen, setOpen: setGoalsBacklogOpen },
+                        { key: 'complete', label: 'Complete', icon: <CheckedBox />, iconClass: 'checkbox-icon',
+                          badge: 'home', open: goalsCompleteOpen, setOpen: setGoalsCompleteOpen }
+                      ];
+
                       const listName = currentGoalList;
-                      const goalProjects = Object.values(projects).flat().filter(p => p.goalId == goal.id);
-                      const isDragging = draggedGoal?.id === goal.id;
-                      const isDragOver = dragOverGoal?.id === goal.id;
-                      
-                      return (
-                        <div 
-                          key={goal.id} 
-                          className="goal-card"
-                          draggable={currentGoalList !== 'master'}
-                          onDragStart={(e) => {
-                            if (currentGoalList === 'master') return;
-                            setDraggedGoal({ ...goal, index, listName });
-                            e.dataTransfer.effectAllowed = 'move';
-                          }}
-                          onDragEnd={() => {
-                            setDraggedGoal(null);
-                            setDragOverGoal(null);
-                          }}
-                          onDragOver={(e) => {
-                            if (currentGoalList === 'master') return;
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = 'move';
-                            if (draggedGoal && draggedGoal.id !== goal.id) {
-                              setDragOverGoal({ ...goal, index });
-                            }
-                          }}
-                          onDragLeave={() => {
-                            setDragOverGoal(null);
-                          }}
-                          onDrop={(e) => {
-                            if (currentGoalList === 'master') return;
-                            e.preventDefault();
-                            if (draggedGoal && draggedGoal.id !== goal.id) {
-                              reorderGoals(listName, draggedGoal.index, index);
-                            }
-                            setDraggedGoal(null);
-                            setDragOverGoal(null);
-                          }}
-                          onTouchStart={(e) => {
-                            if (currentGoalList === 'master') return;
-                            handleTouchStart(e, goal, index, listName, 'goal');
-                          }}
-                          onTouchMove={(e) => {
-                            if (currentGoalList === 'master') return;
-                            handleTouchMove(e, getCurrentGoals(), 'goal');
-                          }}
-                          onTouchEnd={(e) => {
-                            if (currentGoalList === 'master') return;
-                            handleTouchEnd(e, listName, 'goal');
-                          }}
-                          style={{
-                            opacity: isDragging ? 0.5 : 1,
-                            cursor: currentGoalList !== 'master' ? 'move' : 'default',
-                            borderTop: isDragOver && draggedGoal?.index > index ? '3px solid var(--accent)' : undefined,
-                            borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid var(--accent)' : undefined,
-                            transition: 'opacity 0.2s, border 0.2s'
-                          }}
-                        >
+
+                      const renderGoalCard = ({ goal, index }, groupKey) => {
+                        const isDragging = draggedGoal?.id === goal.id;
+                        const isDragOver = dragOverGoal?.id === goal.id;
+                        const sameGroup = draggedGoal && draggedGoal.groupKey === groupKey;
+
+                        return (
                           <div 
-                            className="goal-header"
-                            onClick={() => setSelectedGoal({ id: goal.id, listName })}
-                            style={{cursor: 'pointer'}}
+                            key={goal.id} 
+                            className="goal-card"
+                            draggable={currentGoalList !== 'master'}
+                            onDragStart={(e) => {
+                              if (currentGoalList === 'master') return;
+                              setDraggedGoal({ ...goal, index, listName, groupKey });
+                              e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onDragEnd={() => {
+                              setDraggedGoal(null);
+                              setDragOverGoal(null);
+                            }}
+                            onDragOver={(e) => {
+                              if (currentGoalList === 'master' || !sameGroup) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                              if (draggedGoal && draggedGoal.id !== goal.id) {
+                                setDragOverGoal({ ...goal, index });
+                              }
+                            }}
+                            onDragLeave={() => {
+                              setDragOverGoal(null);
+                            }}
+                            onDrop={(e) => {
+                              if (currentGoalList === 'master' || !sameGroup) return;
+                              e.preventDefault();
+                              if (draggedGoal && draggedGoal.id !== goal.id) {
+                                reorderGoals(listName, draggedGoal.index, index);
+                              }
+                              setDraggedGoal(null);
+                              setDragOverGoal(null);
+                            }}
+                            onTouchStart={(e) => {
+                              if (currentGoalList === 'master') return;
+                              handleTouchStart(e, { ...goal, groupKey }, index, listName, 'goal');
+                            }}
+                            onTouchMove={(e) => {
+                              if (currentGoalList === 'master') return;
+                              handleTouchMove(e, getCurrentGoals(), 'goal');
+                            }}
+                            onTouchEnd={(e) => {
+                              if (currentGoalList === 'master') return;
+                              handleTouchEnd(e, listName, 'goal');
+                            }}
+                            style={{
+                              opacity: isDragging ? 0.5 : 1,
+                              cursor: currentGoalList !== 'master' ? 'move' : 'default',
+                              borderTop: isDragOver && draggedGoal?.index > index ? '3px solid var(--accent)' : undefined,
+                              borderBottom: isDragOver && draggedGoal?.index < index ? '3px solid var(--accent)' : undefined,
+                              transition: 'opacity 0.2s, border 0.2s'
+                            }}
                           >
-                            <div>
-                              <h3 style={{margin: '0 0 8px 0'}}>{goal.name}</h3>
-                              {goal.description && (
-                                <p className="project-description">{goal.description}</p>
-                              )}
-                            </div>
-                            <div className="project-meta">
-                              {(goal.startDate || goal.endDate) && (
-                                <span className="project-due-date">
-                                  <CalendarIcon /> {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                  {goal.startDate && goal.endDate && ' - '}
-                                  {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                </span>
-                              )}
-                              <span className="goal-project-count">
-                                {goalProjects.length} project{goalProjects.length !== 1 ? 's' : ''}
-                              </span>
+                            <div 
+                              className="goal-header"
+                              onClick={() => setSelectedGoal({ id: goal.id, listName })}
+                              style={{cursor: 'pointer'}}
+                            >
+                              <div>
+                                <h3 style={{margin: '0 0 8px 0'}}>{goal.name}</h3>
+                              </div>
+                              <div className="project-meta">
+                                {(goal.startDate || goal.endDate) && (
+                                  <span className="project-due-date">
+                                    <CalendarIcon /> {goal.startDate && parseLocalDate(goal.startDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                    {goal.startDate && goal.endDate && ' - '}
+                                    {goal.endDate && parseLocalDate(goal.endDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
+                        );
+                      };
+
+                      return groupMeta.map(g => (
+                        <div key={g.key} className="list-section" ref={sectionRef(`goals-${g.key}`)}>
+                          <div
+                            className="list-section-header"
+                            onClick={() => toggleSection(`goals-${g.key}`, g.open, g.setOpen)}
+                            style={{cursor: 'pointer'}}
+                          >
+                            <span className={`section-icon ${g.iconClass}`}>{g.icon}</span>
+                            <span>{g.label}</span>
+                            <span className={`badge ${g.badge}`}>{groups[g.key].length}</span>
+                          </div>
+                          {g.open && (
+                            <div className={`section-shell ${sectionAnim[`goals-${g.key}`] ? 'section-collapsed' : ''}`}>
+                              <div className="section-shell-inner">
+                                {groups[g.key].map(entry => renderGoalCard(entry, g.key))}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      );
-                    })
+                      ));
+                    })()
                   )}
                 </div>
               </>
@@ -19703,9 +19969,9 @@ function LittleFiresApp() {
 
                       {/* Goal Actions */}
                       <div className="detail-actions is-footer">
-                        {/* One treatment for all four. Order is the order you
-                            are likely to want them: edit, then leave, then the
-                            two that change what the record is. */}
+                        {/* Edit, then leave, then the ones that change what the
+                            record is. Move buttons live here rather than on the
+                            list card, matching projects. */}
                         <button
                           className={`detail-action ${goalDetailEditing ? 'is-active' : ''}`}
                           onClick={() => setGoalDetailEditing(v => !v)}
@@ -19718,6 +19984,30 @@ function LittleFiresApp() {
                         >
                           Close
                         </button>
+                        {(goal.section || 'active') !== 'active' && (
+                          <button
+                            className="detail-action"
+                            onClick={() => moveGoalToSection(selectedGoal.listName, selectedGoal.id, 'active')}
+                          >
+                            {(goal.section || 'active') === 'complete' ? '↩ Reopen' : '→ Active'}
+                          </button>
+                        )}
+                        {(goal.section || 'active') === 'active' && (
+                          <button
+                            className="detail-action"
+                            onClick={() => moveGoalToSection(selectedGoal.listName, selectedGoal.id, 'backlog')}
+                          >
+                            → Backlog
+                          </button>
+                        )}
+                        {(goal.section || 'active') !== 'complete' && (
+                          <button
+                            className="detail-action"
+                            onClick={() => moveGoalToSection(selectedGoal.listName, selectedGoal.id, 'complete')}
+                          >
+                            ✓ Complete
+                          </button>
+                        )}
                         <button
                           className="detail-action"
                           onClick={() => {

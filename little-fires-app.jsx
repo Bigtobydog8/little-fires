@@ -7300,23 +7300,32 @@ function LittleFiresApp() {
     // lit would imply a state the app is not in.
     if (settings.reduceMotion) { setIntroFireFill(0); return; }
 
+    // A beat before it lights. Firing on the first frame means the flame is
+    // already moving before anyone has registered what they are looking at, so
+    // the gesture is spent on an empty room. The pause lets the logo land as a
+    // logo first - then it catches.
+    const DELAY_MS = 900;
     const UP_MS = 1400;
     const HOLD_MS = 500;
     const DOWN_MS = 1100;
-    const TOTAL = UP_MS + HOLD_MS + DOWN_MS;
     const start = performance.now();
     let raf;
 
     const tick = (now) => {
-      const t = now - start;
+      const t = now - start - DELAY_MS;
       let v;
+      if (t < 0) {
+        // Still waiting. Nothing drawn yet - the unlit logo is the whole frame.
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       if (t < UP_MS) {
         // ease-out on the way up: catches fast, settles slow
         const p = t / UP_MS;
         v = 1 - Math.pow(1 - p, 3);
       } else if (t < UP_MS + HOLD_MS) {
         v = 1;
-      } else if (t < TOTAL) {
+      } else if (t < UP_MS + HOLD_MS + DOWN_MS) {
         // ease-in on the way down: lingers, then drops away
         const p = (t - UP_MS - HOLD_MS) / DOWN_MS;
         v = 1 - Math.pow(p, 2);

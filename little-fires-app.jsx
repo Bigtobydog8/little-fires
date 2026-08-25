@@ -7304,16 +7304,16 @@ function LittleFiresApp() {
     // fully out by the time the logo lands back at 100%, or the flame appears
     // to be snuffed by the animation ending rather than burning down.
     //
-    //    0- 250  beat: unlit, logo begins to swell
-    //  250-1250  catches and rises, reaching full near the top of the swing
-    // 1250-1800  full, held through the peak of the zoom
-    // 1800-2700  burns down
-    // 2700-3000  dark, logo settling back to size
+    //    0- 250  beat: unlit, logo swelling up from half size
+    //  250-1250  catches and rises, hitting full right at the 1500ms turn
+    // 1250-1700  briefly full across the top of the swing
+    // 1700-2650  burns down while the logo shrinks back
+    // 2650-3000  dark, logo settling to 100%
     // 3000       card fades in (CSS delay, kept in step by hand)
     const DELAY_MS = 250;
     const UP_MS = 1000;
-    const HOLD_MS = 550;
-    const DOWN_MS = 900;
+    const HOLD_MS = 450;
+    const DOWN_MS = 950;
     const start = performance.now();
     let raf;
 
@@ -12990,16 +12990,20 @@ function LittleFiresApp() {
            distraction, and this is meant to be a greeting rather than an
            ornament. transform and opacity only, so it stays on the compositor
            and does not force layout on a phone. */
-        /* One 3s arc: the logo swells to 200%, holds at the top of the swing
-           while the fire is at full, then settles back to its real size. The
-           fill is timed to be out by the moment it lands, so the flame is
-           spent rather than cut off. */
+        /* One 3s arc, no rest in it: the logo starts at half size, swells
+           through its real size to 200%, and comes straight back down to land
+           at 100%. No hold at the peak - a pause up there made the swing read
+           as two moves with a gap, and the point is one continuous gesture.
+
+           The turn is at 50% of the duration so the rise and fall take equal
+           time, and the easing is symmetric for the same reason. The fill is
+           timed to be out by the moment it lands, so the flame is spent
+           rather than cut off. */
         @keyframes intro-flame-zoom {
-          0%   { transform: scale(1);    opacity: 0.9; }
-          8%   { transform: scale(1.18); opacity: 1; }
-          42%  { transform: scale(2);    opacity: 1; }
-          58%  { transform: scale(2);    opacity: 1; }
-          100% { transform: scale(1);    opacity: 1; }
+          0%   { transform: scale(0.5); opacity: 0.75; }
+          15%  { opacity: 1; }
+          50%  { transform: scale(2);   opacity: 1; }
+          100% { transform: scale(1);   opacity: 1; }
         }
 
         @keyframes intro-card-in {
@@ -13008,7 +13012,7 @@ function LittleFiresApp() {
         }
 
         .intro-flame {
-          animation: intro-flame-zoom 3000ms cubic-bezier(0.4, 0, 0.2, 1) both;
+          animation: intro-flame-zoom 3000ms cubic-bezier(0.45, 0, 0.55, 1) both;
           /* Its own layer for the whole arc. Scaling to 200% with a drop-shadow
              underneath is the kind of thing that repaints per frame otherwise. */
           will-change: transform;

@@ -7277,7 +7277,7 @@ function LittleFiresApp() {
     try { localStorage.setItem(INTRO_DISMISSED_STORAGE, '1'); } catch {}
   };
 
-  // Which tour card is showing. Lives here rather than inside FirstRunIntro:
+  // Which tour card is showing. Lives here rather than inside the intro:
   // that component is redeclared on every render of this one, so state held
   // inside it would be thrown away whenever anything else in the app changed.
   // Not persisted - a half-finished tour on a device that was closed mid-read
@@ -8851,7 +8851,21 @@ function LittleFiresApp() {
     }
   ];
 
-  const FirstRunIntro = () => {
+  // NOT a component - a plain function that returns JSX, called directly as
+  // {renderFirstRunIntro()} rather than mounted as <FirstRunIntro />.
+  //
+  // That distinction is load-bearing. As a component its type would be a new
+  // function identity on every render of LittleFiresApp, so React would
+  // unmount and remount it each time. The fire animation re-renders this
+  // component ~60 times a second, so the card remounted every frame, which
+  // restarted its intro-card-in animation every frame - and with a 520ms
+  // delay and `both` fill, it sat pinned at opacity 0. The card flashed in,
+  // then vanished the moment the flame lit.
+  //
+  // Called as a function, the JSX is inlined into the parent's tree: no
+  // component boundary, no remount, animation runs exactly once. Same fault
+  // that forced the Task and DetailField hoists, in a third place.
+  const renderFirstRunIntro = () => {
     const total = INTRO_CARDS.length;
     const card = INTRO_CARDS[Math.min(introStep, total - 1)];
     const isLast = introStep >= total - 1;
@@ -11435,7 +11449,7 @@ function LittleFiresApp() {
               </svg>
             </div>
           </div>
-          {!introDismissed && <FirstRunIntro />}
+          {!introDismissed && renderFirstRunIntro()}
           </div>
         );
       }

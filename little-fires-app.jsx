@@ -8836,10 +8836,11 @@ function LittleFiresApp() {
       // someone then cannot find makes the app feel broken rather than
       // forthcoming. When pairing ships, this becomes its own card - drop the
       // "soon", say what it does, and the counter follows automatically.
+      asideTitle: 'Shared lists',
       aside: (
         <>
-          <strong>Shared lists</strong> are coming soon — a list you and someone
-          else both work from, so you can move through things together.
+          Coming soon — a list you and someone else both work from, so you can
+          move through things together.
         </>
       )
     },
@@ -8856,12 +8857,12 @@ function LittleFiresApp() {
       // Mentioned, not promised. AI Suggestions is off until a key is added,
       // so it must not read as something to do right now - "when you're ready"
       // is carrying that.
+      asideTitle: 'AI Suggestions',
       aside: (
         <>
-          And if you want to really get things heated up,{' '}
-          <strong>AI Suggestions</strong> can propose tasks from what you've
-          been working on, and spot projects hiding in your list. Add a key in
-          Settings when you're ready.
+          And if you want to really get things heated up, it can propose tasks
+          from what you've been working on, and spot projects hiding in your
+          list. Add a key in Settings when you're ready.
         </>
       )
     }
@@ -8903,11 +8904,16 @@ function LittleFiresApp() {
       fontFamily: 'var(--font-ui)',
       textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none'
     };
+    // Matches .tab.active - the All Tasks pill. The flat accent-at-0.9 it used
+    // before went muddy against the near-opaque card behind it, and var(--bg)
+    // text is only near-white in light mode, so the label read as dark-on-olive
+    // rather than as a primary action.
     const primaryBtn = {
       ...secondaryBtn,
-      background: 'rgba(var(--accent-rgb), 0.9)',
-      border: '2px solid rgba(var(--accent-rgb), 0.9)',
-      color: 'var(--bg)', fontWeight: 600
+      background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+      border: '2px solid rgba(var(--accent-rgb), 0.5)',
+      color: '#fff', fontWeight: 700,
+      boxShadow: '0 0 8px rgba(var(--accent-rgb), 0.35)'
     };
 
     return (
@@ -8971,14 +8977,25 @@ function LittleFiresApp() {
         </p>
 
         {card.aside && (
-          <p style={{
-            fontFamily: 'var(--font-ui)', fontSize: '0.86rem', lineHeight: 1.5,
-            color: 'var(--text-muted)', margin: '0 0 16px',
-            paddingTop: '12px',
+          <div style={{
+            paddingTop: '12px', margin: '0 0 16px',
             borderTop: '1px solid rgba(var(--accent-rgb), 0.18)'
           }}>
-            {card.aside}
-          </p>
+            {card.asideTitle && (
+              <div style={{
+                fontFamily: 'var(--font-ui)', fontSize: '0.92rem', fontWeight: 700,
+                color: 'var(--text)', marginBottom: '4px'
+              }}>
+                {card.asideTitle}
+              </div>
+            )}
+            <p style={{
+              fontFamily: 'var(--font-ui)', fontSize: '0.86rem', lineHeight: 1.5,
+              color: 'var(--text-muted)', margin: 0
+            }}>
+              {card.aside}
+            </p>
+          </div>
         )}
 
         <div style={{

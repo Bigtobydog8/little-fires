@@ -8559,10 +8559,23 @@ function LittleFiresApp() {
   // the nested-component bug.
   const FirstRunIntro = () => (
     <div style={{
-      maxWidth: '460px', margin: '0 auto 28px', padding: '20px 22px',
-      background: 'rgba(var(--surface-rgb), 0.8)',
-      border: '2px solid rgba(var(--accent-rgb), 0.25)',
-      borderRadius: '15px', textAlign: 'left'
+      // Floated over the flame rather than stacked under it. Two reasons: the
+      // flame plus its 300px min-height pushed the card below the fold on a
+      // laptop, and sitting in the flow made the intro read as app content
+      // rather than as something laid over the app. Translucent so the flame
+      // stays visible through it, which is what signals "this is a layer".
+      position: 'absolute', top: '50%', left: '50%',
+      transform: 'translate(-50%, -50%)',
+      width: 'min(460px, calc(100% - 32px))',
+      padding: '20px 22px', textAlign: 'left', zIndex: 5,
+      background: 'rgba(var(--surface-rgb), 0.82)',
+      // -webkit- first for older iOS Safari, which shipped the prefixed
+      // property years before the standard one.
+      WebkitBackdropFilter: 'blur(12px)',
+      backdropFilter: 'blur(12px)',
+      border: '2px solid rgba(var(--accent-rgb), 0.28)',
+      borderRadius: '15px',
+      boxShadow: '0 8px 28px rgba(0, 0, 0, 0.12)'
     }}>
       <div style={{
         fontFamily: 'var(--font-ui)', fontSize: '1.15rem', fontWeight: 700,
@@ -10758,7 +10771,12 @@ function LittleFiresApp() {
 
       if (!hasAnyTasks) {
         return (
-          <>
+          <div style={{
+            position: 'relative',
+            // Room for the overlay to sit centred without spilling past the
+            // flame block. Only reserved while the intro is actually showing.
+            minHeight: introDismissed ? undefined : '420px'
+          }}>
           <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
             <div style={{
               width: '180px',
@@ -10827,7 +10845,7 @@ function LittleFiresApp() {
             </div>
           </div>
           {!introDismissed && <FirstRunIntro />}
-          </>
+          </div>
         );
       }
 

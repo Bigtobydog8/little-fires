@@ -7300,14 +7300,20 @@ function LittleFiresApp() {
     // lit would imply a state the app is not in.
     if (settings.reduceMotion) { setIntroFireFill(0); return; }
 
-    // A beat before it lights. Firing on the first frame means the flame is
-    // already moving before anyone has registered what they are looking at, so
-    // the gesture is spent on an empty room. The pause lets the logo land as a
-    // logo first - then it catches.
-    const DELAY_MS = 900;
-    const UP_MS = 1400;
-    const HOLD_MS = 500;
-    const DOWN_MS = 1100;
+    // Timed against the 3000ms intro-flame-zoom arc in CSS. The fill has to be
+    // fully out by the time the logo lands back at 100%, or the flame appears
+    // to be snuffed by the animation ending rather than burning down.
+    //
+    //    0- 250  beat: unlit, logo begins to swell
+    //  250-1250  catches and rises, reaching full near the top of the swing
+    // 1250-1800  full, held through the peak of the zoom
+    // 1800-2700  burns down
+    // 2700-3000  dark, logo settling back to size
+    // 3000       card fades in (CSS delay, kept in step by hand)
+    const DELAY_MS = 250;
+    const UP_MS = 1000;
+    const HOLD_MS = 550;
+    const DOWN_MS = 900;
     const start = performance.now();
     let raf;
 
@@ -11339,7 +11345,13 @@ function LittleFiresApp() {
 
       if (!hasAnyTasks) {
         return (
-          <div style={{ position: 'relative' }}>
+          <div style={{
+            position: 'relative',
+            // The logo reaches 200% mid-arc. Reserving the space keeps it from
+            // colliding with whatever sits below during the swing; released
+            // once the tour is done.
+            minHeight: introDismissed ? undefined : '420px'
+          }}>
           <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
             <div
               /* Animated only while the tour is up. The empty state is also
@@ -12978,10 +12990,16 @@ function LittleFiresApp() {
            distraction, and this is meant to be a greeting rather than an
            ornament. transform and opacity only, so it stays on the compositor
            and does not force layout on a phone. */
-        @keyframes intro-flame-rise {
-          0%   { transform: translateY(14px) scale(0.94); opacity: 0.55; }
-          45%  { transform: translateY(-10px) scale(1.06); opacity: 1; }
-          100% { transform: translateY(0) scale(1); opacity: 1; }
+        /* One 3s arc: the logo swells to 200%, holds at the top of the swing
+           while the fire is at full, then settles back to its real size. The
+           fill is timed to be out by the moment it lands, so the flame is
+           spent rather than cut off. */
+        @keyframes intro-flame-zoom {
+          0%   { transform: scale(1);    opacity: 0.9; }
+          8%   { transform: scale(1.18); opacity: 1; }
+          42%  { transform: scale(2);    opacity: 1; }
+          58%  { transform: scale(2);    opacity: 1; }
+          100% { transform: scale(1);    opacity: 1; }
         }
 
         @keyframes intro-card-in {
@@ -12990,11 +13008,16 @@ function LittleFiresApp() {
         }
 
         .intro-flame {
-          animation: intro-flame-rise 1100ms cubic-bezier(0.34, 1.2, 0.64, 1) both;
+          animation: intro-flame-zoom 3000ms cubic-bezier(0.4, 0, 0.2, 1) both;
+          /* Its own layer for the whole arc. Scaling to 200% with a drop-shadow
+             underneath is the kind of thing that repaints per frame otherwise. */
+          will-change: transform;
         }
 
         .intro-card {
-          animation: intro-card-in 420ms ease-out 520ms both;
+          /* 3000ms delay: the full length of the flame arc. The words are the
+             payoff, not the accompaniment - they land on a still, unlit logo. */
+          animation: intro-card-in 460ms ease-out 3000ms both;
         }
 
         /* Reduce motion removes the movement, not the content: both land in

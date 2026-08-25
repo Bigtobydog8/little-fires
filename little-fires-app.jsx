@@ -12990,29 +12990,81 @@ function LittleFiresApp() {
            distraction, and this is meant to be a greeting rather than an
            ornament. transform and opacity only, so it stays on the compositor
            and does not force layout on a phone. */
-        /* One 3s arc, no rest in it: the logo starts at half size, swells
-           through its real size to 200%, and comes straight back down to land
-           at 100%. No hold at the peak - a pause up there made the swing read
-           as two moves with a gap, and the point is one continuous gesture.
+        /* One 3s arc, sampled from a single curve rather than described by a
+           few keyframes with an easing over them.
 
-           The turn is at 50% of the duration so the rise and fall take equal
-           time, and the easing is symmetric for the same reason. The fill is
-           timed to be out by the moment it lands, so the flame is spent
-           rather than cut off. */
+           That distinction is the whole fix. A CSS timing function is applied
+           BETWEEN EACH PAIR of keyframes, not across the animation - so stops
+           at 0/15/50/100% produced four separately-eased segments. The ease
+           restarted at every stop (the break just past real size) and
+           decelerated hard into the 50% stop (the apparent hold at 200%).
+
+           These stops are samples of a parabola that peaks at 200% and is
+           blended into a settle over the last quarter, with timing set to
+           linear so CSS only interpolates and the curve itself carries the
+           motion. Velocity stays above 0.35/s everywhere except ~50ms either
+           side of the peak, where it has to pass through zero to turn around.
+
+           Regenerate rather than hand-edit if the shape needs to change. */
         @keyframes intro-flame-zoom {
-          0%   { transform: scale(0.5); opacity: 0.75; }
-          15%  { opacity: 1; }
-          50%  { transform: scale(2);   opacity: 1; }
-          100% { transform: scale(1);   opacity: 1; }
+          0% { transform: scale(0.500); }
+          2.5% { transform: scale(0.633); }
+          5% { transform: scale(0.760); }
+          7.5% { transform: scale(0.881); }
+          10% { transform: scale(0.995); }
+          12.5% { transform: scale(1.104); }
+          15% { transform: scale(1.206); }
+          17.5% { transform: scale(1.302); }
+          20% { transform: scale(1.392); }
+          22.5% { transform: scale(1.476); }
+          25% { transform: scale(1.553); }
+          27.5% { transform: scale(1.624); }
+          30% { transform: scale(1.689); }
+          32.5% { transform: scale(1.748); }
+          35% { transform: scale(1.801); }
+          37.5% { transform: scale(1.848); }
+          40% { transform: scale(1.888); }
+          42.5% { transform: scale(1.922); }
+          45% { transform: scale(1.950); }
+          47.5% { transform: scale(1.972); }
+          50% { transform: scale(1.987); }
+          52.5% { transform: scale(1.997); }
+          55% { transform: scale(2.000); }
+          57.5% { transform: scale(1.997); }
+          60% { transform: scale(1.988); }
+          62.5% { transform: scale(1.973); }
+          65% { transform: scale(1.951); }
+          67.5% { transform: scale(1.923); }
+          70% { transform: scale(1.889); }
+          72.5% { transform: scale(1.849); }
+          75% { transform: scale(1.777); }
+          77.5% { transform: scale(1.675); }
+          80% { transform: scale(1.555); }
+          82.5% { transform: scale(1.429); }
+          85% { transform: scale(1.308); }
+          87.5% { transform: scale(1.201); }
+          90% { transform: scale(1.115); }
+          92.5% { transform: scale(1.054); }
+          95% { transform: scale(1.018); }
+          97.5% { transform: scale(1.002); }
+          100% { transform: scale(1.000); }
         }
 
-        @keyframes intro-card-in {
-          from { opacity: 0; transform: translate(-50%, -10px); }
-          to   { opacity: 1; transform: translate(-50%, 0); }
+        /* Opacity rides its own animation. Folded into the scale keyframes it
+           would need a stop at 15%, and that stop would split the rise into
+           two separately-interpolated pieces - reintroducing exactly the seam
+           this is meant to remove. */
+        @keyframes intro-flame-fade {
+          0%   { opacity: 0.6; }
+          20%  { opacity: 1; }
+          100% { opacity: 1; }
         }
 
         .intro-flame {
-          animation: intro-flame-zoom 3000ms cubic-bezier(0.45, 0, 0.55, 1) both;
+          /* linear on purpose - see the keyframes above. Any easing here would
+             re-apply itself between every one of those 41 stops. */
+          animation: intro-flame-zoom 3000ms linear both,
+                     intro-flame-fade 3000ms ease-out both;
           /* Its own layer for the whole arc. Scaling to 200% with a drop-shadow
              underneath is the kind of thing that repaints per frame otherwise. */
           will-change: transform;

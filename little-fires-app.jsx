@@ -7293,12 +7293,21 @@ function LittleFiresApp() {
   // animate for that. Reports does the same thing for the same reason.
   const [introFireFill, setIntroFireFill] = useState(0);
   const [introFireFlicker, setIntroFireFlicker] = useState(0);
+  // The card is not rendered at all until the flame arc has finished. This was
+  // a 3000ms CSS animation-delay, which is invisible to a test and silently
+  // drifts out of step with the JS timings next to it. A flag is deterministic:
+  // the card cannot appear early because it does not exist yet.
+  const [introFlameDone, setIntroFlameDone] = useState(false);
 
   useEffect(() => {
     if (introDismissed) return;
     // Motion off: land on unlit rather than animating. Showing it permanently
     // lit would imply a state the app is not in.
-    if (settings.reduceMotion) { setIntroFireFill(0); return; }
+    if (settings.reduceMotion) {
+      setIntroFireFill(0);
+      setIntroFlameDone(true);   // nothing to wait for
+      return;
+    }
 
     // Timed against the 3000ms intro-flame-zoom arc in CSS. The fill has to be
     // fully out by the time the logo lands back at 100%, or the flame appears
@@ -7337,6 +7346,7 @@ function LittleFiresApp() {
         v = 1 - Math.pow(p, 2);
       } else {
         setIntroFireFill(0);
+        setIntroFlameDone(true);      // arc over - now the words
         return;                       // stop the loop; no idle flicker
       }
       setIntroFireFill(v);
@@ -8872,6 +8882,15 @@ function LittleFiresApp() {
   // component boundary, no remount, animation runs exactly once. Same fault
   // that forced the Task and DetailField hoists, in a third place.
   const renderFirstRunIntro = () => {
+    // NOT portalled. A fixed element positions against the nearest ancestor
+    // carrying a transform, filter, backdrop-filter or will-change rather than
+    // the viewport, and there are several of those above this - so the card
+    // centres on the app's content column, not the window. That is fine: the
+    // content column is what it is meant to sit over.
+    //
+    // A portal to <body> would give true viewport centring, but it needs
+    // createPortal from react-dom, and importing react-dom stops this file
+    // previewing as an artifact. Not worth the trade for a few pixels.
     const total = INTRO_CARDS.length;
     const card = INTRO_CARDS[Math.min(introStep, total - 1)];
     const isLast = introStep >= total - 1;
@@ -8909,9 +8928,15 @@ function LittleFiresApp() {
         position: 'fixed', top: 'max(16px, env(safe-area-inset-top))',
         left: '50%',
         transform: 'translate(-50%, 0)',
+        // Same box on every card. Content lengths differ enough that without
+        // this the panel jumps size between Next presses, which reads as the
+        // card being replaced rather than turned over.
+        minHeight: '232px',
+        boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column',
         width: 'min(460px, calc(100% - 32px))',
         padding: '20px 22px', textAlign: 'left', zIndex: 900,
-        background: 'rgba(var(--surface-rgb), 0.82)',
+        background: 'rgba(var(--surface-rgb), 0.96)',
         // -webkit- first for older iOS Safari, which shipped the prefixed
         // property years before the standard one.
         WebkitBackdropFilter: 'blur(12px)',
@@ -8956,7 +8981,10 @@ function LittleFiresApp() {
           </p>
         )}
 
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{
+          display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center',
+          marginTop: 'auto', paddingTop: '4px'
+        }}>
           {!isLast ? (
             <>
               <button onClick={() => setIntroStep(s => s + 1)} style={primaryBtn}>
@@ -11461,7 +11489,7 @@ function LittleFiresApp() {
               </svg>
             </div>
           </div>
-          {!introDismissed && renderFirstRunIntro()}
+          {!introDismissed && introFlameDone && renderFirstRunIntro()}
           </div>
         );
       }
@@ -13071,9 +13099,10 @@ function LittleFiresApp() {
         }
 
         .intro-card {
-          /* 3000ms delay: the full length of the flame arc. The words are the
-             payoff, not the accompaniment - they land on a still, unlit logo. */
-          animation: intro-card-in 460ms ease-out 3000ms both;
+          /* No delay: the card is not mounted until the flame arc is over, so
+             it animates from the moment it exists. Timing lives in one place
+             (the rAF loop) instead of being split across CSS and JS. */
+          animation: intro-card-in 460ms ease-out both;
         }
 
         /* Reduce motion removes the movement, not the content: both land in

@@ -13044,7 +13044,7 @@ function LittleFiresApp() {
            restarted at every stop (the break just past real size) and
            decelerated hard into the 50% stop (the apparent hold at 200%).
 
-           These stops are samples of a parabola that peaks at 200% and is
+           These stops are samples of a parabola that peaks at 175% and is
            blended into a settle over the last quarter, with timing set to
            linear so CSS only interpolates and the curve itself carries the
            motion. Velocity stays above 0.35/s everywhere except ~50ms either
@@ -13053,44 +13053,44 @@ function LittleFiresApp() {
            Regenerate rather than hand-edit if the shape needs to change. */
         @keyframes intro-flame-zoom {
           0% { transform: scale(0.500); }
-          2.5% { transform: scale(0.633); }
-          5% { transform: scale(0.760); }
-          7.5% { transform: scale(0.881); }
-          10% { transform: scale(0.995); }
-          12.5% { transform: scale(1.104); }
-          15% { transform: scale(1.206); }
-          17.5% { transform: scale(1.302); }
-          20% { transform: scale(1.392); }
-          22.5% { transform: scale(1.476); }
-          25% { transform: scale(1.553); }
-          27.5% { transform: scale(1.624); }
-          30% { transform: scale(1.689); }
-          32.5% { transform: scale(1.748); }
-          35% { transform: scale(1.801); }
-          37.5% { transform: scale(1.848); }
-          40% { transform: scale(1.888); }
-          42.5% { transform: scale(1.922); }
-          45% { transform: scale(1.950); }
-          47.5% { transform: scale(1.972); }
-          50% { transform: scale(1.987); }
-          52.5% { transform: scale(1.997); }
-          55% { transform: scale(2.000); }
-          57.5% { transform: scale(1.997); }
-          60% { transform: scale(1.988); }
-          62.5% { transform: scale(1.973); }
-          65% { transform: scale(1.951); }
-          67.5% { transform: scale(1.923); }
-          70% { transform: scale(1.889); }
-          72.5% { transform: scale(1.849); }
-          75% { transform: scale(1.777); }
-          77.5% { transform: scale(1.675); }
-          80% { transform: scale(1.555); }
-          82.5% { transform: scale(1.429); }
-          85% { transform: scale(1.308); }
-          87.5% { transform: scale(1.201); }
-          90% { transform: scale(1.115); }
-          92.5% { transform: scale(1.054); }
-          95% { transform: scale(1.018); }
+          2.5% { transform: scale(0.608); }
+          5% { transform: scale(0.712); }
+          7.5% { transform: scale(0.811); }
+          10% { transform: scale(0.904); }
+          12.5% { transform: scale(0.993); }
+          15% { transform: scale(1.077); }
+          17.5% { transform: scale(1.156); }
+          20% { transform: scale(1.230); }
+          22.5% { transform: scale(1.299); }
+          25% { transform: scale(1.363); }
+          27.5% { transform: scale(1.422); }
+          30% { transform: scale(1.477); }
+          32.5% { transform: scale(1.526); }
+          35% { transform: scale(1.571); }
+          37.5% { transform: scale(1.610); }
+          40% { transform: scale(1.645); }
+          42.5% { transform: scale(1.674); }
+          45% { transform: scale(1.699); }
+          47.5% { transform: scale(1.719); }
+          50% { transform: scale(1.734); }
+          52.5% { transform: scale(1.744); }
+          55% { transform: scale(1.749); }
+          57.5% { transform: scale(1.749); }
+          60% { transform: scale(1.745); }
+          62.5% { transform: scale(1.735); }
+          65% { transform: scale(1.721); }
+          67.5% { transform: scale(1.701); }
+          70% { transform: scale(1.677); }
+          72.5% { transform: scale(1.647); }
+          75% { transform: scale(1.593); }
+          77.5% { transform: scale(1.516); }
+          80% { transform: scale(1.425); }
+          82.5% { transform: scale(1.329); }
+          85% { transform: scale(1.236); }
+          87.5% { transform: scale(1.155); }
+          90% { transform: scale(1.089); }
+          92.5% { transform: scale(1.042); }
+          95% { transform: scale(1.014); }
           97.5% { transform: scale(1.002); }
           100% { transform: scale(1.000); }
         }

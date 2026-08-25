@@ -7284,6 +7284,80 @@ function LittleFiresApp() {
   // should start over, not resume on card 2 with no context.
   const [introStep, setIntroStep] = useState(0);
 
+  // Intro flame fill, 0..1. Rises to full and falls back once - the same
+  // silhouette-clipped orange fill the Reports flame uses, so "we're cooking
+  // with fire" reads as the app's own visual language rather than a one-off.
+  //
+  // Driven by rAF rather than CSS because the flame's top edge is a path
+  // recomputed per frame (spiky, oscillating); there is no CSS property to
+  // animate for that. Reports does the same thing for the same reason.
+  const [introFireFill, setIntroFireFill] = useState(0);
+  const [introFireFlicker, setIntroFireFlicker] = useState(0);
+
+  useEffect(() => {
+    if (introDismissed) return;
+    // Motion off: land on unlit rather than animating. Showing it permanently
+    // lit would imply a state the app is not in.
+    if (settings.reduceMotion) { setIntroFireFill(0); return; }
+
+    const UP_MS = 1400;
+    const HOLD_MS = 500;
+    const DOWN_MS = 1100;
+    const TOTAL = UP_MS + HOLD_MS + DOWN_MS;
+    const start = performance.now();
+    let raf;
+
+    const tick = (now) => {
+      const t = now - start;
+      let v;
+      if (t < UP_MS) {
+        // ease-out on the way up: catches fast, settles slow
+        const p = t / UP_MS;
+        v = 1 - Math.pow(1 - p, 3);
+      } else if (t < UP_MS + HOLD_MS) {
+        v = 1;
+      } else if (t < TOTAL) {
+        // ease-in on the way down: lingers, then drops away
+        const p = (t - UP_MS - HOLD_MS) / DOWN_MS;
+        v = 1 - Math.pow(p, 2);
+      } else {
+        setIntroFireFill(0);
+        return;                       // stop the loop; no idle flicker
+      }
+      setIntroFireFill(v);
+      setIntroFireFlicker(t / 1000);  // seconds, drives the spike oscillation
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [introDismissed, settings.reduceMotion]);
+
+  // The flame's top edge: spikes that bob on their own sine waves so the fill
+  // looks like fire rather than a rising liquid. Lifted from the Reports
+  // flame deliberately - same shape language, same silhouette.
+  const introFlameEdge = (base, t) => {
+    const peaks = 8;
+    const step = 1280 / peaks;
+    const tips = [];
+    for (let i = 0; i <= peaks; i++) {
+      const x = i * step;
+      const baseAmp = (i % 2 === 0) ? 95 : 45;
+      const osc = Math.sin(t * 3 + i * 1.7) * 22 + Math.sin(t * 5.5 + i * 0.9) * 10;
+      tips.push({ x, y: base - baseAmp + osc });
+    }
+    let d = `M 0 1280 L 0 ${base + 10} L ${tips[0].x} ${tips[0].y}`;
+    for (let i = 1; i < tips.length; i++) {
+      const prev = tips[i - 1];
+      const cur = tips[i];
+      const valleyX = (prev.x + cur.x) / 2;
+      const valleyY = base + 12 + Math.sin(t * 4 + i * 2.1) * 8;
+      d += ` Q ${(prev.x + valleyX) / 2} ${base - 10}, ${valleyX} ${valleyY}`;
+      d += ` Q ${(valleyX + cur.x) / 2} ${cur.y - 8}, ${cur.x} ${cur.y}`;
+    }
+    d += ` L 1280 ${base + 10} L 1280 1280 Z`;
+    return d;
+  };
+
   const [allLists, setAllLists] = useState(() => {
     const saved = localStorage.getItem('little_fires_lists');
     const parsed = saved ? JSON.parse(saved) : {
@@ -8790,19 +8864,24 @@ function LittleFiresApp() {
 
     return (
       <div className="intro-card" style={{
-        // Floated over the flame rather than stacked under it. Two reasons: the
-        // flame plus its 300px min-height pushed the card below the fold on a
-        // laptop, and sitting in the flow made the intro read as app content
-        // rather than as something laid over the app. Translucent so the flame
-        // stays visible through it, which is what signals "this is a layer".
+        // Fixed to the top of the viewport, over the logo and list pills -
+        // not over the flame it used to sit on. Two reasons: the card is
+        // 460px wide against a 180px flame, so covering it hid the fire
+        // animation entirely; and the top is where the eye starts.
+        //
+        // position: fixed, so it does not scroll away mid-read and does not
+        // depend on where it sits in the DOM. It is rendered from deep inside
+        // the task list, and any transformed ancestor would otherwise become
+        // its containing block.
         //
         // NOTE: intro-card-in animates this same transform. If the centring
         // changes here, change the keyframes too - otherwise the card lands
         // offset by whatever the two disagree about.
-        position: 'absolute', top: '50%', left: '50%',
-        transform: 'translate(-50%, -50%)',
+        position: 'fixed', top: 'max(16px, env(safe-area-inset-top))',
+        left: '50%',
+        transform: 'translate(-50%, 0)',
         width: 'min(460px, calc(100% - 32px))',
-        padding: '20px 22px', textAlign: 'left', zIndex: 5,
+        padding: '20px 22px', textAlign: 'left', zIndex: 900,
         background: 'rgba(var(--surface-rgb), 0.82)',
         // -webkit- first for older iOS Safari, which shipped the prefixed
         // property years before the standard one.
@@ -11237,12 +11316,7 @@ function LittleFiresApp() {
 
       if (!hasAnyTasks) {
         return (
-          <div style={{
-            position: 'relative',
-            // Room for the overlay to sit centred without spilling past the
-            // flame block. Only reserved while the intro is actually showing.
-            minHeight: introDismissed ? undefined : '420px'
-          }}>
+          <div style={{ position: 'relative' }}>
           <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
             <div
               /* Animated only while the tour is up. The empty state is also
@@ -11256,6 +11330,42 @@ function LittleFiresApp() {
                 display: 'inline-block'
               }}
             >
+              {/* Fire fill, laid over the flat logo beneath. Only while the
+                  tour is running and only when it has something to draw, so
+                  the ordinary empty state is untouched. pointerEvents none:
+                  it sits above the logo and must not eat taps. */}
+              {!introDismissed && introFireFill > 0.001 && (() => {
+                const flameTopY = 60, flameBottomY = 1240;
+                const levelY = flameBottomY - (flameBottomY - flameTopY) * introFireFill;
+                return (
+                  <svg
+                    viewBox="0 0 1280 1280"
+                    preserveAspectRatio="xMidYMid meet"
+                    style={{
+                      position: 'absolute', inset: 0, width: '100%', height: '100%',
+                      zIndex: 2, pointerEvents: 'none',
+                      filter: `drop-shadow(0 0 ${8 + introFireFill * 26}px rgba(255, 140, 40, ${0.18 + introFireFill * 0.4}))`
+                    }}
+                  >
+                    <defs>
+                      <clipPath id="introfire-clip" clipPathUnits="userSpaceOnUse">
+                        <path transform="translate(0,1280) scale(0.1,-0.1)" d="M7090 12669 c-1 -257 -76 -628 -175 -871 -149 -365 -354 -643 -825 -1123 -562 -572 -1053 -1165 -1415 -1710 -256 -385 -443 -729 -568 -1045 -164 -415 -213 -716 -189 -1167 7 -126 17 -257 22 -293 4 -36 11 -87 15 -115 3 -27 17 -108 31 -180 66 -339 167 -634 321 -937 181 -358 383 -630 707 -954 206 -206 336 -319 558 -486 130 -98 458 -322 462 -316 1 1 20 53 40 113 45 131 132 315 211 452 58 99 233 361 296 443 231 303 515 606 864 926 411 375 725 680 839 814 99 117 243 309 323 432 261 403 385 922 386 1623 0 207 -4 314 -17 410 -76 586 -230 1136 -500 1782 -358 860 -885 1741 -1298 2168 l-87 90 -1 -56z"/>
+                        <path transform="translate(0,1280) scale(0.1,-0.1)" d="M9510 9493 c0 -5 9 -55 21 -113 89 -462 132 -1021 110 -1453 -13 -249 -39 -482 -67 -597 -109 -438 -605 -1140 -1299 -1835 -126 -127 -291 -284 -365 -350 -160 -142 -223 -206 -374 -380 -276 -318 -452 -600 -476 -761 -5 -38 -19 -133 -31 -211 -21 -141 -21 -189 2 -261 8 -25 15 -32 28 -26 73 31 289 101 416 134 203 54 418 97 820 164 894 149 1116 222 1550 511 387 257 676 553 814 833 98 197 195 572 233 892 19 165 16 597 -5 780 -104 913 -509 1833 -1058 2404 -105 109 -294 276 -312 276 -4 0 -7 -3 -7 -7z"/>
+                        <path transform="translate(0,1280) scale(0.1,-0.1)" d="M3355 8046 c-199 -134 -336 -247 -523 -430 -189 -186 -290 -306 -418 -498 -270 -403 -415 -856 -401 -1261 8 -258 75 -514 202 -772 237 -481 641 -873 1170 -1135 358 -177 715 -283 1170 -349 153 -22 511 -54 546 -49 16 2 -12 23 -107 82 -709 437 -1164 850 -1434 1303 -118 197 -228 493 -244 653 -4 36 -11 92 -16 125 -5 33 -16 116 -25 185 -8 69 -20 163 -26 210 -6 47 -13 196 -16 332 -5 240 4 411 38 673 5 44 12 98 15 120 3 22 9 65 14 95 5 30 12 73 16 95 26 174 135 576 188 698 5 9 4 17 0 17 -5 0 -72 -43 -149 -94z"/>
+                      </clipPath>
+                      <linearGradient id="introfire-grad" x1="0" y1="1" x2="0" y2="0">
+                        <stop offset="0%" stopColor="#c1440e" />
+                        <stop offset="45%" stopColor="#f2600f" />
+                        <stop offset="80%" stopColor="#ff9d2f" />
+                        <stop offset="100%" stopColor="#ffd76a" />
+                      </linearGradient>
+                    </defs>
+                    <g clipPath="url(#introfire-clip)">
+                      <path fill="url(#introfire-grad)" d={introFlameEdge(levelY, introFireFlicker)} />
+                    </g>
+                  </svg>
+                );
+              })()}
               {/* Background circle */}
               <svg 
                 style={{
@@ -12852,8 +12962,8 @@ function LittleFiresApp() {
         }
 
         @keyframes intro-card-in {
-          from { opacity: 0; transform: translate(-50%, calc(-50% + 10px)); }
-          to   { opacity: 1; transform: translate(-50%, -50%); }
+          from { opacity: 0; transform: translate(-50%, -10px); }
+          to   { opacity: 1; transform: translate(-50%, 0); }
         }
 
         .intro-flame {

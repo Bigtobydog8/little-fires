@@ -1076,6 +1076,12 @@ const ARCHIVE_NOTICE_STORAGE = 'little_fires_archive_notice';
 
 const AI_SUGGESTIONS_STORAGE = 'little_fires_ai_suggestions';
 const AI_REJECTED_STORAGE = 'little_fires_ai_rejected';
+// Project suggestions keep their own shelves and their own rejection memory.
+// Sharing AI_REJECTED_STORAGE would mean dismissing a proposed project called
+// "Birthday dinner" also suppressed a task by that name, and vice versa - the
+// two namespaces have nothing to do with each other.
+const AI_PROJECT_SUGGESTIONS_STORAGE = 'little_fires_ai_project_suggestions';
+const AI_PROJECT_REJECTED_STORAGE = 'little_fires_ai_project_rejected';
 const SUGGESTIONS_PER_SHELF = 3;
 // A dismissal is remembered for this long. Not forever: what was irrelevant in
 // March may be exactly right in September, and a permanent veto list only grows.
@@ -1124,6 +1130,45 @@ function pruneRejected(rejected, now, ttlDays = REJECTED_TTL_DAYS) {
 
 // Anything a model returns is treated as hostile input, not as data. It will
 // invent list names, return markup, and occasionally return an essay.
+// Project suggestions are validated against reality, not just for shape: every
+// referenced id must be one of the loose tasks that was actually sent. A model
+// that invents an id, reuses a task across two proposals, or proposes a
+// one-task project produces something the accept path could not honour, so it
+// is dropped here rather than surfaced and failing later.
+function validateProjectSuggestions(raw, looseTaskIds, max = SUGGESTIONS_PER_SHELF) {
+  if (!Array.isArray(raw)) return [];
+  const allowed = new Set(looseTaskIds);
+  const claimed = new Set();
+  const out = [];
+  raw.forEach((item) => {
+    if (out.length >= max) return;
+    if (!item || typeof item !== 'object') return;
+    const text = trimText(item.text, 80);
+    if (!text) return;
+    if (/[<>]/.test(text)) return;
+    if (isAppHousekeeping(text)) return;
+    if (isVagueScaffolding(text)) return;
+
+    const ids = Array.isArray(item.taskIds) ? item.taskIds : [];
+    // Real, unclaimed, de-duplicated.
+    const seen = new Set();
+    const valid = ids.filter(id =>
+      typeof id === 'string' && allowed.has(id) && !claimed.has(id) &&
+      !seen.has(id) && seen.add(id) !== undefined
+    );
+    // Two is the floor. One task is a task.
+    if (valid.length < 2) return;
+
+    valid.forEach(id => claimed.add(id));
+    out.push({
+      text,
+      rationale: trimText(item.rationale, 140),
+      taskIds: valid
+    });
+  });
+  return out;
+}
+
 function validateSuggestions(raw, allowedLists, max = SUGGESTIONS_PER_SHELF) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -1378,6 +1423,29 @@ function isAppHousekeeping(text) {
 // The instruction the model is given. Kept here beside the filter so the two
 // cannot drift: whatever the prompt forbids, the filter enforces, because a
 // model that is asked nicely will still produce filler when the data is thin.
+const PROJECT_SUGGESTION_PROMPT_RULES = [
+  'You are grouping tasks that are ALREADY WRITTEN DOWN into a project. You are not',
+  'inventing work, and you are not proposing anything the person has not already',
+  'decided to do. This is a recognition task, not a creative one.',
+  'You will be given "looseTasks": tasks on one list that do not belong to any',
+  'project yet, each with an id and its text. Where several of them are clearly',
+  'part of one larger piece of work, propose a project that groups them.',
+  'A group needs at least two tasks. A single task is a task, not a project.',
+  'Only group tasks that genuinely belong to the same effort. Two tasks that are',
+  'both errands, or both at work, are not thereby one project - that is a category,',
+  'not a project. If nothing in the list forms a real group, return an empty array.',
+  'That is a correct and expected answer, not a failure.',
+  'Name the project the way the person would: short, concrete, the thing itself.',
+  'Not "Task Group 1", not "Miscellaneous", not the name of the list.',
+  'The rationale is one short sentence saying what makes these one piece of work.',
+  'Every id in taskIds must be copied exactly from the looseTasks given to you.',
+  'Never invent an id, never modify one, and never include a task twice across',
+  'different proposed projects.',
+  'Existing projects on the list are given so you do not propose one that already',
+  'exists. If tasks belong to an existing project, say nothing - the person can',
+  'file them themselves.'
+].join(' ');
+
 const SUGGESTION_PROMPT_RULES = [
   'Suggest NET NEW actions - things not already on their lists - that add something',
   'to their life or their work: a next step, an experience, an option they may not',
@@ -1488,11 +1556,56 @@ function buildSuggestionRequest(payload, count, model) {
   };
 }
 
+// Groups loose tasks into a proposed project. Deliberately different in kind
+// from buildSuggestionRequest: that one invents new work, this one only
+// recognises structure that is already written down. The model is given task
+// ids and must return them, so accepting can link the real tasks rather than
+// inventing new ones - and a project that references nothing is not a project.
+function buildProjectSuggestionRequest(payload, count, model) {
+  const standing = trimText(payload && payload.instructions, AI_INSTRUCTIONS_MAX);
+  const instructionBlock = standing
+    ? ' The person has given standing direction about what they want suggested: "'
+      + standing + '". Follow it when choosing what to propose, but never at the'
+      + ' expense of the rules above - those are not theirs to relax.'
+    : '';
+
+  const data = Object.assign({}, payload);
+  delete data.instructions;
+
+  return {
+    model,
+    max_tokens: 1000,
+    system: PROJECT_SUGGESTION_PROMPT_RULES +
+      ' Return ONLY a JSON array of at most ' + count + ' objects, no prose, no code fences. ' +
+      'Each object: {"text": string, "rationale": string, "taskIds": string[]}. ' +
+      '"text" is the proposed project name. "taskIds" MUST be ids copied exactly from ' +
+      'the looseTasks you were given, and MUST contain at least two. ' +
+      'Never invent an id. Never propose a project for a single task. ' +
+      'Return fewer than ' + count + ', or an empty array, rather than padding with ' +
+      'anything generic or grouping unrelated work.' +
+      instructionBlock,
+    messages: [{
+      role: 'user',
+      content: 'Here are unfiled tasks on the list "' + payload.lists[0].list +
+        '". Where several of them are clearly part of one larger piece of work, ' +
+        'propose a project grouping them.\n\n' + JSON.stringify(data)
+    }]
+  };
+}
+
 // Resolves to { ok, items, error }. Never throws: a suggestion shelf failing is
 // not worth taking any other part of the app down for, and the caller keeps
 // whatever it was already showing.
-async function requestSuggestions({ apiKey, model, payload, count }) {
+//
+// `kind` picks the prompt builder. Everything else - transport, headers, error
+// handling, JSON recovery - is shared, which is what keeps this the single
+// place the API is called from. That matters for more than tidiness: when the
+// key moves server-side, this function is the only thing that changes.
+async function requestSuggestions({ apiKey, model, payload, count, kind }) {
   if (!apiKey) return { ok: false, error: 'No API key saved.' };
+  const buildBody = kind === 'project'
+    ? buildProjectSuggestionRequest
+    : buildSuggestionRequest;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SUGGESTION_TIMEOUT_MS);
   try {
@@ -1504,7 +1617,7 @@ async function requestSuggestions({ apiKey, model, payload, count }) {
         'anthropic-dangerous-direct-browser-access': 'true',
         'content-type': 'application/json'
       },
-      body: JSON.stringify(buildSuggestionRequest(payload, count, model)),
+      body: JSON.stringify(buildBody(payload, count, model)),
       signal: controller.signal
     });
 
@@ -2433,7 +2546,10 @@ const DetailField = ({ label, value, placeholder, editing, onChange, onRequestEd
   );
 };
 
-const Task = ({ task, listName, showMoveButtons }) => {
+const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
+  // onGoTo is only passed when this task is rendered as a search result. It
+  // adds a button that leaves search and opens the task where it actually
+  // lives. Undefined everywhere else, so the button simply is not there.
   // Everything Task needs from the app. Previously these were closure
   // variables, which is what forced Task to live inside LittleFiresApp - and
   // being redeclared there gave it a new function identity on every parent
@@ -5528,6 +5644,17 @@ const Task = ({ task, listName, showMoveButtons }) => {
           )}
 
           <div className="task-actions">
+            {onGoTo && (
+              <button
+                className="edit-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onGoTo();
+                }}
+              >
+                Go to Task
+              </button>
+            )}
             {showMoveButtons && !task.completed && (
               <>
                 {task.section === 'todo' && (
@@ -5896,7 +6023,7 @@ function LittleFiresApp() {
     // refers to should be there.
     //
     // Search stays on too: it's a way of getting around, not a section to
-    // manage. AI Tasks isn't listed here at all - its menu entry is gated on
+    // manage. AI Suggestions isn't listed here at all - its menu entry is gated on
     // settings.aiSuggestions, which is false until switched on, so it is
     // already hidden by default.
     hiddenFeatures: { time: true, notes: true }
@@ -5920,6 +6047,17 @@ function LittleFiresApp() {
     readJsonStore(AI_SUGGESTIONS_STORAGE, {}));
   const [aiRejected, setAiRejected] = useState(() =>
     pruneRejected(readJsonStore(AI_REJECTED_STORAGE, {}), Date.now()));
+
+  // Project shelves, shaped like the task ones but holding
+  // { id, text, rationale, taskIds }. Separate state and separate storage: a
+  // project proposal and a task proposal share nothing but the word
+  // "suggestion".
+  const [aiProjectShelves, setAiProjectShelves] = useState(() =>
+    readJsonStore(AI_PROJECT_SUGGESTIONS_STORAGE, {}));
+  const [aiProjectRejected, setAiProjectRejected] = useState(() =>
+    pruneRejected(readJsonStore(AI_PROJECT_REJECTED_STORAGE, {}), Date.now()));
+  const [aiProjectBusy, setAiProjectBusy] = useState({});
+  const [aiProjectErrors, setAiProjectErrors] = useState({});
 
   // { id, text } while a suggestion is being edited before it is added.
   // window.prompt is unavailable here for the same reason window.confirm is -
@@ -7139,6 +7277,13 @@ function LittleFiresApp() {
     try { localStorage.setItem(INTRO_DISMISSED_STORAGE, '1'); } catch {}
   };
 
+  // Which tour card is showing. Lives here rather than inside FirstRunIntro:
+  // that component is redeclared on every render of this one, so state held
+  // inside it would be thrown away whenever anything else in the app changed.
+  // Not persisted - a half-finished tour on a device that was closed mid-read
+  // should start over, not resume on card 2 with no context.
+  const [introStep, setIntroStep] = useState(0);
+
   const [allLists, setAllLists] = useState(() => {
     const saved = localStorage.getItem('little_fires_lists');
     const parsed = saved ? JSON.parse(saved) : {
@@ -7539,6 +7684,9 @@ function LittleFiresApp() {
   const [goalsActiveOpen, setGoalsActiveOpen] = useState(true);
   const [goalsBacklogOpen, setGoalsBacklogOpen] = useState(false);
   const [goalsCompleteOpen, setGoalsCompleteOpen] = useState(false);
+  // The project AI shelf. Closed by default: it costs an API call to fill, so
+  // opening it should be a decision.
+  const [projectSuggestionsOpen, setProjectSuggestionsOpen] = useState(false);
   const [goalDetailEditing, setGoalDetailEditing] = useState(false);
   // Which field the reader tapped to get into edit mode. Cleared when the mode
   // is left, so the next entry does not focus a field nobody asked for.
@@ -8557,84 +8705,402 @@ function LittleFiresApp() {
   // rather than at module scope because it reads app state directly; it holds
   // no state of its own, so there is no remount hazard of the kind that bit
   // the nested-component bug.
-  const FirstRunIntro = () => (
-    <div style={{
-      // Floated over the flame rather than stacked under it. Two reasons: the
-      // flame plus its 300px min-height pushed the card below the fold on a
-      // laptop, and sitting in the flow made the intro read as app content
-      // rather than as something laid over the app. Translucent so the flame
-      // stays visible through it, which is what signals "this is a layer".
-      position: 'absolute', top: '50%', left: '50%',
-      transform: 'translate(-50%, -50%)',
-      width: 'min(460px, calc(100% - 32px))',
-      padding: '20px 22px', textAlign: 'left', zIndex: 5,
-      background: 'rgba(var(--surface-rgb), 0.82)',
-      // -webkit- first for older iOS Safari, which shipped the prefixed
-      // property years before the standard one.
-      WebkitBackdropFilter: 'blur(12px)',
-      backdropFilter: 'blur(12px)',
-      border: '2px solid rgba(var(--accent-rgb), 0.28)',
-      borderRadius: '15px',
-      boxShadow: '0 8px 28px rgba(0, 0, 0, 0.12)'
-    }}>
-      <div style={{
-        fontFamily: 'var(--font-ui)', fontSize: '1.15rem', fontWeight: 700,
-        color: 'var(--text)', marginBottom: '8px'
+  // ---- First-run intro (Session A) ---------------------------------------
+  // A three-card tour, floated over the empty-state flame. Defined here rather
+  // than at module scope because it reads app state directly.
+  //
+  // It holds NO state of its own - the step lives in the parent. A component
+  // declared inside another component gets a new function identity on every
+  // parent render, so React treats it as a different type and remounts it;
+  // any state inside would be destroyed on each keystroke elsewhere in the
+  // app. Same fault that forced the Task hoist, in a smaller place.
+  const INTRO_CARDS = [
+    {
+      title: 'Welcome to Little Fires',
+      body: (
+        <>
+          A home for all the little things that need tending.
+        </>
+      )
+    },
+    {
+      title: 'Lists keep things sorted',
+      body: (
+        <>
+          Add tasks to a list — Personal, Work, whatever you need.{' '}
+          <strong>All Tasks</strong> rolls them up so you can see everything at
+          once. Open a single list when you'd rather focus on one area.
+        </>
+      ),
+      // Shared lists are Sessions 2-3, not built yet. Written as coming rather
+      // than present tense on purpose: a first-run tour that names a feature
+      // someone then cannot find makes the app feel broken rather than
+      // forthcoming. When pairing ships, this becomes its own card - drop the
+      // "soon", say what it does, and the counter follows automatically.
+      aside: (
+        <>
+          <strong>Shared lists</strong> are coming soon — a list you and someone
+          else both work from, so you can move through things together.
+        </>
+      )
+    },
+    {
+      title: 'The bigger picture',
+      body: (
+        <>
+          When a handful of tasks belong to one larger thing, group them into a{' '}
+          <strong>project</strong>. <strong>Goals</strong> sit above projects —
+          the reason you're doing any of it. Both are optional, so it's all up
+          to you.
+        </>
+      ),
+      // Mentioned, not promised. AI Suggestions is off until a key is added,
+      // so it must not read as something to do right now - "when you're ready"
+      // is carrying that.
+      aside: (
+        <>
+          And if you want to really get things heated up,{' '}
+          <strong>AI Suggestions</strong> can propose tasks from what you've
+          been working on, and spot projects hiding in your list. Add a key in
+          Settings when you're ready.
+        </>
+      )
+    }
+  ];
+
+  const FirstRunIntro = () => {
+    const total = INTRO_CARDS.length;
+    const card = INTRO_CARDS[Math.min(introStep, total - 1)];
+    const isLast = introStep >= total - 1;
+
+    const secondaryBtn = {
+      padding: '10px 16px', borderRadius: '8px', cursor: 'pointer',
+      background: 'rgba(var(--surface-rgb), 1)',
+      border: '2px solid rgba(var(--accent-rgb), 0.3)',
+      color: 'var(--text-muted)', fontSize: '0.82rem',
+      fontFamily: 'var(--font-ui)',
+      textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none'
+    };
+    const primaryBtn = {
+      ...secondaryBtn,
+      background: 'rgba(var(--accent-rgb), 0.9)',
+      border: '2px solid rgba(var(--accent-rgb), 0.9)',
+      color: 'var(--bg)', fontWeight: 600
+    };
+
+    return (
+      <div className="intro-card" style={{
+        // Floated over the flame rather than stacked under it. Two reasons: the
+        // flame plus its 300px min-height pushed the card below the fold on a
+        // laptop, and sitting in the flow made the intro read as app content
+        // rather than as something laid over the app. Translucent so the flame
+        // stays visible through it, which is what signals "this is a layer".
+        //
+        // NOTE: intro-card-in animates this same transform. If the centring
+        // changes here, change the keyframes too - otherwise the card lands
+        // offset by whatever the two disagree about.
+        position: 'absolute', top: '50%', left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: 'min(460px, calc(100% - 32px))',
+        padding: '20px 22px', textAlign: 'left', zIndex: 5,
+        background: 'rgba(var(--surface-rgb), 0.82)',
+        // -webkit- first for older iOS Safari, which shipped the prefixed
+        // property years before the standard one.
+        WebkitBackdropFilter: 'blur(12px)',
+        backdropFilter: 'blur(12px)',
+        border: '2px solid rgba(var(--accent-rgb), 0.28)',
+        borderRadius: '15px',
+        boxShadow: '0 8px 28px rgba(0, 0, 0, 0.12)'
       }}>
-        Welcome to Little Fires
+        <div style={{
+          display: 'flex', alignItems: 'baseline',
+          justifyContent: 'space-between', gap: '10px', marginBottom: '8px'
+        }}>
+          <div style={{
+            fontFamily: 'var(--font-ui)', fontSize: '1.15rem', fontWeight: 700,
+            color: 'var(--text)'
+          }}>
+            {card.title}
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-ui)', fontSize: '0.74rem',
+            color: 'var(--text-muted)', whiteSpace: 'nowrap'
+          }}>
+            {introStep + 1} of {total}
+          </div>
+        </div>
+
+        <p style={{
+          fontFamily: 'var(--font-ui)', fontSize: '0.9rem', lineHeight: 1.5,
+          color: 'var(--text-muted)', margin: '0 0 12px'
+        }}>
+          {card.body}
+        </p>
+
+        {card.aside && (
+          <p style={{
+            fontFamily: 'var(--font-ui)', fontSize: '0.86rem', lineHeight: 1.5,
+            color: 'var(--text-muted)', margin: '0 0 16px',
+            paddingTop: '12px',
+            borderTop: '1px solid rgba(var(--accent-rgb), 0.18)'
+          }}>
+            {card.aside}
+          </p>
+        )}
+
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {!isLast ? (
+            <>
+              <button onClick={() => setIntroStep(s => s + 1)} style={primaryBtn}>
+                Next
+              </button>
+              {/* Skip is on every card, not just the first. Someone who gets it
+                  after card one should not have to click twice more to reach
+                  their own app. */}
+              <button onClick={dismissIntro} style={secondaryBtn}>
+                Skip
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={loadSampleData} style={primaryBtn}>
+                Load sample tasks
+              </button>
+              <button onClick={dismissIntro} style={secondaryBtn}>
+                Start fresh
+              </button>
+            </>
+          )}
+          {introStep > 0 && (
+            <button
+              onClick={() => setIntroStep(s => Math.max(0, s - 1))}
+              style={{
+                ...secondaryBtn, background: 'transparent', border: 'none',
+                color: 'var(--text-muted)', padding: '10px 6px'
+              }}
+            >
+              Back
+            </button>
+          )}
+        </div>
+
       </div>
-      <p style={{
-        fontFamily: 'var(--font-ui)', fontSize: '0.9rem', lineHeight: 1.5,
-        color: 'var(--text-muted)', margin: '0 0 10px'
-      }}>
-        A place for the small things that need tending. Tasks live on lists.
-        Projects group tasks that belong together. Goals are the why behind
-        the projects.
-      </p>
-      <p style={{
-        fontFamily: 'var(--font-ui)', fontSize: '0.9rem', lineHeight: 1.5,
-        color: 'var(--text-muted)', margin: '0 0 16px'
-      }}>
-        Type in the box above to add your first task — or load a few examples
-        to look around first.
-      </p>
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        <button
-          onClick={loadSampleData}
-          style={{
-            padding: '10px 16px', borderRadius: '8px', cursor: 'pointer',
-            background: 'rgba(var(--accent-rgb), 0.9)',
-            border: '2px solid rgba(var(--accent-rgb), 0.9)',
-            color: 'var(--bg)', fontSize: '0.82rem',
-            fontFamily: 'var(--font-ui)', fontWeight: 600,
-            textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none'
-          }}
-        >
-          Load sample tasks
-        </button>
-        <button
-          onClick={dismissIntro}
-          style={{
-            padding: '10px 16px', borderRadius: '8px', cursor: 'pointer',
-            background: 'rgba(var(--surface-rgb), 1)',
-            border: '2px solid rgba(var(--accent-rgb), 0.3)',
-            color: 'var(--text-muted)', fontSize: '0.82rem',
-            fontFamily: 'var(--font-ui)',
-            textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none'
-          }}
-        >
-          Got it
-        </button>
-      </div>
-      <p style={{
-        fontFamily: 'var(--font-ui)', fontSize: '0.74rem', lineHeight: 1.45,
-        color: 'var(--text-muted)', margin: '14px 0 0'
-      }}>
-        Everything stays on this device. Nothing is sent anywhere, and there is
-        no account to create — so back up from Settings if it matters to you.
-      </p>
-    </div>
-  );
+    );
+  };
+
+  // ---- Project suggestions -----------------------------------------------
+  // Only unfiled tasks are sent. A task already in a project is not available
+  // to be grouped, and sending it would invite the model to propose moving it.
+  const looseTasksFor = (listName) =>
+    (allLists[listName] || []).filter(t => t && !t.projectId && !t.completed);
+
+  const refreshProjectShelf = async (listName) => {
+    if (aiProjectBusy[listName]) return;
+    const loose = looseTasksFor(listName);
+
+    setAiProjectErrors(prev => {
+      const next = { ...prev };
+      delete next[listName];
+      return next;
+    });
+
+    // Below two loose tasks there is nothing that could be grouped. Saying so
+    // costs nothing; sending it would spend a request to be told the same.
+    if (loose.length < 2) {
+      setAiProjectShelves(prev => {
+        const next = {
+          ...prev,
+          [listName]: { generatedAt: new Date().toISOString(), items: [] }
+        };
+        writeJsonStore(AI_PROJECT_SUGGESTIONS_STORAGE, next);
+        return next;
+      });
+      setAiProjectErrors(prev => ({
+        ...prev,
+        [listName]: 'Needs at least two unfiled tasks to find a grouping.'
+      }));
+      return;
+    }
+
+    setAiProjectBusy(prev => ({ ...prev, [listName]: true }));
+
+    const payload = {
+      lists: [{
+        list: listName,
+        // Ids go over the wire because they have to come back - that is what
+        // makes accepting a link rather than a duplication. They are opaque
+        // local identifiers, not anything about the person.
+        looseTasks: loose.slice(0, 40).map(t => ({ id: t.id, text: t.text })),
+        existingProjects: (projects[listName] || []).map(p => p.name)
+      }],
+      instructions: aiInstructions
+    };
+
+    const ASK_FOR = SUGGESTIONS_PER_SHELF;
+    let items = [];
+    let failure = null;
+
+    if (aiKeySaved) {
+      const result = await requestSuggestions({
+        apiKey: aiKeySaved,
+        model: settings.aiModel || SUGGESTION_MODELS[0].id,
+        payload,
+        count: ASK_FOR,
+        kind: 'project'
+      });
+      if (result.ok) {
+        const validated = validateProjectSuggestions(
+          result.items, loose.map(t => t.id), ASK_FOR
+        );
+        // Dismissed names stay dismissed.
+        items = validated
+          .filter(c => !aiProjectRejected[normalizeSuggestionText(c.text)])
+          .map(c => ({
+            id: makeId(), text: c.text, rationale: c.rationale, taskIds: c.taskIds
+          }));
+      } else {
+        failure = result.error;
+      }
+    } else {
+      failure = 'Add an API key in Settings to get project suggestions.';
+    }
+
+    setAiProjectBusy(prev => {
+      const next = { ...prev };
+      delete next[listName];
+      return next;
+    });
+
+    if (failure) {
+      setAiProjectErrors(prev => ({ ...prev, [listName]: failure }));
+      return;
+    }
+
+    setAiProjectShelves(prev => {
+      const next = {
+        ...prev,
+        [listName]: { generatedAt: new Date().toISOString(), items }
+      };
+      writeJsonStore(AI_PROJECT_SUGGESTIONS_STORAGE, next);
+      return next;
+    });
+  };
+
+  const removeProjectSuggestion = (listName, id) => {
+    setAiProjectShelves(prev => {
+      const shelf = prev[listName];
+      if (!shelf) return prev;
+      const next = {
+        ...prev,
+        [listName]: { ...shelf, items: shelf.items.filter(i => i.id !== id) }
+      };
+      writeJsonStore(AI_PROJECT_SUGGESTIONS_STORAGE, next);
+      return next;
+    });
+  };
+
+  const dismissProjectSuggestion = (listName, item) => {
+    const key = normalizeSuggestionText(item.text);
+    if (key) {
+      setAiProjectRejected(prev => {
+        const next = { ...prev, [key]: new Date().toISOString() };
+        writeJsonStore(AI_PROJECT_REJECTED_STORAGE, next);
+        return next;
+      });
+    }
+    removeProjectSuggestion(listName, item.id);
+  };
+
+  // Accepting creates an ordinary project and files the referenced tasks into
+  // it. Two writes, so the order matters: the project first, then the tasks -
+  // a task pointing at a project that does not exist yet would render as
+  // unfiled for a frame. Tasks that vanished between generating and accepting
+  // are simply skipped; the project is still worth creating for the rest.
+  const acceptProjectSuggestion = (listName, item, nameOverride) => {
+    const name = (nameOverride != null ? nameOverride : item.text).trim();
+    if (!name) return;
+    const projectId = makeId();
+    const iso = new Date().toISOString();
+
+    setProjects(prev => ({
+      ...prev,
+      [listName]: [{
+        id: projectId,
+        name,
+        description: '',
+        challenge: '',
+        outcome: '',
+        startDate: null,
+        endDate: null,
+        section: 'active',
+        completedAt: null,
+        createdAt: iso
+      }, ...(prev[listName] || [])]
+    }));
+
+    const ids = new Set(item.taskIds || []);
+    setAllLists(prev => ({
+      ...prev,
+      [listName]: (prev[listName] || []).map(t =>
+        ids.has(t.id) ? { ...t, projectId, updatedAt: iso } : t
+      )
+    }));
+
+    removeProjectSuggestion(listName, item.id);
+  };
+
+  // ---- Search: go to a record in its home view ---------------------------
+  // Search shows a record out of context. This puts you back in front of the
+  // real thing - right mode, right list, and the record actually open - rather
+  // than just switching tabs and leaving you to find it again.
+  //
+  // The search query is deliberately left intact. Coming back from a result
+  // and finding the search still there is the normal case; retyping it because
+  // the app helpfully cleared it is not.
+  const goToRecord = (kind, result) => {
+    const listName = result.listName;
+    switch (kind) {
+      case 'task':
+        setAppMode('tasks');
+        if (listName) setCurrentList(listName);
+        // Expanding it is what makes this "go to the task" rather than "go to
+        // the list it is on". The key is composite - the same task id can
+        // appear under more than one list in the master view, so a bare id
+        // would be ambiguous and would silently fail to match.
+        setExpandedTaskId(`${listName}-${result.item.id}`);
+        break;
+      case 'project':
+        setAppMode('projects');
+        if (listName) setCurrentProjectList(listName);
+        setSelectedGoal(null);
+        setSelectedProject({ id: result.item.id, listName });
+        break;
+      case 'goal':
+        setAppMode('goals');
+        if (listName) setCurrentGoalList(listName);
+        setSelectedProject(null);
+        setSelectedGoal({ id: result.item.id, listName });
+        break;
+      case 'note':
+        setAppMode('notes');
+        setSelectedNoteId(result.item.id);
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Shared look for the button on every result type, so "go to" reads as one
+  // action regardless of what kind of record you found.
+  const goToButtonStyle = {
+    padding: '8px 14px', borderRadius: '8px', cursor: 'pointer',
+    background: 'rgba(var(--accent-rgb), 0.9)',
+    border: '2px solid rgba(var(--accent-rgb), 0.9)',
+    color: 'var(--bg)', fontSize: '0.78rem',
+    fontFamily: 'var(--font-ui)', fontWeight: 600,
+    textTransform: 'none', letterSpacing: 'normal', boxShadow: 'none',
+    marginTop: '12px'
+  };
 
   const addTask = () => {
     if (!taskInput.trim()) return;
@@ -8983,7 +9449,7 @@ function LittleFiresApp() {
   //
   // iOS Live Text reads handwriting well and is already on the phone, so
   // copying the text across by hand is both more accurate and free. If this is
-  // ever wanted in-app, the model behind AI Tasks reads handwriting and the
+  // ever wanted in-app, the model behind AI Suggestions reads handwriting and the
   // image is already base64 in storage - but that sends the picture off-device,
   // which is a bigger step than sending task text and would want to be opt-in
   // per photo.
@@ -10499,7 +10965,7 @@ function LittleFiresApp() {
                       example from" is a truthful next line rather than a
                       contradiction of the one above. */}
                   No API key saved. These are examples generated to demonstrate how
-                  it works. Add a key in Settings → AI Tasks for suggestions that
+                  it works. Add a key in Settings → AI Suggestions for suggestions that
                   propose something new.
                 </div>
               )}
@@ -10778,12 +11244,18 @@ function LittleFiresApp() {
             minHeight: introDismissed ? undefined : '420px'
           }}>
           <div className="empty-state" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px'}}>
-            <div style={{
-              width: '180px',
-              height: '180px',
-              position: 'relative',
-              display: 'inline-block'
-            }}>
+            <div
+              /* Animated only while the tour is up. The empty state is also
+                 what you see after clearing your last task, and a flourish
+                 there would be celebrating the wrong thing. */
+              className={introDismissed ? undefined : 'intro-flame'}
+              style={{
+                width: '180px',
+                height: '180px',
+                position: 'relative',
+                display: 'inline-block'
+              }}
+            >
               {/* Background circle */}
               <svg 
                 style={{
@@ -12365,6 +12837,40 @@ function LittleFiresApp() {
            save an animation would be a poor trade. So opening renders the
            content collapsed and expands it a frame later, and closing plays the
            animation before the unmount. */
+        /* First-run reveal. The flame moves first and the card arrives after,
+           because the card is 460px wide over a 180px flame - animating them
+           together would hide the whole gesture behind frosted glass.
+
+           One pass, no loop: a flame that breathes forever behind text is a
+           distraction, and this is meant to be a greeting rather than an
+           ornament. transform and opacity only, so it stays on the compositor
+           and does not force layout on a phone. */
+        @keyframes intro-flame-rise {
+          0%   { transform: translateY(14px) scale(0.94); opacity: 0.55; }
+          45%  { transform: translateY(-10px) scale(1.06); opacity: 1; }
+          100% { transform: translateY(0) scale(1); opacity: 1; }
+        }
+
+        @keyframes intro-card-in {
+          from { opacity: 0; transform: translate(-50%, calc(-50% + 10px)); }
+          to   { opacity: 1; transform: translate(-50%, -50%); }
+        }
+
+        .intro-flame {
+          animation: intro-flame-rise 1100ms cubic-bezier(0.34, 1.2, 0.64, 1) both;
+        }
+
+        .intro-card {
+          animation: intro-card-in 420ms ease-out 520ms both;
+        }
+
+        /* Reduce motion removes the movement, not the content: both land in
+           their final state immediately rather than animating into it. */
+        .reduce-motion .intro-flame,
+        .reduce-motion .intro-card {
+          animation: none;
+        }
+
         .section-shell {
           display: grid;
           grid-template-rows: 1fr;
@@ -12873,6 +13379,13 @@ function LittleFiresApp() {
           padding: 8px 14px;
           color: #ff6b6b;
           font-size: 0.8rem;
+          /* The global button rule sets a 20px accent glow offset 6px down,
+             sized for the big primary buttons. On a small secondary button it
+             pools under the bottom edge and makes it look squashed - and the
+             global :hover swells it to 0 8px 30px, which is when it shows.
+             This class already overrides everything else about that rule; the
+             shadow was the one thing it missed. */
+          box-shadow: none;
           cursor: pointer;
           transition: all 0.3s ease;
           font-weight: 600;
@@ -12899,14 +13412,23 @@ function LittleFiresApp() {
           box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.5);
         }
 
-        .delete-btn:hover {
-          background: rgba(255, 107, 107, 0.3);
-          transform: scale(1.05);
-        }
+        /* Hover guarded: a tap latches :hover on a touchscreen, so without this
+           the button you just pressed stays enlarged with the glow under it -
+           which is exactly what "squashed after clicking" looks like. The
+           shadow is pinned to none here too, since the global button:hover
+           would otherwise put it back. */
+        @media (hover: hover) {
+          .delete-btn:hover {
+            background: rgba(255, 107, 107, 0.3);
+            transform: scale(1.05);
+            box-shadow: none;
+          }
 
-        .edit-btn:hover {
-          background: rgba(var(--accent-rgb), 0.3);
-          transform: scale(1.05);
+          .edit-btn:hover {
+            background: rgba(var(--accent-rgb), 0.3);
+            transform: scale(1.05);
+            box-shadow: none;
+          }
         }
 
         .note-images {
@@ -15634,7 +16156,7 @@ function LittleFiresApp() {
                   className={`menu-item ${appMode === 'ai' ? 'active' : ''}`}
                   onClick={() => { setAppMode('ai'); setMenuOpen(false); }}
                 >
-                  AI Tasks
+                  AI Suggestions
                 </div>
                 <div className="menu-divider"></div>
                 <div 
@@ -15822,7 +16344,7 @@ function LittleFiresApp() {
                     className={`tab ${currentList === SUGGESTIONS_TAB ? 'active' : ''}`}
                     onClick={() => setCurrentList(SUGGESTIONS_TAB)}
                   >
-                    AI Tasks
+                    AI Suggestions
                   </button>
                 )}
               </div>
@@ -17273,6 +17795,145 @@ function LittleFiresApp() {
                     >
                       New Project
                     </button>
+                  </div>
+                )}
+
+                {/* AI Suggestions shelf. Individual lists only: the master view
+                    spans lists, and a project has to belong to exactly one. */}
+                {settings.aiSuggestions && currentProjectList !== 'master' &&
+                 !isSharedList(currentProjectList) && (
+                  <div className="list-section" ref={sectionRef('project-suggestions')}>
+                    <div
+                      className="list-section-header ai-shelf-header"
+                      onClick={() => toggleSection(
+                        'project-suggestions',
+                        projectSuggestionsOpen,
+                        setProjectSuggestionsOpen
+                      )}
+                      style={{cursor: 'pointer'}}
+                    >
+                      <span>AI Suggestions</span>
+                      {((aiProjectShelves[currentProjectList] || {}).items || []).length > 0 && (
+                        <span className="badge work">
+                          {(aiProjectShelves[currentProjectList].items || []).length}
+                        </span>
+                      )}
+                    </div>
+                    {projectSuggestionsOpen && (
+                      <div className={`section-shell ${sectionAnim['project-suggestions'] ? 'section-collapsed' : ''}`}>
+                        <div className="section-shell-inner">
+                          <p style={{
+                            fontFamily: 'var(--font-ui)', fontSize: '0.85rem',
+                            color: 'var(--text-muted)', margin: '0 0 12px', lineHeight: 1.5
+                          }}>
+                            Looks for tasks on this list that belong to one piece of work.
+                            Accepting creates the project and files those tasks into it —
+                            nothing new is invented.
+                          </p>
+
+                          <button
+                            className="suggestion-action"
+                            onClick={() => refreshProjectShelf(currentProjectList)}
+                            disabled={!!aiProjectBusy[currentProjectList]}
+                            style={{
+                              padding: '8px 14px', borderRadius: '8px',
+                              cursor: aiProjectBusy[currentProjectList] ? 'default' : 'pointer',
+                              background: 'rgba(var(--accent-rgb), 0.9)',
+                              border: '2px solid rgba(var(--accent-rgb), 0.9)',
+                              color: 'var(--bg)', fontSize: '0.78rem',
+                              fontFamily: 'var(--font-ui)', fontWeight: 600,
+                              opacity: aiProjectBusy[currentProjectList] ? 0.6 : 1,
+                              marginBottom: '12px'
+                            }}
+                          >
+                            {aiProjectBusy[currentProjectList] ? 'Looking…' : 'Find projects'}
+                          </button>
+
+                          {aiProjectErrors[currentProjectList] && (
+                            <div style={{
+                              padding: '10px 12px', borderRadius: '8px', marginBottom: '12px',
+                              background: 'rgba(200, 90, 70, 0.12)', color: 'var(--text)',
+                              fontSize: '0.8rem', fontFamily: 'var(--font-ui)', lineHeight: 1.4
+                            }}>
+                              {aiProjectErrors[currentProjectList]}
+                            </div>
+                          )}
+
+                          {((aiProjectShelves[currentProjectList] || {}).items || []).map(item => {
+                            // Resolve names at render time rather than storing them:
+                            // a task renamed or deleted after the suggestion was
+                            // generated should show its current state, not a stale copy.
+                            const tasks = (item.taskIds || [])
+                              .map(id => (allLists[currentProjectList] || []).find(t => t.id === id))
+                              .filter(Boolean);
+                            return (
+                              <div key={item.id} style={{
+                                background: 'rgba(var(--surface-raised-rgb), 0.6)',
+                                border: '2px solid rgba(var(--accent-rgb), 0.15)',
+                                borderRadius: '15px', padding: '16px', marginBottom: '12px'
+                              }}>
+                                <div className="task-text" style={{ marginBottom: '4px' }}>
+                                  {item.text}
+                                </div>
+                                {item.rationale && (
+                                  <div style={{
+                                    fontFamily: 'var(--font-ui)', fontSize: '0.78rem',
+                                    color: 'var(--text-muted)', marginBottom: '10px',
+                                    lineHeight: 1.4
+                                  }}>
+                                    {item.rationale}
+                                  </div>
+                                )}
+                                <div style={{
+                                  fontFamily: 'var(--font-ui)', fontSize: '0.78rem',
+                                  color: 'var(--text-muted)', marginBottom: '10px'
+                                }}>
+                                  {tasks.length === 0 ? (
+                                    <em>Those tasks are no longer on this list.</em>
+                                  ) : (
+                                    <>
+                                      Would file {tasks.length} task{tasks.length === 1 ? '' : 's'}:
+                                      <ul style={{ margin: '6px 0 0', paddingLeft: '18px' }}>
+                                        {tasks.map(t => <li key={t.id}>{t.text}</li>)}
+                                      </ul>
+                                    </>
+                                  )}
+                                </div>
+                                <div className="suggestion-actions" style={{
+                                  display: 'flex', gap: '8px', flexWrap: 'wrap'
+                                }}>
+                                  <button
+                                    className="suggestion-action"
+                                    disabled={tasks.length < 2}
+                                    onClick={() => acceptProjectSuggestion(currentProjectList, item)}
+                                    style={{
+                                      background: 'rgba(var(--accent-rgb), 0.9)',
+                                      border: '2px solid rgba(var(--accent-rgb), 0.9)',
+                                      color: 'var(--bg)',
+                                      cursor: tasks.length < 2 ? 'default' : 'pointer',
+                                      opacity: tasks.length < 2 ? 0.5 : 1
+                                    }}
+                                  >
+                                    Create project
+                                  </button>
+                                  <button
+                                    className="suggestion-action"
+                                    onClick={() => dismissProjectSuggestion(currentProjectList, item)}
+                                    style={{
+                                      background: 'rgba(var(--surface-rgb), 1)',
+                                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                      color: 'var(--text-muted)', cursor: 'pointer'
+                                    }}
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -22413,6 +23074,7 @@ function LittleFiresApp() {
                                   task={result.item}
                                   listName={result.listName}
                                   showMoveButtons={true}
+                                  onGoTo={() => goToRecord('task', result)}
                                 />
                               </div>
                             ))}
@@ -22428,10 +23090,7 @@ function LittleFiresApp() {
                             </div>
                             {searchResults.projects.map(result => (
                               <div key={result.item.id} 
-                                onClick={() => {
-                                  setAppMode('projects');
-                                  setCurrentList(result.listName);
-                                }}
+                                onClick={() => goToRecord('project', result)}
                                 style={{
                                   background: 'rgba(var(--surface-raised-rgb), 0.6)',
                                   padding: '15px',
@@ -22455,6 +23114,12 @@ function LittleFiresApp() {
                                     {result.item.description}
                                   </div>
                                 )}
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); goToRecord('project', result); }}
+                                  style={goToButtonStyle}
+                                >
+                                  Go to Project
+                                </button>
                               </div>
                             ))}
                           </div>
@@ -22469,10 +23134,7 @@ function LittleFiresApp() {
                             </div>
                             {searchResults.goals.map(result => (
                               <div key={result.item.id}
-                                onClick={() => {
-                                  setAppMode('goals');
-                                  setCurrentList(result.listName);
-                                }}
+                                onClick={() => goToRecord('goal', result)}
                                 style={{
                                   background: 'rgba(var(--surface-raised-rgb), 0.6)',
                                   padding: '15px',
@@ -22496,6 +23158,12 @@ function LittleFiresApp() {
                                     {result.item.description}
                                   </div>
                                 )}
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); goToRecord('goal', result); }}
+                                  style={goToButtonStyle}
+                                >
+                                  Go to Goal
+                                </button>
                               </div>
                             ))}
                           </div>
@@ -22510,7 +23178,7 @@ function LittleFiresApp() {
                             </div>
                             {searchResults.notes.map(result => (
                               <div key={result.item.id || Math.random()}
-                                onClick={() => setAppMode('notes')}
+                                onClick={() => goToRecord('note', result)}
                                 style={{
                                   background: 'rgba(var(--surface-raised-rgb), 0.6)',
                                   padding: '15px',
@@ -22546,6 +23214,12 @@ function LittleFiresApp() {
                                     ))}
                                   </div>
                                 )}
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); goToRecord('note', result); }}
+                                  style={goToButtonStyle}
+                                >
+                                  Go to Note
+                                </button>
                               </div>
                             ))}
                           </div>
@@ -23995,14 +24669,15 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
-                  {/* ---- AI Tasks ---- */}
+                  {/* ---- AI Suggestions ---- */}
                   <div style={card}>
-                    <div style={heading}>AI Tasks</div>
+                    <div style={heading}>AI Suggestions</div>
                     <div style={sub}>
                       Suggests tasks based on the goals, projects, and tasks you've
-                      been creating, completing and leaving in your backlog. These are
-                      AI suggestions only — nothing is added to a list until you
-                      accept it.
+                      been creating, completing and leaving in your backlog, and
+                      proposes projects by grouping tasks that belong together.
+                      These are AI suggestions only — nothing is added to a list
+                      until you accept it.
                     </div>
 
                     <div style={row}>

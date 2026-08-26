@@ -39,6 +39,49 @@
      tests/theme-boot-test.js pins every one of those couplings. -->
 <script>
   (function () {
+    // Ports of hexToRgbTriplet / lightenHex / muteHex from the app. Same
+    // fallbacks, so a malformed stored colour resolves identically in both.
+    function parseHex(hex) {
+      var h = String(hex || '').replace('#', '');
+      var full = h.length === 3 ? h.charAt(0) + h.charAt(0) + h.charAt(1) +
+                 h.charAt(1) + h.charAt(2) + h.charAt(2) : h;
+      var n = parseInt(full, 16);
+      return (isNaN(n) || full.length !== 6) ? null : n;
+    }
+    function triplet(hex, fallback) {
+      var n = parseHex(hex);
+      if (n === null) return fallback;
+      return ((n >> 16) & 255) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255);
+    }
+    function lighten(hex) {
+      var n = parseHex(hex);
+      if (n === null) return '#6a8f76';
+      var mix = function (c) { return Math.round(c + (255 - c) * 0.22); };
+      var parts = [mix((n >> 16) & 255), mix((n >> 8) & 255), mix(n & 255)];
+      return '#' + parts.map(function (v) {
+        var s = v.toString(16);
+        return s.length === 1 ? '0' + s : s;
+      }).join('');
+    }
+    function mute(hex) {
+      var n = parseHex(hex);
+      if (n === null) return '107, 107, 122';
+      var NEUTRAL = [107, 107, 122];
+      var mix = function (c, i) { return Math.round(c * 0.38 + NEUTRAL[i] * 0.62); };
+      return [mix((n >> 16) & 255, 0), mix((n >> 8) & 255, 1), mix(n & 255, 2)].join(', ');
+    }
+
+    // Must match ACCENT_PRESETS in little-fires-app.jsx. If one list changes
+    // and the other does not, the boot script paints one colour and React
+    // corrects it a frame later - which is the flash this exists to prevent.
+    var ACCENTS = {
+      'matcha': { accent: '#53745f', light: '#6a8f76' },
+      'ember':  { accent: '#b45309', light: '#f59e0b' },
+      'ocean':  { accent: '#2563eb', light: '#60a5fa' },
+      'plum':   { accent: '#7e22ce', light: '#a855f7' },
+      'rose':   { accent: '#be123c', light: '#fb7185' },
+      'slate':  { accent: '#475569', light: '#94a3b8' }
+    };
     var FONTS = {
       'default':  { ui: "'Quicksand', sans-serif", body: "'Nunito', sans-serif",
                     google: 'Quicksand:wght@400;500;600;700&family=Nunito:wght@400;500;600;700' },
@@ -53,13 +96,14 @@
                     google: 'Nunito:wght@400;500;600;700;800' }
     };
     try {
-      var theme, fontChoice;
+      var theme, fontChoice, accentId, customAccent;
       try {
         var saved = localStorage.getItem('little_fires_settings');
         if (!saved) {
           // Fresh install: the app's DEFAULT_SETTINGS look.
           theme = 'light';
           fontChoice = 'serif';
+          accentId = 'matcha';
         } else {
           var parsed = JSON.parse(saved);
           // A key missing from a stored blob means it was written before
@@ -67,10 +111,13 @@
           // previous ones - the same pins the app's settings loader applies.
           theme = parsed.theme === undefined ? 'system' : parsed.theme;
           fontChoice = parsed.fontChoice === undefined ? 'default' : parsed.fontChoice;
+          accentId = parsed.accentId === undefined ? 'matcha' : parsed.accentId;
+          customAccent = parsed.customAccent;
         }
       } catch (err) {
         theme = 'light';
         fontChoice = 'serif';
+        accentId = 'matcha';
       }
 
       var root = document.documentElement;
@@ -83,6 +130,18 @@
       if (light) root.classList.add('theme-light');
       root.style.backgroundColor = light ? '#faf9f5' : '#1a1a2e';
       root.style.colorScheme = light ? 'light' : 'dark';
+
+      // Accent, in the same shape the app's layout effect uses. Written here
+      // as well so the very first painted frame - before React has loaded -
+      // already carries the chosen colour. Without this the stylesheet's
+      // :root defaults show through until the bundle mounts.
+      var acc = ACCENTS[accentId];
+      var accentHex = acc ? acc.accent : (customAccent || '#53745f');
+      var lightHex = acc ? acc.light : lighten(accentHex);
+      root.style.setProperty('--accent', accentHex);
+      root.style.setProperty('--accent-light', lightHex);
+      root.style.setProperty('--accent-rgb', triplet(accentHex, '83, 116, 95'));
+      root.style.setProperty('--accent-muted-rgb', mute(accentHex));
 
       // Resolve the id before using it: an unrecognised stored choice (an
       // older or newer settings blob) falls back to the default pairing, and

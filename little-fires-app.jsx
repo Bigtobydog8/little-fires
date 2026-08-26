@@ -5380,6 +5380,77 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   }
                 }
               }
+              // Backspace at the start of a bullet - remove the bullet.
+              //
+              // The browser default cannot do this when the <ul> is the first
+              // thing in the editor: there is no preceding line to merge the
+              // <li> into, so the keypress silently does nothing and the
+              // bullet is impossible to get rid of. Same shape as the checkbox
+              // branch above, and needed for the same reason.
+              else if (e.key === 'Backspace' && selection.isCollapsed && (() => {
+                const el = range.startContainer.nodeType === Node.ELEMENT_NODE
+                  ? range.startContainer : range.startContainer.parentElement;
+                const li = el && el.closest ? el.closest('li') : null;
+                return li && e.currentTarget.contains(li);
+              })()) {
+                const el = range.startContainer.nodeType === Node.ELEMENT_NODE
+                  ? range.startContainer : range.startContainer.parentElement;
+                const li = el.closest('li');
+                const liText = (li.textContent || '').replace(/\u00A0/g, '').trim();
+
+                // Only intercept at the very start of the item. Anywhere else
+                // inside real text, the default backspace is correct and this
+                // must stay out of the way.
+                const atStart = range.startOffset === 0 || liText === '';
+                if (atStart) {
+                  pushHistory(e.currentTarget);
+                  const list = li.parentElement;
+                  const indent = parseInt(li.style.marginLeft || '0') || 0;
+
+                  if (indent > 0) {
+                    // Indented: first press outdents rather than deleting, so a
+                    // nested bullet steps back out the way it stepped in.
+                    e.preventDefault();
+                    li.style.marginLeft = Math.max(0, indent - 20) + 'px';
+                    const r = document.createRange();
+                    r.setStart(li, 0);
+                    r.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(r);
+                  } else {
+                    e.preventDefault();
+                    // Becomes a plain line, keeping whatever was typed.
+                    const newLine = document.createElement('div');
+                    newLine.style.display = 'block';
+                    const newSpan = document.createElement('span');
+                    newSpan.contentEditable = 'true';
+                    newSpan.innerHTML = li.innerHTML && liText !== '' ? li.innerHTML : '&nbsp;';
+                    newLine.appendChild(newSpan);
+
+                    // Placed where the list is, not where the <li> is - a <div>
+                    // inside a <ul> is invalid and renders unpredictably.
+                    const isOnlyItem = list.querySelectorAll('li').length === 1;
+                    if (isOnlyItem) {
+                      list.parentNode.replaceChild(newLine, list);
+                    } else if (li === list.firstElementChild) {
+                      list.parentNode.insertBefore(newLine, list);
+                      li.remove();
+                    } else {
+                      // Splitting mid-list would orphan the items below, so the
+                      // line goes after the whole list and the rest stays put.
+                      list.parentNode.insertBefore(newLine, list.nextSibling);
+                      li.remove();
+                    }
+
+                    const r = document.createRange();
+                    r.setStart(newSpan.firstChild || newSpan, 0);
+                    r.collapse(true);
+                    selection.removeAllRanges();
+                    selection.addRange(r);
+                  }
+                  setTimeout(() => refreshListMarkers(e.currentTarget), 0);
+                }
+              }
               
               // Handle Enter key
               else if (e.key === 'Enter' && checkboxLine) {
@@ -8818,7 +8889,20 @@ function LittleFiresApp() {
       title: 'Welcome to Little Fires',
       body: (
         <>
-          A home for all the little things that need tending.
+          <span style={{ display: 'block' }}>
+            A home for all the little things that need tending.
+          </span>
+          {/* "Built for one" is not only about solo use - it is the local-first
+              promise in three words: the app is complete without an account.
+              "Better shared" points at pairing, which does not exist yet; card
+              2 says "coming soon" explicitly so this reads as direction rather
+              than a claim. Revisit the moment Session 2 ships. */}
+          <span style={{
+            display: 'block', marginTop: '10px', fontWeight: 700,
+            color: 'var(--text)'
+          }}>
+            Built for one. Better shared.
+          </span>
         </>
       )
     },
@@ -8826,9 +8910,14 @@ function LittleFiresApp() {
       title: 'Lists keep things sorted',
       body: (
         <>
-          Add tasks to a list — Personal, Work, whatever you need.{' '}
-          <strong>All Tasks</strong> rolls them up so you can see everything at
-          once. Open a single list when you'd rather focus on one area.
+          <span style={{ display: 'block' }}>
+            <strong>Add tasks</strong> to a list — Personal, Work, whatever you
+            need.
+          </span>
+          <span style={{ display: 'block', marginTop: '10px' }}>
+            <strong>All Tasks</strong> rolls them up so you can see everything
+            at once. Open a single list to drill down on one area.
+          </span>
         </>
       ),
       // Shared lists are Sessions 2-3, not built yet. Written as coming rather
@@ -8840,7 +8929,7 @@ function LittleFiresApp() {
       aside: (
         <>
           Coming soon — a list you and someone else both work from, so you can
-          move through things together.
+          get things done together without texts or emails.
         </>
       )
     },
@@ -8848,10 +8937,14 @@ function LittleFiresApp() {
       title: 'The bigger picture',
       body: (
         <>
-          When a handful of tasks belong to one larger thing, group them into a{' '}
-          <strong>project</strong>. <strong>Goals</strong> sit above projects —
-          the reason you're doing any of it. Both are optional, so it's all up
-          to you.
+          <span style={{ display: 'block' }}>
+            When a handful of tasks belong to one larger thing, group them into
+            a <strong>project</strong>.
+          </span>
+          <span style={{ display: 'block', marginTop: '10px' }}>
+            <strong>Goals</strong> sit above projects — the reason you're doing
+            any of it. Both are optional, so it's all up to you.
+          </span>
         </>
       ),
       // Mentioned, not promised. AI Suggestions is off until a key is added,
@@ -11416,7 +11509,21 @@ function LittleFiresApp() {
                   it sits above the logo and must not eat taps. */}
               {!introDismissed && introFireFill > 0.001 && (() => {
                 const flameTopY = 60, flameBottomY = 1240;
-                const levelY = flameBottomY - (flameBottomY - flameTopY) * introFireFill;
+                // Caps the fill so the VISIBLE top of the flames reaches 80% of
+                // the silhouette, leaving black at the tip. The black up there
+                // is what keeps this reading as the Little Fires mark catching
+                // rather than a solid orange blob at the peak of the zoom -
+                // which is exactly when it is largest and most obvious.
+                //
+                // 0.685, not 0.8, because the spiky edge rises well above the
+                // level it is drawn from: up to 95 for a tall peak, ~32 of
+                // oscillation, ~8 for the curve control points - about 135
+                // units in a 1180-unit span, or 11%. Capping the base at 0.8
+                // put the actual flame tips at 91% and left almost nothing
+                // showing. If introFlameEdge's amplitudes change, this changes.
+                const FILL_CEILING = 0.685;
+                const levelY = flameBottomY -
+                  (flameBottomY - flameTopY) * introFireFill * FILL_CEILING;
                 return (
                   <svg
                     viewBox="0 0 1280 1280"
@@ -12642,8 +12749,19 @@ function LittleFiresApp() {
           height: 100%;
         }
 
+        /* No glow. These are section headers, not status.
+              Two reasons it went:
+              1. Warm-red means "hot" everywhere else in this app - the flame
+                 flag on an urgent task, the lit logo on first run. On To Do,
+                 which holds most tasks most of the time, it attached the
+                 strongest colour cue to the least meaningful signal and made
+                 the flag on a genuinely urgent task compete with its own
+                 section header.
+              2. drop-shadow bleeds past every edge of an SVG, which is what
+                 made these look soft. The icons were always sharp; the halo
+                 was the blur. Same reason the other two lost theirs. */
         .campfire-icon svg {
-          filter: drop-shadow(0 0 8px rgba(139, 35, 0, 0.6)) drop-shadow(0 0 12px rgba(205, 50, 0, 0.4));
+          filter: none;
         }
 
         .logs-icon {
@@ -12652,11 +12770,13 @@ function LittleFiresApp() {
         }
 
         .logs-icon svg {
-          filter: drop-shadow(0 0 6px rgba(128, 128, 128, 0.5)) drop-shadow(0 0 10px rgba(160, 160, 160, 0.3));
+          /* Grey glow on a cream background left this one with no defined edge
+             at all - it read as a smudge more than an icon. */
+          filter: none;
         }
 
         .checkbox-icon svg {
-          filter: drop-shadow(0 0 6px rgba(var(--accent-rgb), 0.5)) drop-shadow(0 0 10px rgba(168, 230, 207, 0.3));
+          filter: none;
         }
 
         .list-section-header .badge {
@@ -17464,6 +17584,59 @@ function LittleFiresApp() {
                                   selection.removeAllRanges();
                                   selection.addRange(r);
                                 }
+                              }
+                            }
+                            // Backspace at the start of a bullet. Same fix as
+                            // the task details editor - the browser default
+                            // cannot delete an <li> when the <ul> is the first
+                            // thing in the field, because there is nothing
+                            // before it to merge into.
+                            else if (e.key === 'Backspace' && selection.isCollapsed && (() => {
+                              const el = range.startContainer.nodeType === Node.ELEMENT_NODE
+                                ? range.startContainer : range.startContainer.parentElement;
+                              const li = el && el.closest ? el.closest('li') : null;
+                              return li && e.currentTarget.contains(li);
+                            })()) {
+                              const el = range.startContainer.nodeType === Node.ELEMENT_NODE
+                                ? range.startContainer : range.startContainer.parentElement;
+                              const li = el.closest('li');
+                              const liText = (li.textContent || '').replace(/\u00A0/g, '').trim();
+                              const atStart = range.startOffset === 0 || liText === '';
+                              if (atStart) {
+                                const list = li.parentElement;
+                                const indent = parseInt(li.style.marginLeft || '0') || 0;
+                                e.preventDefault();
+                                if (indent > 0) {
+                                  li.style.marginLeft = Math.max(0, indent - 20) + 'px';
+                                  const r = document.createRange();
+                                  r.setStart(li, 0);
+                                  r.collapse(true);
+                                  selection.removeAllRanges();
+                                  selection.addRange(r);
+                                } else {
+                                  const newLine = document.createElement('div');
+                                  newLine.style.display = 'block';
+                                  const newSpan = document.createElement('span');
+                                  newSpan.contentEditable = 'true';
+                                  newSpan.innerHTML = li.innerHTML && liText !== '' ? li.innerHTML : '&nbsp;';
+                                  newLine.appendChild(newSpan);
+                                  const isOnlyItem = list.querySelectorAll('li').length === 1;
+                                  if (isOnlyItem) {
+                                    list.parentNode.replaceChild(newLine, list);
+                                  } else if (li === list.firstElementChild) {
+                                    list.parentNode.insertBefore(newLine, list);
+                                    li.remove();
+                                  } else {
+                                    list.parentNode.insertBefore(newLine, list.nextSibling);
+                                    li.remove();
+                                  }
+                                  const r = document.createRange();
+                                  r.setStart(newSpan.firstChild || newSpan, 0);
+                                  r.collapse(true);
+                                  selection.removeAllRanges();
+                                  selection.addRange(r);
+                                }
+                                setTimeout(() => refreshListMarkers(e.currentTarget), 0);
                               }
                             }
                             

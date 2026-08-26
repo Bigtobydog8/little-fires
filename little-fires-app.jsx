@@ -374,7 +374,7 @@ function FlameIcon({ size = 13 }) {
 // synced list means one person's edits land on the other's task.
 // randomUUID needs a secure context, which localhost and any https host are;
 // the fallback covers plain-http origins where it isn't exposed.
-// Bullet list and Follow Up, so every details-toolbar button has an icon to
+// Bullet list and Next Steps, so every details-toolbar button has an icon to
 // fall back on when the labels are hidden on a narrow screen.
 function BulletsIcon(props) {
   return (
@@ -2212,7 +2212,7 @@ function groupTasksByStatus(items, getTask) {
 //
 // Only five operations here ever reached the native stack: bold, underline,
 // indent/outdent on a bullet, paste, and one delete. Everything that makes this
-// editor what it is - inserting a checkbox, the bullet and Follow Up buttons,
+// editor what it is - inserting a checkbox, the bullet and Next Steps buttons,
 // indenting a plain line, Tab, Enter inside a checklist item, Backspace turning
 // one back into text, drag-to-indent, ticking a box - mutates the DOM directly
 // and is invisible to it.
@@ -4867,7 +4867,7 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 const detailsArea = e.target.closest('.task-details-section').querySelector('.details-richtext');
                 if (!detailsArea) return;
 
-                // One Follow Up section per task. The heading is tagged with
+                // One Next Steps section per task. The heading is tagged with
                 // its own class and that survives into the saved HTML, so its
                 // presence is the check - and it holds for a task reopened
                 // later, not just within this editing session.
@@ -4927,14 +4927,20 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 pushHistory(detailsArea);
                 detailsArea.focus();
 
-                // Build a "Follow Up" heading line with the matcha underline
+                // Build the "Next Steps" heading line with the matcha underline.
+                // NOTE: the class stays .follow-up-heading. It is written into
+                // saved task HTML and listed in the sanitizer's allowlist, so
+                // renaming it would orphan every section already in someone's
+                // data - the heading would lose its styling and the toggle
+                // would stop finding it. The label is what changed, not the
+                // markup.
                 // Styled by .follow-up-heading rather than inline: the
                 // sanitiser strips style attributes, so anything set here
                 // would be discarded on the next save.
                 const heading = document.createElement('div');
                 heading.className = 'follow-up-heading';
                 const headingSpan = document.createElement('span');
-                headingSpan.textContent = 'Follow Up';
+                headingSpan.textContent = 'Next Steps';
                 heading.appendChild(headingSpan);
                 
                 // Build a bullet list with one empty bullet beneath the heading
@@ -4961,11 +4967,11 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 // Refresh markers so everything stays consistent
                 setTimeout(() => refreshListMarkers(detailsArea), 0);
               }}
-              title="Add or remove Follow Up section"
-              aria-label="Add or remove Follow Up section"
+              title="Add or remove Next Steps section"
+              aria-label="Add or remove Next Steps section"
             >
               <span className="toolbar-btn-compact-icon"><FollowUpIcon /></span>
-              <span className="toolbar-btn-label">Follow Up</span>
+              <span className="toolbar-btn-label">Next Steps</span>
             </button>
             {/* Indent / outdent. Icon-only, so the toolbar doesn't grow two
                 more word-width buttons - the pair reads as one control.
@@ -5504,6 +5510,21 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 // Case 3: Checkbox with text - create new checkbox at same indent
                 else {
                   e.preventDefault();
+
+                  // Where the caret sits decides which side the new line goes.
+                  // Pressing Enter at the very start of an item means "make room
+                  // above me" - the existing item should move down and you should
+                  // land on a fresh checkbox where it used to be. Inserting below
+                  // regardless left the text where it was and gave you a blank
+                  // line underneath, which is the opposite of what was asked for.
+                  const caretAtLineStart = (() => {
+                    if (range.startOffset !== 0) return false;
+                    const c = range.startContainer;
+                    if (c === textSpan || c === textSpan.firstChild) return true;
+                    // Caret parked on the line itself, before the text span.
+                    if (c === checkboxLine) return true;
+                    return false;
+                  })();
                   
                   // Create new checkbox line with same indent
                   const newCheckboxLine = document.createElement('div');
@@ -5524,10 +5545,14 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   newCheckboxLine.appendChild(newCheckbox);
                   newCheckboxLine.appendChild(newTextSpan);
                   
-                  // Insert after current checkbox line
-                  checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
-                  
-                  // Move cursor to new checkbox line
+                  // Above when the caret is at the start, below otherwise.
+                  // Either way the caret ends up on the new empty line, so the
+                  // next thing typed goes into the item just created.
+                  checkboxLine.parentNode.insertBefore(
+                    newCheckboxLine,
+                    caretAtLineStart ? checkboxLine : checkboxLine.nextSibling
+                  );
+
                   const newRange = document.createRange();
                   newRange.setStart(newTextSpan, 0);
                   newRange.collapse(true);
@@ -13076,7 +13101,7 @@ function LittleFiresApp() {
           border: 1px solid rgba(var(--partner-rgb), 0.45);
         }
 
-        /* The Follow Up heading used to be styled entirely by inline styles set
+        /* The Next Steps heading used to be styled entirely by inline styles set
            when it was created. The sanitiser strips style attributes, so the
            look lives here instead - which also covers headings already saved in
            existing task details, since they carry this class. */
@@ -13682,7 +13707,7 @@ function LittleFiresApp() {
            
            Its buttons are the toolbar's buttons, styled by the same rules, so
            the menu reads as the row extending rather than as a dialog over it. */
-        /* Shown only where the labels are hidden. On a wide screen "Follow Up"
+        /* Shown only where the labels are hidden. On a wide screen "Next Steps"
            is its own best label and a flag beside it is noise - unlike Box and
            Bullets, whose icons double as a preview of what they insert. */
         .toolbar-btn-compact-icon {
@@ -17696,7 +17721,18 @@ function LittleFiresApp() {
                               // Case 3: Checkbox with text - create new checkbox at same indent
                               else {
                                 e.preventDefault();
-                                
+
+                                // Same rule as the task details editor: Enter at
+                                // the very start of an item makes room above it
+                                // rather than below.
+                                const caretAtLineStart = (() => {
+                                  if (range.startOffset !== 0) return false;
+                                  const c = range.startContainer;
+                                  if (c === textSpan || c === textSpan.firstChild) return true;
+                                  if (c === checkboxLine) return true;
+                                  return false;
+                                })();
+
                                 const newCheckboxLine = document.createElement('div');
                                 newCheckboxLine.className = 'checkbox-line';
                                 newCheckboxLine.style.display = 'flex';
@@ -17714,8 +17750,11 @@ function LittleFiresApp() {
                                 newCheckboxLine.appendChild(newCheckbox);
                                 newCheckboxLine.appendChild(newTextSpan);
                                 
-                                checkboxLine.parentNode.insertBefore(newCheckboxLine, checkboxLine.nextSibling);
-                                
+                                checkboxLine.parentNode.insertBefore(
+                                  newCheckboxLine,
+                                  caretAtLineStart ? checkboxLine : checkboxLine.nextSibling
+                                );
+
                                 const newRange = document.createRange();
                                 newRange.setStart(newTextSpan, 0);
                                 newRange.collapse(true);

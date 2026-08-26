@@ -6306,7 +6306,19 @@ function LittleFiresApp() {
 
   // Push the chosen accent into CSS variables on :root, so every rule and
   // inline style that references var(--accent) updates at once.
-  useEffect(() => {
+  //
+  // useLayoutEffect, not useEffect. `settings` is read from localStorage in a
+  // useState initialiser, so the very first render already knows the accent -
+  // but a useEffect runs AFTER the browser paints, so that first frame was
+  // drawn against the :root defaults in the stylesheet (matcha) and then
+  // corrected. That was the visible flash of green before ember. Layout
+  // effects run before paint, so the corrected values are in place for the
+  // first frame the user ever sees.
+  //
+  // index.html's boot script sets these too, before React loads at all, which
+  // covers the gap between HTML parse and mount. If the presets change here,
+  // change them there - the two lists must agree or the flash comes back.
+  React.useLayoutEffect(() => {
     const accent = accentColors.accent;
     const light = accentColors.light;
     const root = document.documentElement;

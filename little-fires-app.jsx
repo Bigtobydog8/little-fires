@@ -14879,11 +14879,28 @@ function LittleFiresApp() {
 
         .note-entry {
           background: rgba(var(--surface-raised-rgb), 0.6);
-          backdrop-filter: blur(10px);
           border-radius: 20px;
           padding: 20px;
           border: 2px solid rgba(var(--border-rgb), 0.2);
           transition: all 0.3s ease;
+        }
+
+        /* backdrop-filter deliberately NOT on .note-entry.
+           
+           The open note's overlay is position:fixed with inset:0 and is
+           rendered from inside the entry. A fixed element positions against the
+           nearest ancestor carrying a transform, filter, backdrop-filter or
+           will-change - not the viewport - so the blur here made every entry a
+           containing block, and "fill the screen" became "fill this card". On
+           desktop that was a strip the width of one note with its own
+           scrollbar; on a phone the card is nearly the viewport anyway, which
+           is why it looked fine there.
+           
+           The blur is restored only on entries that are NOT the open one, so
+           the closed cards keep the frosted look and the open one cannot trap
+           its own overlay. */
+        .note-entry:not(.note-entry-open) {
+          backdrop-filter: blur(10px);
         }
 
         .note-entry:hover {
@@ -17240,7 +17257,7 @@ function LittleFiresApp() {
                                   {groupedNotes[year][month].map(note => (
                   <div 
                     key={note.id} 
-                    className="note-entry" 
+                    className={`note-entry ${selectedNoteId === note.id ? 'note-entry-open' : ''}`}
                     data-note-id={note.id}
                     onClick={(e) => {
                       // If clicking directly on note-entry (padding area), collapse

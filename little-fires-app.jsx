@@ -12,6 +12,14 @@ import {
   getRedirectResult,
   describeAuthError,
   pushDocs,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  arrayUnion,
+  query,
+  where,
+  limit,
   onSnapshot,
   collection,
   doc
@@ -9391,6 +9399,157 @@ function LittleFiresApp() {
       console.error('sweep failed:', err);
       setSweepState('Sweep failed: ' + (err && err.code ? err.code : 'unknown') + '. Nothing local was touched.');
     });
+  };
+
+  // ---- Session 2: households and pairing ----------------------------------
+  // The first data that lives BETWEEN accounts rather than under one. A
+  // household is a doc two uids belong to; pairing is adding the second uid.
+  // No task data touches households in this session - shared lists ride the
+  // next one - so the worst a bug here can do is mis-describe who is paired.
+  //
+  // The invite code IS the secret: eight unambiguous characters, readable by
+  // any signed-in user who has it, deleted on use, expiring in 48h. That is
+  // the right strength for "read it to your partner across the kitchen".
+  const [household, setHousehold] = useState(null); // { id, ...data } | null
+  const [inviteCode, setInviteCode] = useState('');
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [joinInput, setJoinInput] = useState('');
+  const [pairStatus, setPairStatus] = useState('');
+  const [unpairArm, setUnpairArm] = useState(false);
+
+  // Live pairing state. array-contains alone (active filtered client-side)
+  // because adding an equality clause makes it a composite query needing a
+  // manually created index - one console step per environment for something a
+  // one-line filter does.
+  useEffect(() => {
+    if (!authUser) { setHousehold(null); return; }
+    const q = query(collection(db, 'households'),
+      where('members', 'array-contains', authUser.uid));
+    const unsub = onSnapshot(q, (snap) => {
+      let active = null;
+      snap.forEach(d => {
+        const data = d.data();
+        if (data && data.active) active = { id: d.id, ...data };
+      });
+      setHousehold(active);
+      if (active) setPairStatus('');
+    }, (err) => {
+      console.error('household listen failed:', err);
+      setPairStatus(describeSyncError(err));
+    });
+    return unsub;
+  }, [authUser]);
+
+  // Unambiguous alphabet: no 0/O, no 1/I/L - this code gets read out loud.
+  const mintInviteCode = () => {
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let code = '';
+    const rand = new Uint32Array(8);
+    if (window.crypto && window.crypto.getRandomValues) {
+      window.crypto.getRandomValues(rand);
+    } else {
+      for (let i = 0; i < 8; i++) rand[i] = Math.floor(Math.random() * 1e9);
+    }
+    for (let i = 0; i < 8; i++) code += chars[rand[i] % chars.length];
+    return code;
+  };
+
+  const createInvite = async () => {
+    if (!authUser || inviteBusy) return;
+    setInviteBusy(true);
+    setPairStatus('');
+    try {
+      // Household on demand: created the first time an invite is minted, not
+      // on sign-in - most sign-ins are for device sync and never pair.
+      let hid = household && household.id;
+      if (!hid) {
+        hid = 'hh_' + authUser.uid.slice(0, 12) + '_' + Date.now().toString(36);
+        await setDoc(doc(db, 'households/' + hid), {
+          members: [authUser.uid],
+          active: true,
+          createdAt: new Date().toISOString(),
+          dissolvedAt: null
+        });
+      }
+      const code = mintInviteCode();
+      await setDoc(doc(db, 'invites/' + code), {
+        householdId: hid,
+        createdBy: authUser.uid,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 48 * 3600 * 1000).toISOString()
+      });
+      setInviteCode(code);
+    } catch (err) {
+      console.error('invite failed:', err);
+      setPairStatus(describeSyncError(err));
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
+  const joinWithCode = async () => {
+    if (!authUser || inviteBusy) return;
+    const code = joinInput.trim().toUpperCase();
+    if (!code) return;
+    // The guard the schema depends on: someone already in an active household
+    // cannot join another.
+    if (household) {
+      setPairStatus('This account is already paired. Unpair first.');
+      return;
+    }
+    setInviteBusy(true);
+    setPairStatus('');
+    try {
+      const snap = await getDoc(doc(db, 'invites/' + code));
+      if (!snap.exists()) {
+        setPairStatus('That code was not found. Codes expire after 48 hours and each works once.');
+        return;
+      }
+      const inv = snap.data();
+      if (inv.expiresAt && Date.parse(inv.expiresAt) < Date.now()) {
+        setPairStatus('That code has expired. Ask for a fresh one.');
+        try { await deleteDoc(doc(db, 'invites/' + code)); } catch (e) {}
+        return;
+      }
+      if (inv.createdBy === authUser.uid) {
+        setPairStatus('That is your own invite code - it is for the other person to enter.');
+        return;
+      }
+      await updateDoc(doc(db, 'households/' + inv.householdId), {
+        members: arrayUnion(authUser.uid)
+      });
+      // Used codes die. Deleted AFTER the join so a failure above cannot
+      // burn the code for nothing.
+      try { await deleteDoc(doc(db, 'invites/' + code)); } catch (e) {}
+      setJoinInput('');
+      // The household listener sees the membership change and flips the UI.
+    } catch (err) {
+      console.error('join failed:', err);
+      setPairStatus(err && err.code === 'permission-denied'
+        ? 'Could not join - the code may be stale, or the household is full.'
+        : describeSyncError(err));
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
+  // Unpair archives, it does not delete - the decision from the plan. The
+  // household keeps both members and goes inactive, so history survives and
+  // both sides' listeners see it drop at the same moment. The shared-task
+  // archive batch belongs to the session that creates shared tasks.
+  const unpairHousehold = async () => {
+    if (!authUser || !household) return;
+    setUnpairArm(false);
+    try {
+      await updateDoc(doc(db, 'households/' + household.id), {
+        active: false,
+        dissolvedAt: new Date().toISOString()
+      });
+      setInviteCode('');
+    } catch (err) {
+      console.error('unpair failed:', err);
+      setPairStatus(describeSyncError(err));
+    }
   };
 
   // Auto-archive completed tasks from previous months on app load and daily.
@@ -26364,6 +26523,156 @@ function LittleFiresApp() {
                       </span>
                     </div>
                   </div>
+
+                  {/* ---- Pairing (Session 2) ---- */}
+                  {authUser && (
+                    <div style={card}>
+                      <div style={heading}>Pairing</div>
+                      {household ? (
+                        <>
+                          <div style={sub}>
+                            ✓ Paired. This household has {(household.members || []).length}
+                            {(household.members || []).length === 1 ? ' member — share the invite below to add your partner.' : ' members.'}
+                          </div>
+                          {(household.members || []).length < 2 && (
+                            <>
+                              {inviteCode ? (
+                                <div style={{ marginTop: '10px' }}>
+                                  <div style={{
+                                    fontFamily: 'monospace', fontSize: '1.5rem', fontWeight: 700,
+                                    letterSpacing: '4px', color: 'var(--text)',
+                                    padding: '10px 14px', borderRadius: '10px', display: 'inline-block',
+                                    border: '2px dashed rgba(var(--accent-rgb), 0.5)'
+                                  }}>
+                                    {inviteCode}
+                                  </div>
+                                  <div style={{ ...sub, marginTop: '6px' }}>
+                                    Your partner enters this on their own account.
+                                    Works once, expires in 48 hours.
+                                  </div>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={createInvite}
+                                  disabled={inviteBusy}
+                                  style={{
+                                    marginTop: '10px', padding: '10px 18px', borderRadius: '20px',
+                                    border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                    background: 'rgba(var(--surface-rgb), 0.8)',
+                                    color: 'var(--text)', cursor: 'pointer',
+                                    fontFamily: 'var(--font-ui)', boxShadow: 'none', display: 'block'
+                                  }}
+                                >
+                                  {inviteBusy ? 'Working…' : 'Show a new invite code'}
+                                </button>
+                              )}
+                            </>
+                          )}
+                          {!unpairArm ? (
+                            <button
+                              onClick={() => setUnpairArm(true)}
+                              style={{
+                                marginTop: '12px', padding: '10px 18px', borderRadius: '20px',
+                                border: '2px solid rgba(180, 35, 44, 0.35)',
+                                background: 'rgba(var(--surface-rgb), 0.8)',
+                                color: '#b4232c', cursor: 'pointer',
+                                fontFamily: 'var(--font-ui)', boxShadow: 'none', display: 'block'
+                              }}
+                            >
+                              Unpair
+                            </button>
+                          ) : (
+                            <div style={{ marginTop: '10px', padding: '12px',
+                                          border: '2px solid rgba(180, 35, 44, 0.35)', borderRadius: '12px' }}>
+                              <div style={{ ...sub, color: '#b4232c' }}>
+                                Unpairing ends the household for both of you.
+                                Nothing is deleted — the record is kept, inactive.
+                              </div>
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                <button
+                                  onClick={unpairHousehold}
+                                  style={{
+                                    padding: '10px 18px', borderRadius: '20px', border: 'none',
+                                    background: '#b4232c', color: '#fff', cursor: 'pointer',
+                                    fontWeight: 600, fontFamily: 'var(--font-ui)'
+                                  }}
+                                >
+                                  Yes, unpair
+                                </button>
+                                <button
+                                  onClick={() => setUnpairArm(false)}
+                                  style={{
+                                    padding: '10px 18px', borderRadius: '20px',
+                                    border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                    background: 'rgba(var(--surface-rgb), 0.8)',
+                                    color: 'var(--text)', cursor: 'pointer',
+                                    fontFamily: 'var(--font-ui)', boxShadow: 'none'
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div style={sub}>
+                            Pair with one other person to share lists together
+                            (shared lists arrive in the next update — pairing is
+                            the first step). One of you shows a code; the other
+                            enters it.
+                          </div>
+                          <button
+                            onClick={createInvite}
+                            disabled={inviteBusy}
+                            style={{
+                              marginTop: '10px', padding: '10px 18px', borderRadius: '20px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                              background: 'rgba(var(--surface-rgb), 0.8)',
+                              color: 'var(--text)', cursor: 'pointer',
+                              fontFamily: 'var(--font-ui)', boxShadow: 'none', display: 'block'
+                            }}
+                          >
+                            {inviteBusy ? 'Working…' : 'Show an invite code'}
+                          </button>
+                          <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+                            <input
+                              type="text"
+                              value={joinInput}
+                              onChange={(e) => setJoinInput(e.target.value.toUpperCase())}
+                              placeholder="Enter a code"
+                              maxLength={8}
+                              style={{
+                                fontFamily: 'monospace', letterSpacing: '3px',
+                                width: '180px', textTransform: 'uppercase'
+                              }}
+                            />
+                            <button
+                              onClick={joinWithCode}
+                              disabled={inviteBusy || !joinInput.trim()}
+                              style={{
+                                padding: '10px 18px', borderRadius: '20px', border: 'none',
+                                background: joinInput.trim()
+                                  ? 'linear-gradient(135deg, var(--accent), var(--accent-light))'
+                                  : 'rgba(var(--surface-rgb), 0.8)',
+                                color: joinInput.trim() ? '#fff' : 'var(--text-muted)',
+                                cursor: joinInput.trim() ? 'pointer' : 'default',
+                                fontWeight: 600, fontFamily: 'var(--font-ui)'
+                              }}
+                            >
+                              Join
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {pairStatus ? (
+                        <div style={{ marginTop: '10px', color: '#b4232c', fontSize: '0.9rem' }}>
+                          {pairStatus}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
 
                   {/* ---- Account (Session 1: auth only) ---- */}
                   <div style={card}>

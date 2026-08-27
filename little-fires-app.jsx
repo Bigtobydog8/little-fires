@@ -7875,6 +7875,46 @@ function LittleFiresApp() {
     setDeletedTaskIds(prev => ({ ...prev, [taskId]: new Date().toISOString() }));
   };
 
+  // Session 2.5: the same tombstone machinery for the other three object
+  // types, one side table each, same shape ({ id: deletedAtISO }), same TTL,
+  // same prune-on-load. Without these, deleting a note on one device and
+  // syncing from another resurrects it - the exact bug that earned tasks
+  // their tombstones in the first place.
+  const loadTombstones = (storageKey) => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      const parsed = saved ? JSON.parse(saved) : {};
+      const cutoff = Date.now() - TOMBSTONE_TTL_DAYS * 24 * 60 * 60 * 1000;
+      const pruned = {};
+      Object.entries(parsed).forEach(([id, at]) => {
+        const t = Date.parse(at);
+        if (!Number.isNaN(t) && t >= cutoff) pruned[id] = at;
+      });
+      return pruned;
+    } catch {
+      return {};
+    }
+  };
+  const [deletedNoteIds, setDeletedNoteIds] = useState(() =>
+    loadTombstones('little_fires_deleted_notes'));
+  const [deletedProjectIds, setDeletedProjectIds] = useState(() =>
+    loadTombstones('little_fires_deleted_projects'));
+  const [deletedGoalIds, setDeletedGoalIds] = useState(() =>
+    loadTombstones('little_fires_deleted_goals'));
+
+  const recordNoteDeletion = (id) => {
+    if (id === undefined || id === null) return;
+    setDeletedNoteIds(prev => ({ ...prev, [id]: new Date().toISOString() }));
+  };
+  const recordProjectDeletion = (id) => {
+    if (id === undefined || id === null) return;
+    setDeletedProjectIds(prev => ({ ...prev, [id]: new Date().toISOString() }));
+  };
+  const recordGoalDeletion = (id) => {
+    if (id === undefined || id === null) return;
+    setDeletedGoalIds(prev => ({ ...prev, [id]: new Date().toISOString() }));
+  };
+
   const [archivedTasks, setArchivedTasks] = useState(() => {
     const saved = localStorage.getItem('little_fires_archived');
     const parsed = saved ? JSON.parse(saved) : {
@@ -8820,6 +8860,16 @@ function LittleFiresApp() {
   useEffect(() => {
     queueSetItem('little_fires_deleted', () => JSON.stringify(deletedTaskIds));
   }, [deletedTaskIds, queueSetItem]);
+
+  useEffect(() => {
+    queueSetItem('little_fires_deleted_notes', () => JSON.stringify(deletedNoteIds));
+  }, [deletedNoteIds, queueSetItem]);
+  useEffect(() => {
+    queueSetItem('little_fires_deleted_projects', () => JSON.stringify(deletedProjectIds));
+  }, [deletedProjectIds, queueSetItem]);
+  useEffect(() => {
+    queueSetItem('little_fires_deleted_goals', () => JSON.stringify(deletedGoalIds));
+  }, [deletedGoalIds, queueSetItem]);
 
   // Auto-archive completed tasks from previous months on app load and daily.
   //
@@ -9975,6 +10025,11 @@ function LittleFiresApp() {
     const newNote = {
       id: makeId(),
       date: new Date().toISOString(),
+      // Session 2.5: born with both stamps. createdAt was missing on notes
+      // entirely; updatedAt missing meant a never-edited record had nothing
+      // for a merge to compare.
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       // Notes had no title at all - the header showed only the date, so a list
       // of them read as a column of dates. Global search already looked for
       // note.title, so the field was anticipated in the data model and never
@@ -9997,9 +10052,7 @@ function LittleFiresApp() {
   // sanitize - but they are trimmed on write so a title of spaces is treated as
   // no title by the fallback.
   const updateNoteTitle = (id, title) => {
-    setNotes(prev => prev.map(note =>
-      note.id === id ? { ...note, title: title } : note
-    ));
+    patchNote(id, { title: title });
   };
 
   // Undo/redo for the open note. One stack rather than one per note: only one
@@ -10083,14 +10136,40 @@ function LittleFiresApp() {
     return () => document.removeEventListener('copy', onCopy);
   }, []);
 
+  // Session 2.5: THE write path for notes. Every mutation routes through here
+  // so the updatedAt stamp cannot be forgotten at one of the ten-odd write
+  // sites - which is exactly how tasks' "no-op saves never stamp" bug class
+  // happens. Two rules enforced in one place:
+  //   1. A patch that changes nothing writes nothing. updateNote fires on
+  //      every editor blur whether or not anything was typed; without this
+  //      guard, opening and closing a note would mint a fresh updatedAt, and
+  //      once devices sync, a meaningless newer stamp beats a meaningful
+  //      older edit.
+  //   2. Anything that does change gets stamped, atomically with the change.
+  const patchNote = (id, patch) => {
+    setNotes(prev => prev.map(note => {
+      if (note.id !== id) return note;
+      const next = typeof patch === 'function'
+        ? patch(note)
+        : { ...note, ...patch };
+      const keys = new Set([...Object.keys(note), ...Object.keys(next)]);
+      keys.delete('updatedAt');
+      let changed = false;
+      for (const k of keys) {
+        if (note[k] !== next[k]) { changed = true; break; }
+      }
+      if (!changed) return note;
+      return { ...next, updatedAt: new Date().toISOString() };
+    }));
+  };
+
   const updateNote = (id, content) => {
-    setNotes(prev => prev.map(note => 
-      note.id === id ? { ...note, content: sanitizeRichText(content) } : note
-    ));
+    patchNote(id, { content: sanitizeRichText(content) });
   };
   updateNoteRef.current = updateNote;
 
   const deleteNote = (id) => {
+    recordNoteDeletion(id);
     setNotes(prev => prev.filter(note => note.id !== id));
   };
 
@@ -10187,18 +10266,9 @@ function LittleFiresApp() {
       const imageId = makeId();
       
       // Add image to note
-      setNotes(prev => prev.map(note => {
-        if (note.id === noteId) {
-          const images = note.images || [];
-          return { 
-            ...note, 
-            images: [...images, { 
-              id: imageId, 
-              data: compressedImage
-            }] 
-          };
-        }
-        return note;
+      patchNote(noteId, note => ({
+        ...note,
+        images: [...(note.images || []), { id: imageId, data: compressedImage }]
       }));
 
     } catch (error) {
@@ -10208,11 +10278,9 @@ function LittleFiresApp() {
   };
 
   const removeImageFromNote = (noteId, imageId) => {
-    setNotes(prev => prev.map(note =>
-      note.id === noteId 
-        ? { ...note, images: (note.images || []).filter(img => img.id !== imageId) }
-        : note
-    ));
+    patchNote(noteId, note => ({
+      ...note, images: (note.images || []).filter(img => img.id !== imageId)
+    }));
   };
 
   const addGalleryPhotoToNote = async (noteId, file) => {
@@ -10270,15 +10338,9 @@ function LittleFiresApp() {
       const photoId = makeId();
       
       // Add photo to gallery (without OCR processing)
-      setNotes(prev => prev.map(note => {
-        if (note.id === noteId) {
-          const gallery = note.gallery || [];
-          return { 
-            ...note, 
-            gallery: [...gallery, { id: photoId, data: compressedImage }]
-          };
-        }
-        return note;
+      patchNote(noteId, note => ({
+        ...note,
+        gallery: [...(note.gallery || []), { id: photoId, data: compressedImage }]
       }));
     } catch (error) {
       console.error('Error adding gallery photo:', error);
@@ -10286,11 +10348,9 @@ function LittleFiresApp() {
   };
 
   const removeGalleryPhotoFromNote = (noteId, photoId) => {
-    setNotes(prev => prev.map(note =>
-      note.id === noteId 
-        ? { ...note, gallery: (note.gallery || []).filter(photo => photo.id !== photoId) }
-        : note
-    ));
+    patchNote(noteId, note => ({
+      ...note, gallery: (note.gallery || []).filter(photo => photo.id !== photoId)
+    }));
   };
 
   const fetchLocationForNote = async (noteId) => {
@@ -10300,9 +10360,7 @@ function LittleFiresApp() {
     }
 
     // Set a temporary "loading" message
-    setNotes(prev => prev.map(note =>
-      note.id === noteId ? { ...note, location: 'Detecting location...' } : note
-    ));
+    patchNote(noteId, { location: 'Detecting location...' });
 
     try {
       const position = await new Promise((resolve, reject) => {
@@ -10345,15 +10403,11 @@ function LittleFiresApp() {
         }
 
         // Update note with location
-        setNotes(prev => prev.map(note =>
-          note.id === noteId ? { ...note, location: locationString } : note
-        ));
+        patchNote(noteId, { location: locationString });
       } catch (geoError) {
         // If geocoding fails, just show coordinates
         console.error('Geocoding error:', geoError);
-        setNotes(prev => prev.map(note =>
-          note.id === noteId ? { ...note, location: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}` } : note
-        ));
+        patchNote(noteId, { location: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}` });
       }
     } catch (error) {
       console.error('Error fetching location:', error);
@@ -10365,37 +10419,29 @@ function LittleFiresApp() {
       } else if (error.code === 3) {
         errorMessage = 'Location timeout';
       }
-      setNotes(prev => prev.map(note =>
-        note.id === noteId ? { ...note, location: errorMessage } : note
-      ));
+      patchNote(noteId, { location: errorMessage });
     }
   };
 
   const updateNoteLocation = (noteId, location) => {
-    setNotes(prev => prev.map(note =>
-      note.id === noteId ? { ...note, location } : note
-    ));
+    patchNote(noteId, { location });
   };
 
   const addTagToNote = (noteId, tag) => {
     if (!tag.trim()) return;
-    setNotes(prev => prev.map(note => {
-      if (note.id === noteId) {
-        const tags = note.tags || [];
-        if (!tags.includes(tag.trim())) {
-          return { ...note, tags: [...tags, tag.trim()] };
-        }
+    patchNote(noteId, note => {
+      const tags = note.tags || [];
+      if (!tags.includes(tag.trim())) {
+        return { ...note, tags: [...tags, tag.trim()] };
       }
       return note;
-    }));
+    });
   };
 
   const removeTagFromNote = (noteId, tagToRemove) => {
-    setNotes(prev => prev.map(note =>
-      note.id === noteId 
-        ? { ...note, tags: (note.tags || []).filter(tag => tag !== tagToRemove) }
-        : note
-    ));
+    patchNote(noteId, note => ({
+      ...note, tags: (note.tags || []).filter(tag => tag !== tagToRemove)
+    }));
   };
 
   const getAllTags = () => {
@@ -10811,7 +10857,8 @@ function LittleFiresApp() {
       // an old backup imports unchanged.
       section: 'active',
       completedAt: null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
     setProjects(prev => ({
       ...prev,
@@ -10847,12 +10894,21 @@ function LittleFiresApp() {
     setProjectFormData({ name: '', description: '', startDate: '', endDate: '' });
   };
 
+  // Session 2.5: same contract as patchNote. Everything that changes a project
+  // flows through here (section moves, archive, time logs, edits), so the
+  // stamp and the no-op guard live in exactly one place.
   const updateProject = (listName, id, updates) => {
     setProjects(prev => ({
       ...prev,
-      [listName]: (prev[listName] || []).map(project =>
-        project.id === id ? { ...project, ...updates } : project
-      )
+      [listName]: (prev[listName] || []).map(project => {
+        if (project.id !== id) return project;
+        let changed = false;
+        for (const k of Object.keys(updates)) {
+          if (project[k] !== updates[k]) { changed = true; break; }
+        }
+        if (!changed) return project;
+        return { ...project, ...updates, updatedAt: new Date().toISOString() };
+      })
     }));
   };
 
@@ -10940,13 +10996,18 @@ function LittleFiresApp() {
   };
 
   const deleteProject = (listName, id) => {
-    // Also remove project assignment from all tasks
+    recordProjectDeletion(id);
+    // Also remove project assignment from all tasks. Unlinking IS a change to
+    // each affected task - two synced devices must agree on which version of
+    // the task (linked or not) is newer - so the stamp rides along.
     const allTaskLists = TASK_LISTS;
     setAllLists(prev => {
       const newLists = { ...prev };
       allTaskLists.forEach(taskListName => {
         newLists[taskListName] = (newLists[taskListName] || []).map(task =>
-          task.projectId == id ? { ...task, projectId: null } : task
+          task.projectId == id
+            ? { ...task, projectId: null, updatedAt: new Date().toISOString() }
+            : task
         );
       });
       return newLists;
@@ -10959,14 +11020,10 @@ function LittleFiresApp() {
   };
 
   const archiveProject = (listName, id) => {
-    setProjects(prev => ({
-      ...prev,
-      [listName]: (prev[listName] || []).map(project =>
-        project.id === id
-          ? { ...project, archived: true, archivedAt: new Date().toISOString() }
-          : project
-      )
-    }));
+    // Through the stamped updater: archiving is a state change two devices can
+    // disagree about, so it needs updatedAt like any other write. archivedAt
+    // records when; updatedAt decides which opinion is newer.
+    updateProject(listName, id, { archived: true, archivedAt: new Date().toISOString() });
     setSelectedProject(null); // Close project detail view after archiving
   };
 
@@ -10999,7 +11056,8 @@ function LittleFiresApp() {
       // so old records and old backups need no migration.
       section: 'active',
       completedAt: null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
     setGoals(prev => ({
       ...prev,
@@ -11011,9 +11069,15 @@ function LittleFiresApp() {
   const updateGoal = (listName, id, updates) => {
     setGoals(prev => ({
       ...prev,
-      [listName]: (prev[listName] || []).map(goal =>
-        goal.id === id ? { ...goal, ...updates } : goal
-      )
+      [listName]: (prev[listName] || []).map(goal => {
+        if (goal.id !== id) return goal;
+        let changed = false;
+        for (const k of Object.keys(updates)) {
+          if (goal[k] !== updates[k]) { changed = true; break; }
+        }
+        if (!changed) return goal;
+        return { ...goal, ...updates, updatedAt: new Date().toISOString() };
+      })
     }));
   };
 
@@ -11097,13 +11161,17 @@ function LittleFiresApp() {
   };
 
   const deleteGoal = (listName, id) => {
-    // Remove goal assignment from all projects
+    recordGoalDeletion(id);
+    // Same reasoning as deleteProject: unlinking is a change to each affected
+    // project, so each gets stamped.
     const allProjectLists = ['personal', 'work', 'home', 'travel', 'kids'];
     setProjects(prev => {
       const newProjects = { ...prev };
       allProjectLists.forEach(projectListName => {
         newProjects[projectListName] = (newProjects[projectListName] || []).map(project =>
-          project.goalId == id ? { ...project, goalId: null } : project
+          project.goalId == id
+            ? { ...project, goalId: null, updatedAt: new Date().toISOString() }
+            : project
         );
       });
       return newProjects;
@@ -11116,15 +11184,8 @@ function LittleFiresApp() {
   };
 
   const archiveGoal = (listName, id) => {
-    setGoals(prev => ({
-      ...prev,
-      [listName]: (prev[listName] || []).map(goal =>
-        goal.id === id
-          ? { ...goal, archived: true, archivedAt: new Date().toISOString() }
-          : goal
-      )
-    }));
-    setSelectedGoal(null); // Close goal detail view after archiving
+    updateGoal(listName, id, { archived: true, archivedAt: new Date().toISOString() });
+    setSelectedGoal(null);
   };
 
   const reorderGoals = (listName, fromIndex, toIndex) => {
@@ -22610,15 +22671,11 @@ function LittleFiresApp() {
                             // Update note
                             const note = notes.find(n => n.id === timeLoggerContext.id);
                             if (note) {
-                              setNotes(prev => prev.map(n => 
-                                n.id === timeLoggerContext.id 
-                                  ? {
-                                      ...n,
-                                      timeLogged: (n.timeLogged || 0) + loggedMinutes,
-                                      timeLogs: [...(n.timeLogs || []), newTimeLog]
-                                    }
-                                  : n
-                              ));
+                              patchNote(timeLoggerContext.id, n => ({
+                                ...n,
+                                timeLogged: (n.timeLogged || 0) + loggedMinutes,
+                                timeLogs: [...(n.timeLogs || []), newTimeLog]
+                              }));
                             }
                           } else if (timeLoggerContext.type === 'goal') {
                             // Update goal

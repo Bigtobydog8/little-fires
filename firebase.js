@@ -25,9 +25,17 @@ import {
   initializeFirestore,
   persistentLocalCache,
   doc,
-  collection,
+  writeBatch,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  arrayUnion,
+  query,
+  where,
+  limit,
   onSnapshot,
-  writeBatch
+  collection
 } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -58,7 +66,12 @@ export function endSignIn() {
   return signOut(auth);
 }
 
-export { onAuthStateChanged, getRedirectResult, onSnapshot, collection, doc };
+export {
+  onAuthStateChanged, getRedirectResult, onSnapshot, collection, doc,
+  // Session 2 (pairing): direct reads/writes for the invite handshake, which
+  // is request/response rather than mirror-shaped, so pushDocs is wrong for it.
+  getDoc, setDoc, updateDoc, deleteDoc, arrayUnion, query, where, limit
+};
 
 // The one write primitive the mirror uses. Takes [{ path, data }] and commits
 // them as batches of up to 450 (Firestore's limit is 500; headroom is cheap).

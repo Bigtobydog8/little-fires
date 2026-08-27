@@ -14165,7 +14165,11 @@ function LittleFiresApp() {
 
         .goal-header h3 {
           font-family: var(--font-ui);
-          font-size: 1.4rem;
+          /* 1.2rem, below the 1.3rem of the .list-section-header above it.
+             At 1.4 the item was louder than the section containing it, which
+             inverts the hierarchy - and it showed most on goals, where names
+             are whole sentences that wrap across two lines. */
+          font-size: 1.2rem;
           color: var(--text);
           margin: 0 0 8px 0;
         }
@@ -14327,7 +14331,10 @@ function LittleFiresApp() {
 
         .project-header h3 {
           font-family: var(--font-ui);
-          font-size: 1.4rem;
+          /* Matched to .goal-header h3 - same reason, and the two views sit
+             beside each other in the menu so a difference would read as an
+             accident. */
+          font-size: 1.2rem;
           color: var(--text);
           margin: 0 0 8px 0;
         }

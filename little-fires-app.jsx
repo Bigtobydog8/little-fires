@@ -1,4 +1,16 @@
 import React, { useState, useEffect } from 'react';
+// Session 1 (SYNC-PLAN.md): auth only, nothing syncs. This import is the line
+// that ends artifact preview for this file - accepted, and the price of every
+// session from here on. The app must remain FULLY functional signed out; no
+// feature is gated behind authUser, ever.
+import {
+  auth,
+  startGoogleSignIn,
+  endSignIn,
+  onAuthStateChanged,
+  getRedirectResult,
+  describeAuthError
+} from './firebase.js';
 
 
 // ---- Inline date picker ----------------------------------------------------
@@ -6223,6 +6235,45 @@ function LittleFiresApp() {
   const [reportStatusDropdownOpen, setReportStatusDropdownOpen] = useState(false);
   const [fireFillAnim, setFireFillAnim] = useState(0); // 0..1 animated multiplier for the rise-on-load effect
   const [fireFlicker, setFireFlicker] = useState(0); // toggles spike pattern for idle flicker
+
+  // ---- Auth (Session 1) ----------------------------------------------------
+  // Sign-in state only; nothing reads or writes cloud data yet. authUser is
+  // null signed out, and null is a fully supported, permanent state - the
+  // local-first rule means every feature works identically without it.
+  const [authUser, setAuthUser] = useState(null);
+  const [authError, setAuthError] = useState(null);
+  const [authBusy, setAuthBusy] = useState(false);
+
+  useEffect(() => {
+    // The return leg of the redirect. On an ordinary load this resolves null
+    // and is a no-op; after a sign-in it resolves the credential - and if it
+    // REJECTS, that error is the only evidence sign-in failed, so it must be
+    // surfaced. Swallowing it makes a config problem look like the user
+    // changing their mind.
+    //
+    // Surfaced ONLY when a sign-in was actually attempted, which the button
+    // records in sessionStorage before redirecting (sessionStorage survives
+    // the round trip - same tab out, same tab back). Without the gate, any
+    // environment where getRedirectResult rejects on an ordinary load - and
+    // there are such environments - shows a scary red failure to someone who
+    // never touched the button.
+    getRedirectResult(auth).catch((err) => {
+      let attempted = false;
+      try {
+        attempted = sessionStorage.getItem('little_fires_auth_attempt') === '1';
+      } catch (e) { /* storage blocked: stay quiet */ }
+      if (attempted) setAuthError(describeAuthError(err));
+    }).finally(() => {
+      try { sessionStorage.removeItem('little_fires_auth_attempt'); } catch (e) {}
+    });
+    // Fires with the current user now and on every change after: sign-in,
+    // sign-out, token refresh, another tab. The single source of truth.
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setAuthUser(user);
+      if (user) setAuthError(null);
+    });
+    return unsubscribe;
+  }, []);
   // Narrow-screen flag. Many layout values live in inline styles (which media
   // queries can't reach), so we track viewport width in state instead.
   const [isMobile, setIsMobile] = useState(
@@ -25695,6 +25746,97 @@ function LittleFiresApp() {
                         Not linked — syncing isn't available yet.
                       </span>
                     </div>
+                  </div>
+
+                  {/* ---- Account (Session 1: auth only) ---- */}
+                  <div style={card}>
+                    <div style={heading}>Account</div>
+                    {authUser ? (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                          {/* Provider-agnostic on purpose: uid / email /
+                              displayName / photoURL only, never a
+                              Google-specific field. Apple slots in later with
+                              zero changes here. */}
+                          {authUser.photoURL ? (
+                            <img
+                              src={authUser.photoURL}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                              style={{ width: '36px', height: '36px', borderRadius: '50%',
+                                       border: '2px solid rgba(var(--accent-rgb), 0.4)' }}
+                            />
+                          ) : null}
+                          <div>
+                            <div style={{ fontWeight: 600, color: 'var(--text)' }}>
+                              {authUser.displayName || 'Signed in'}
+                            </div>
+                            <div style={sub}>{authUser.email}</div>
+                          </div>
+                        </div>
+                        <div style={sub}>
+                          Signed in. Nothing syncs yet — this account is the
+                          groundwork for keeping your lists on every device,
+                          coming in a later update.
+                        </div>
+                        <button
+                          onClick={() => {
+                            setAuthBusy(true);
+                            endSignIn()
+                              .catch((err) => setAuthError(describeAuthError(err)))
+                              .finally(() => setAuthBusy(false));
+                          }}
+                          disabled={authBusy}
+                          style={{
+                            marginTop: '10px', padding: '10px 18px', borderRadius: '20px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', cursor: 'pointer',
+                            fontFamily: 'var(--font-ui)', boxShadow: 'none'
+                          }}
+                        >
+                          Sign out
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <div style={sub}>
+                          Optional — the app works fully without it. Signing in
+                          is the groundwork for syncing your lists across
+                          devices and sharing them, coming in later updates.
+                        </div>
+                        <button
+                          onClick={() => {
+                            setAuthError(null);
+                            setAuthBusy(true);
+                            try { sessionStorage.setItem('little_fires_auth_attempt', '1'); } catch (e) {}
+                            // Redirect flow: this navigates AWAY. authBusy
+                            // covers the beat before the browser leaves; the
+                            // hide-time save + crash journal already protect
+                            // any open editor across the round trip.
+                            startGoogleSignIn().catch((err) => {
+                              setAuthError(describeAuthError(err));
+                              setAuthBusy(false);
+                            });
+                          }}
+                          disabled={authBusy}
+                          style={{
+                            marginTop: '10px', padding: '10px 18px', borderRadius: '20px',
+                            border: 'none',
+                            background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                            color: '#fff', cursor: 'pointer', fontWeight: 600,
+                            fontFamily: 'var(--font-ui)'
+                          }}
+                        >
+                          {authBusy ? 'Opening sign-in…' : 'Sign in with Google'}
+                        </button>
+                      </>
+                    )}
+                    {authError ? (
+                      <div style={{ marginTop: '10px', color: '#b4232c', fontSize: '0.9rem' }}>
+                        {authError}
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* ---- AI Suggestions ---- */}

@@ -5,12 +5,16 @@ import React, { useState, useEffect } from 'react';
 // feature is gated behind authUser, ever.
 import {
   auth,
+  db,
   startGoogleSignIn,
   endSignIn,
   onAuthStateChanged,
   getRedirectResult,
   describeAuthError,
-  pushDocs
+  pushDocs,
+  onSnapshot,
+  collection,
+  doc
 } from './firebase.js';
 
 
@@ -2849,6 +2853,102 @@ function extractRawFromClipboard(html) {
     return null;
   }
 }
+
+// ---- Session 4: the merge ---------------------------------------------------
+//
+// BUILT FRESH, deliberately. mergeById / mergeKeyed exist elsewhere in this
+// file and must never be used for sync: they are backup semantics - additive,
+// existing-wins, no stamp comparison. This is the other thing: last-write-wins
+// on updatedAt, tombstone-aware, and archived-as-state.
+//
+// The contract, in order of precedence:
+//   1. A tombstone for an id beats every record with that id, from either
+//      side. Ids are never reused (makeId), so "edited after deleted" cannot
+//      be a real person's intent for the SAME id - a re-created task is a new
+//      id. This is what makes "a delete must not resurrect" hold.
+//   2. Otherwise, newer updatedAt wins. EQUAL stamps keep local - which is
+//      also the echo guard: your own write coming back through the listener
+//      carries the stamp you already hold, compares equal, and no-ops.
+//   3. A record with no stamp on one side loses to any stamp on the other;
+//      two unstamped copies keep local.
+//   4. Remote-only records are added; local-only records are kept (they may
+//      simply not have pushed yet - the mirror owns getting them up).
+//
+// Tasks use ONE keyspace: live and archived merge together keyed by id, and
+// the record's own archived flag decides which store it lands in afterwards.
+// Merging them separately would let "missing from the live list" masquerade
+// as a delete and destroy archived work - the exact failure the plan warns
+// about.
+function newerStamp(a, b) {
+  // ISO-8601 strings compare correctly as strings; missing loses to present.
+  if (!a) return false;
+  if (!b) return true;
+  return a > b;
+}
+
+// records: flat array of local records (each already carrying listKey, and
+//          archived:true where applicable - i.e. flattenForSync output)
+// remote:  flat array of cloud docs (same shape - they were written by
+//          flattenForSync on some device)
+// tombstones: { id: deletedAtISO } - the UNION of local and remote is the
+//          caller's job; this function just honours what it is given.
+// Returns { merged: [records], changedIds: Set } - changedIds says which
+// records differ from local, so the caller can mark them as already-pushed
+// and keep the mirror from echoing them straight back up.
+function mergeSyncedRecords(localRecords, remoteRecords, tombstones) {
+  const byId = new Map();
+  localRecords.forEach(r => { if (r && r.id != null) byId.set(r.id, { rec: r, from: 'local' }); });
+  const changedIds = new Set();
+  (remoteRecords || []).forEach(r => {
+    if (!r || r.id == null) return;
+    const existing = byId.get(r.id);
+    if (!existing) {
+      byId.set(r.id, { rec: r, from: 'remote' });
+      changedIds.add(r.id);
+      return;
+    }
+    if (newerStamp(r.updatedAt, existing.rec.updatedAt)) {
+      byId.set(r.id, { rec: r, from: 'remote' });
+      changedIds.add(r.id);
+    }
+    // equal or older: local kept - the echo guard is this line not existing
+  });
+  const merged = [];
+  byId.forEach(({ rec }, id) => {
+    if (tombstones && tombstones[id]) { 
+      if (rec && byId.get(id).from === 'local') changedIds.add(id);
+      return; // rule 1: the tombstone wins, whatever the stamps say
+    }
+    merged.push(rec);
+  });
+  return { merged, changedIds };
+}
+
+// Rebuild the app's { listName: [records] } shape from a flat merged array.
+// Unknown listKeys (a list renamed or removed on another device - not
+// possible today, defensive for later) fall back to 'personal' rather than
+// silently dropping someone's task.
+function unflattenByList(records, validLists) {
+  const out = {};
+  validLists.forEach(l => { out[l] = []; });
+  records.forEach(r => {
+    const { listKey, archived, ...rest } = r;
+    const key = validLists.includes(listKey) ? listKey : 'personal';
+    out[key].push(rest);
+  });
+  return out;
+}
+
+// Union two tombstone maps, keeping the newer timestamp per id.
+function unionTombstones(a, b) {
+  const out = { ...(a || {}) };
+  Object.entries(b || {}).forEach(([id, at]) => {
+    if (!out[id] || newerStamp(at, out[id])) out[id] = at;
+  });
+  return out;
+}
+
+export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 
 // ---- Session 3: one-way push, personal data ---------------------------------
 //
@@ -9009,6 +9109,159 @@ function LittleFiresApp() {
     ]).catch((err) => console.error('tombstone push failed:', err));
   }, [authUser, deletedTaskIds, deletedNoteIds, deletedProjectIds, deletedGoalIds]);
 
+  // ---- Session 4: two-way -------------------------------------------------
+  // Listeners attach only when this device has ADOPTED sync - a per-device,
+  // per-account, never-synced flag. The gate exists for the first-sync
+  // problem: a device with years of unsynced local data meeting a non-empty
+  // cloud must not silently union with it (your phone and computer typed many
+  // of the same tasks twice, under different ids - a union is duplicates
+  // forever). Adoption is a choice, made once, on the Account card.
+  const [syncAdopted, setSyncAdopted] = useState(false);
+  useEffect(() => {
+    if (!authUser) { setSyncAdopted(false); return; }
+    try {
+      setSyncAdopted(localStorage.getItem('little_fires_sync_adopted_' + authUser.uid) === '1');
+    } catch { setSyncAdopted(false); }
+  }, [authUser]);
+  const markAdopted = React.useCallback(() => {
+    if (!authUser) return;
+    try { localStorage.setItem('little_fires_sync_adopted_' + authUser.uid, '1'); } catch {}
+    setSyncAdopted(true);
+  }, [authUser]);
+
+  // The discard door: erase this device's five synced datasets and adopt, so
+  // the listeners refill it from the cloud. Direct setState, NOT the delete
+  // functions - this is not deleting records from the account, it is
+  // discarding a local copy, so it must write no tombstones (tombstones here
+  // would delete the cloud's records everywhere - the exact opposite of the
+  // intent). The mirror stays quiet through this: empty datasets diff to
+  // zero dirty records.
+  const [replaceArm, setReplaceArm] = useState(false);
+  const replaceLocalWithCloud = () => {
+    if (!authUser) return;
+    const emptyLists = {};
+    TASK_LISTS.forEach(k => { emptyLists[k] = []; });
+    setAllLists(emptyLists);
+    setArchivedTasks({});
+    setProjects({ personal: [], work: [], home: [], travel: [], kids: [] });
+    setGoals({ personal: [], work: [], home: [], travel: [], kids: [] });
+    setNotes([]);
+    setReplaceArm(false);
+    markAdopted();
+  };
+
+  // Remote tombstones, unioned with local before every merge. Kept in a ref
+  // updated by its own listener - the merge effects read it, and ordering
+  // between a tombstone snapshot and a record snapshot does not matter
+  // because every merge re-applies the whole union.
+  const remoteTombstonesRef = React.useRef({ tasks: {}, notes: {}, projects: {}, goals: {} });
+
+  useEffect(() => {
+    if (!authUser || !syncAdopted) return;
+    const uid = authUser.uid;
+    const unsubs = [];
+
+    // Tombstones first - four meta docs.
+    ['tasks', 'notes', 'projects', 'goals'].forEach((kind) => {
+      unsubs.push(onSnapshot(doc(db, 'users/' + uid + '/meta/tombstones_' + kind), (snap) => {
+        remoteTombstonesRef.current[kind] = snap.exists() ? (snap.data() || {}) : {};
+      }, (err) => console.error('tombstone listen failed:', err)));
+    });
+
+    // One listener per collection. Each snapshot hands the FULL remote set to
+    // the merge; the merge is idempotent and equal-stamp-keeps-local, so
+    // re-running it on every snapshot (including our own echoes) is safe by
+    // construction - that property has twenty pinned tests.
+    const attach = (col, apply) => {
+      unsubs.push(onSnapshot(collection(db, 'users/' + uid + '/' + col), (snap) => {
+        const remote = [];
+        snap.forEach(d => remote.push(d.data()));
+        apply(remote);
+      }, (err) => {
+        console.error('sync listen failed (' + col + '):', err);
+        setSyncStatus('Cloud connection problem - local work is unaffected.');
+      }));
+    };
+
+    attach('tasks', (remote) => {
+      const tomb = unionTombstones(deletedTaskIdsRef.current, remoteTombstonesRef.current.tasks);
+      // ONE keyspace: live + archived merge together; the archived flag on
+      // each surviving record decides which store it returns to.
+      const localFlat = [
+        ...flattenForSync('tasks', allListsRef.current),
+        ...flattenForSync('archivedTasks', archivedTasksRef.current)
+      ].map(r => r.record);
+      const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
+      if (!changedIds.size) return;
+      // Applied remote content is by definition already in the cloud - stamp
+      // it as pushed so the mirror does not send it straight back up.
+      merged.forEach(r => {
+        if (changedIds.has(r.id)) {
+          pushedStampsRef.current[r.archived ? 'archivedTasks' : 'tasks'][r.id] = r.updatedAt || 'pushed';
+        }
+      });
+      const live = merged.filter(r => !r.archived);
+      const archived = merged.filter(r => r.archived);
+      setAllLists(unflattenByList(live, TASK_LISTS));
+      setArchivedTasks(unflattenByList(archived.map(({ archived: _a, ...rest }) => ({ ...rest, listKey: rest.listKey })), TASK_LISTS));
+    });
+
+    attach('projects', (remote) => {
+      const tomb = unionTombstones(deletedProjectIdsRef.current, remoteTombstonesRef.current.projects);
+      const localFlat = flattenForSync('projects', projectsRef.current).map(r => r.record);
+      const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
+      if (!changedIds.size) return;
+      merged.forEach(r => { if (changedIds.has(r.id)) pushedStampsRef.current.projects[r.id] = r.updatedAt || 'pushed'; });
+      setProjects(unflattenByList(merged, TASK_LISTS));
+    });
+
+    attach('goals', (remote) => {
+      const tomb = unionTombstones(deletedGoalIdsRef.current, remoteTombstonesRef.current.goals);
+      const localFlat = flattenForSync('goals', goalsRef.current).map(r => r.record);
+      const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
+      if (!changedIds.size) return;
+      merged.forEach(r => { if (changedIds.has(r.id)) pushedStampsRef.current.goals[r.id] = r.updatedAt || 'pushed'; });
+      setGoals(unflattenByList(merged, TASK_LISTS));
+    });
+
+    attach('notes', (remote) => {
+      const tomb = unionTombstones(deletedNoteIdsRef.current, remoteTombstonesRef.current.notes);
+      const localFlat = notesRef.current || [];
+      const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
+      if (!changedIds.size) return;
+      merged.forEach(r => { if (changedIds.has(r.id)) pushedStampsRef.current.notes[r.id] = r.updatedAt || 'pushed'; });
+      // Newest-first, matching how the app orders them on creation.
+      merged.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      setNotes(merged);
+    });
+
+    return () => unsubs.forEach(u => u());
+  }, [authUser, syncAdopted]);
+
+  // The listener callbacks above read CURRENT state through refs rather than
+  // closing over it - the effect deliberately depends only on auth+adoption,
+  // so listeners attach once instead of detaching and re-attaching on every
+  // keystroke. A stale closure here would merge against an old snapshot of
+  // local data and resurrect whatever changed since attach.
+  const allListsRef = React.useRef(allLists);
+  const archivedTasksRef = React.useRef(archivedTasks);
+  const projectsRef = React.useRef(projects);
+  const goalsRef = React.useRef(goals);
+  const notesRef = React.useRef(notes);
+  const deletedTaskIdsRef = React.useRef(deletedTaskIds);
+  const deletedNoteIdsRef = React.useRef(deletedNoteIds);
+  const deletedProjectIdsRef = React.useRef(deletedProjectIds);
+  const deletedGoalIdsRef = React.useRef(deletedGoalIds);
+  allListsRef.current = allLists;
+  archivedTasksRef.current = archivedTasks;
+  projectsRef.current = projects;
+  goalsRef.current = goals;
+  notesRef.current = notes;
+  deletedTaskIdsRef.current = deletedTaskIds;
+  deletedNoteIdsRef.current = deletedNoteIds;
+  deletedProjectIdsRef.current = deletedProjectIds;
+  deletedGoalIdsRef.current = deletedGoalIds;
+
   // ---- The sweep -----------------------------------------------------------
   // One deliberate button, pressed on ONE device: whichever presses it founds
   // the cloud copy with its entire corpus. Mirror-on-write above only sends
@@ -9048,6 +9301,9 @@ function LittleFiresApp() {
         });
       });
       setSweepState('Done - ' + ops.length + ' records in the cloud.');
+      // Sweeping IS adopting: this device's corpus just became the cloud
+      // copy, so streaming the cloud back can only echo what it already has.
+      markAdopted();
     }).catch((err) => {
       console.error('sweep failed:', err);
       setSweepState('Sweep failed: ' + (err && err.code ? err.code : 'unknown') + '. Nothing local was touched.');
@@ -12621,7 +12877,17 @@ function LittleFiresApp() {
   // re-renders when the app does, which is exactly what happened before - the
   // difference is that they now re-render instead of remounting, so editor
   // state, focus, drags and the undo stack all survive.
-  const taskContextValue = {
+  // Session 4 prerequisite: memoized. Rebuilt on every render, this object
+  // made every mounted Task re-render on ANY state change anywhere in the
+  // app. Survivable when the only writer was your own two hands; with a
+  // snapshot listener attached, every remote change sets state - so a partner
+  // (or your other device) typing steadily would re-render the entire visible
+  // list per change-batch. The dependency list below is exactly the volatile
+  // members; the setters and refs are stable by construction and the
+  // callbacks are assumed stable per React's usual discipline - any of them
+  // that is recreated per render would silently defeat this memo, which is
+  // why the list names every value member explicitly rather than spreading.
+  const taskContextValue = React.useMemo(() => ({
     allLists,
     archiveTask,
     assignTaskToProject,
@@ -12648,7 +12914,13 @@ function LittleFiresApp() {
     updateTaskDetails,
     updateTaskDueDate,
     updateTaskPriority
-  };
+  }), [
+    allLists, editingTaskName, expandedTaskId, settings, partnerDisplayName,
+    archiveTask, assignTaskToProject, canReorderTogether, cycleAssignment,
+    deleteTask, findTask, getAllProjects, isFeatureOn, isSharedList,
+    moveTaskToSection, parseLocalDateTime, renameTask, reorderTask,
+    toggleTask, updateTaskDetails, updateTaskDueDate, updateTaskPriority
+  ]);
 
   return (
     <TaskContext.Provider value={taskContextValue}>
@@ -26014,29 +26286,115 @@ function LittleFiresApp() {
                             <div style={sub}>{authUser.email}</div>
                           </div>
                         </div>
-                        <div style={sub}>
-                          Signed in. New changes on this device now keep a
-                          copy in your cloud account automatically. Two-way
-                          sync between devices comes in a later update.
-                        </div>
-                        {/* The sweep: press on ONE device - the one whose
-                            data should found the cloud copy. Everything that
-                            already exists here is pushed; from then on the
-                            automatic mirror keeps it current. */}
-                        <button
-                          onClick={runFullSweep}
-                          disabled={!!sweepState && sweepState.startsWith('Pushing')}
-                          style={{
-                            marginTop: '12px', padding: '10px 18px', borderRadius: '20px',
-                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                            background: 'rgba(var(--surface-rgb), 0.8)',
-                            color: 'var(--text)', cursor: 'pointer',
-                            fontFamily: 'var(--font-ui)', boxShadow: 'none',
-                            display: 'block'
-                          }}
-                        >
-                          Push all existing data to the cloud
-                        </button>
+                        {syncAdopted ? (
+                          <div style={sub}>
+                            ✓ Two-way sync is on for this device. Changes made
+                            anywhere on your account appear here, and changes
+                            here appear everywhere.
+                          </div>
+                        ) : (
+                          <div style={sub}>
+                            Changes on this device keep a copy in your cloud
+                            account automatically. To turn on two-way sync,
+                            tell Little Fires how this device relates to the
+                            cloud copy — once, below.
+                          </div>
+                        )}
+                        {/* ---- Session 4: adoption. Two-way sync attaches
+                            only after this device declares its relationship
+                            to the cloud copy. Three doors:
+                              1. Found the cloud with THIS device's data
+                                 (the sweep - it now marks adoption too).
+                              2. This device already matches the cloud
+                                 (the device that swept before the flag
+                                 existed) - adopt as-is.
+                              3. REPLACE local with cloud - the discard door,
+                                 two-step armed, export urged first. This is
+                                 the phone ceremony.
+                            A device that has adopted shows none of these. */}
+                        {!syncAdopted && (
+                          <>
+                            <button
+                              onClick={runFullSweep}
+                              disabled={!!sweepState && sweepState.startsWith('Pushing')}
+                              style={{
+                                marginTop: '12px', padding: '10px 18px', borderRadius: '20px',
+                                border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                background: 'rgba(var(--surface-rgb), 0.8)',
+                                color: 'var(--text)', cursor: 'pointer',
+                                fontFamily: 'var(--font-ui)', boxShadow: 'none',
+                                display: 'block'
+                              }}
+                            >
+                              Start sync using this device's data
+                            </button>
+                            <button
+                              onClick={markAdopted}
+                              style={{
+                                marginTop: '8px', padding: '10px 18px', borderRadius: '20px',
+                                border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                background: 'rgba(var(--surface-rgb), 0.8)',
+                                color: 'var(--text)', cursor: 'pointer',
+                                fontFamily: 'var(--font-ui)', boxShadow: 'none',
+                                display: 'block'
+                              }}
+                            >
+                              This device already matches the cloud
+                            </button>
+                            {!replaceArm ? (
+                              <button
+                                onClick={() => setReplaceArm(true)}
+                                style={{
+                                  marginTop: '8px', padding: '10px 18px', borderRadius: '20px',
+                                  border: '2px solid rgba(180, 35, 44, 0.35)',
+                                  background: 'rgba(var(--surface-rgb), 0.8)',
+                                  color: '#b4232c', cursor: 'pointer',
+                                  fontFamily: 'var(--font-ui)', boxShadow: 'none',
+                                  display: 'block'
+                                }}
+                              >
+                                Replace this device's data with the cloud copy
+                              </button>
+                            ) : (
+                              <div style={{ marginTop: '10px', padding: '12px',
+                                            border: '2px solid rgba(180, 35, 44, 0.35)',
+                                            borderRadius: '12px' }}>
+                                <div style={{ ...sub, color: '#b4232c' }}>
+                                  This erases the tasks, projects, goals and
+                                  notes stored on THIS device and refills it
+                                  from the cloud. Anything here that never
+                                  synced is gone. Export a backup first —
+                                  Settings → Data → Export.
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                  <button
+                                    onClick={replaceLocalWithCloud}
+                                    style={{
+                                      padding: '10px 18px', borderRadius: '20px',
+                                      border: 'none', background: '#b4232c',
+                                      color: '#fff', cursor: 'pointer', fontWeight: 600,
+                                      fontFamily: 'var(--font-ui)'
+                                    }}
+                                  >
+                                    Erase and use cloud copy
+                                  </button>
+                                  <button
+                                    onClick={() => setReplaceArm(false)}
+                                    style={{
+                                      padding: '10px 18px', borderRadius: '20px',
+                                      border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                                      background: 'rgba(var(--surface-rgb), 0.8)',
+                                      color: 'var(--text)', cursor: 'pointer',
+                                      fontFamily: 'var(--font-ui)', boxShadow: 'none'
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
                         {sweepState ? (
                           <div style={{ ...sub, marginTop: '8px' }}>{sweepState}</div>
                         ) : null}

@@ -2964,7 +2964,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -3013,6 +3013,44 @@ function flattenForSync(kind, value) {
 // Session 5: turn Firestore's error codes into sentences a person on a phone
 // can act on. Anything unlisted keeps its code visible - "something went
 // wrong" with no code is undebuggable from a screenshot.
+// Session 5 follow-up: task order is DERIVED, not stored. The app inserts
+// newest-first and has no manual task reordering, so createdAt descending IS
+// the intended order - but array position does not survive the trip through
+// Firestore (documents come back in id order), which left each device with
+// its own arrangement after adoption. Sorting merge output makes every
+// device converge on the same order without syncing position at all.
+// Ties break on id so the result is byte-identical across devices.
+// (Projects and goals are deliberately NOT sorted this way - they HAVE
+// manual reordering, so their order is real user data with no synced home
+// yet. Known gap, noted in SYNC-PLAN.md.)
+// Session 5 follow-up #2: projects and goals DO have manual reordering, so
+// their order is user data - carried on each record as orderIndex, stamped on
+// change, synced like any other field, and re-derived on every merge by this
+// comparator. Records that predate the field (or arrive from an old device)
+// have no orderIndex; they sink below indexed ones, newest-first among
+// themselves, deterministically - so two devices holding the same records
+// always render the same order even mid-migration.
+function sortByOrderIndex(records) {
+  return [...records].sort((a, b) => {
+    const ia = typeof a.orderIndex === 'number' ? a.orderIndex : Infinity;
+    const ib = typeof b.orderIndex === 'number' ? b.orderIndex : Infinity;
+    if (ia !== ib) return ia - ib;
+    const ta = a.createdAt || '';
+    const tb = b.createdAt || '';
+    if (ta !== tb) return ta < tb ? 1 : -1;
+    return String(a.id) < String(b.id) ? 1 : -1;
+  });
+}
+
+function sortByCreatedDesc(records) {
+  return [...records].sort((a, b) => {
+    const ta = a.createdAt || '';
+    const tb = b.createdAt || '';
+    if (ta !== tb) return ta < tb ? 1 : -1;
+    return String(a.id) < String(b.id) ? 1 : -1;
+  });
+}
+
 function describeSyncError(err) {
   const code = (err && err.code) || '';
   switch (code) {
@@ -9241,8 +9279,12 @@ function LittleFiresApp() {
           pushedStampsRef.current[r.archived ? 'archivedTasks' : 'tasks'][r.id] = r.updatedAt || 'pushed';
         }
       });
-      const live = merged.filter(r => !r.archived);
-      const archived = merged.filter(r => r.archived);
+      // Deterministic order on the way in - see sortByCreatedDesc. Sorting
+      // the flat set once is enough: unflattenByList preserves input order
+      // within each list.
+      const inOrder = sortByCreatedDesc(merged);
+      const live = inOrder.filter(r => !r.archived);
+      const archived = inOrder.filter(r => r.archived);
       setAllLists(unflattenByList(live, TASK_LISTS));
       setArchivedTasks(unflattenByList(archived.map(({ archived: _a, ...rest }) => ({ ...rest, listKey: rest.listKey })), TASK_LISTS));
     });
@@ -9253,7 +9295,7 @@ function LittleFiresApp() {
       const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
       if (!changedIds.size) return;
       merged.forEach(r => { if (changedIds.has(r.id)) pushedStampsRef.current.projects[r.id] = r.updatedAt || 'pushed'; });
-      setProjects(unflattenByList(merged, TASK_LISTS));
+      setProjects(unflattenByList(sortByOrderIndex(merged), TASK_LISTS));
     });
 
     attach('goals', (remote) => {
@@ -9262,7 +9304,7 @@ function LittleFiresApp() {
       const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
       if (!changedIds.size) return;
       merged.forEach(r => { if (changedIds.has(r.id)) pushedStampsRef.current.goals[r.id] = r.updatedAt || 'pushed'; });
-      setGoals(unflattenByList(merged, TASK_LISTS));
+      setGoals(unflattenByList(sortByOrderIndex(merged), TASK_LISTS));
     });
 
     attach('notes', (remote) => {
@@ -11342,7 +11384,15 @@ function LittleFiresApp() {
     };
     setProjects(prev => ({
       ...prev,
-      [listName]: [newProject, ...(prev[listName] || [])]
+      // New items land on top; orderIndex (min - 1) claims that spot
+      // without renumbering (and re-stamping) the whole list on every add.
+      [listName]: [
+        { ...newProject,
+          orderIndex: Math.min(0,
+            ...(prev[listName] || []).map(r =>
+              typeof r.orderIndex === 'number' ? r.orderIndex : 0)) - 1 },
+        ...(prev[listName] || [])
+      ]
     }));
     return newProject.id;
   };
@@ -11507,16 +11557,30 @@ function LittleFiresApp() {
     setSelectedProject(null); // Close project detail view after archiving
   };
 
-  const reorderProjects = (listName, fromIndex, toIndex) => {
-    setProjects(prev => {
-      const list = [...(prev[listName] || [])];
-      const [removed] = list.splice(fromIndex, 1);
-      list.splice(toIndex, 0, removed);
-      return {
-        ...prev,
-        [listName]: list
-      };
-    });
+  // By ID, not index. The old (fromIndex, toIndex) signature spliced the raw
+  // array with indices computed from a FILTERED render list (archived items
+  // removed, groups applied) - the known off-by-N trap from SYNC-PLAN.md,
+  // fixed here where reordering was being touched anyway. Ids cannot be
+  // wrong about position.
+  //
+  // After the move, the whole list is renumbered 0..n-1 into orderIndex and
+  // every record whose index changed is stamped - so the mirror pushes the
+  // new arrangement and the merge on the other device re-derives it.
+  const reorderByIds = (prev, listName, dragId, targetId) => {
+    const list = [...(prev[listName] || [])];
+    const from = list.findIndex(r => r.id === dragId);
+    const to = list.findIndex(r => r.id === targetId);
+    if (from === -1 || to === -1 || from === to) return prev;
+    const [removed] = list.splice(from, 1);
+    list.splice(to, 0, removed);
+    const now = new Date().toISOString();
+    const renumbered = list.map((r, i) =>
+      r.orderIndex === i ? r : { ...r, orderIndex: i, updatedAt: now }
+    );
+    return { ...prev, [listName]: renumbered };
+  };
+  const reorderProjects = (listName, dragId, targetId) => {
+    setProjects(prev => reorderByIds(prev, listName, dragId, targetId));
   };
 
   // Goal Functions
@@ -11541,7 +11605,15 @@ function LittleFiresApp() {
     };
     setGoals(prev => ({
       ...prev,
-      [listName]: [newGoal, ...(prev[listName] || [])]
+      // New items land on top; orderIndex (min - 1) claims that spot
+      // without renumbering (and re-stamping) the whole list on every add.
+      [listName]: [
+        { ...newGoal,
+          orderIndex: Math.min(0,
+            ...(prev[listName] || []).map(r =>
+              typeof r.orderIndex === 'number' ? r.orderIndex : 0)) - 1 },
+        ...(prev[listName] || [])
+      ]
     }));
     return newGoal.id;
   };
@@ -11668,16 +11740,8 @@ function LittleFiresApp() {
     setSelectedGoal(null);
   };
 
-  const reorderGoals = (listName, fromIndex, toIndex) => {
-    setGoals(prev => {
-      const list = [...(prev[listName] || [])];
-      const [removed] = list.splice(fromIndex, 1);
-      list.splice(toIndex, 0, removed);
-      return {
-        ...prev,
-        [listName]: list
-      };
-    });
+  const reorderGoals = (listName, dragId, targetId) => {
+    setGoals(prev => reorderByIds(prev, listName, dragId, targetId));
   };
 
   // Touch handlers for mobile drag and drop
@@ -11721,9 +11785,9 @@ function LittleFiresApp() {
     if (!isTouchDragging) return;
     
     if (type === 'goal' && draggedGoal && dragOverGoal && draggedGoal.id !== dragOverGoal.id) {
-      reorderGoals(listName, draggedGoal.index, dragOverGoal.index);
+      reorderGoals(listName, draggedGoal.id, dragOverGoal.id);
     } else if (type === 'project' && draggedProject && dragOverProject && draggedProject.id !== dragOverProject.id) {
-      reorderProjects(listName, draggedProject.index, dragOverProject.index);
+      reorderProjects(listName, draggedProject.id, dragOverProject.id);
     }
     
     setDraggedGoal(null);
@@ -19824,7 +19888,7 @@ function LittleFiresApp() {
                               if (!canReorder || !sameGroup) return;
                               e.preventDefault();
                               if (draggedProject && draggedProject.id !== project.id) {
-                                reorderProjects(currentProjectList, draggedProject.index, index);
+                                reorderProjects(currentProjectList, draggedProject.id, project.id);
                               }
                               setDraggedProject(null);
                               setDragOverProject(null);
@@ -21756,7 +21820,7 @@ function LittleFiresApp() {
                                       onDrop={(e) => {
                                         e.preventDefault();
                                         if (draggedGoal && draggedGoal.id !== goal.id && draggedGoal.listName === listName) {
-                                          reorderGoals(listName, draggedGoal.index, index);
+                                          reorderGoals(listName, draggedGoal.id, goal.id);
                                         }
                                         setDraggedGoal(null);
                                         setDragOverGoal(null);
@@ -21856,7 +21920,7 @@ function LittleFiresApp() {
                               if (currentGoalList === 'master' || !sameGroup) return;
                               e.preventDefault();
                               if (draggedGoal && draggedGoal.id !== goal.id) {
-                                reorderGoals(listName, draggedGoal.index, index);
+                                reorderGoals(listName, draggedGoal.id, goal.id);
                               }
                               setDraggedGoal(null);
                               setDragOverGoal(null);

@@ -9,7 +9,8 @@ import {
   endSignIn,
   onAuthStateChanged,
   getRedirectResult,
-  describeAuthError
+  describeAuthError,
+  pushDocs
 } from './firebase.js';
 
 
@@ -2847,6 +2848,78 @@ function extractRawFromClipboard(html) {
   } catch (err) {
     return null;
   }
+}
+
+// ---- Session 3: one-way push, personal data ---------------------------------
+//
+// AN ALLOWLIST, NOT A DENYLIST. Only what is named here ever leaves the
+// device. The never-sync set - the AI key, the personal profile note, cached
+// suggestions, intro/sample flags, drafts - is protected by not appearing,
+// which fails safe: a key added next month simply does not sync until someone
+// decides it should. (The denylist version acquires a hole every time a key
+// is added and forgotten; that list grew by four keys in one evening once.)
+//
+// Values are the Firestore collection each keyed record lands in, under
+// users/{uid}/<collection>/<record.id>.
+// Exported for the regression suite (s3-regression.mjs) - the diff and the
+// flatten are the merge-adjacent logic most worth pinning, and testing the
+// real functions beats testing a copy.
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS };
+
+const SYNC_COLLECTIONS = {
+  tasks: 'tasks',          // live tasks, all lists, listKey carried on each
+  archivedTasks: 'tasks',  // SAME collection: archived is a state, not an absence
+  projects: 'projects',
+  goals: 'goals',
+  notes: 'notes'
+};
+
+// What changed since the last push. Pure: compares each record's updatedAt to
+// the stamp recorded at its last successful push. Records with no updatedAt
+// at all (pre-2.5 legacy that has not been touched since) are included -
+// there is nothing to compare, so the safe choice is to push them; the next
+// edit will stamp them properly.
+function diffDirtyRecords(records, pushedStamps) {
+  const dirty = [];
+  for (const r of records) {
+    if (!r || r.id === undefined || r.id === null) continue;
+    const last = pushedStamps[r.id];
+    if (!last || !r.updatedAt || r.updatedAt !== last) dirty.push(r);
+  }
+  return dirty;
+}
+
+// Flatten the app's shapes into [{ id, listKey?, record }] rows.
+// - tasks/projects/goals are stored as { listName: [records] }
+// - notes are a flat array
+// - archived tasks carry archived:true so the one keyspace stays honest
+function flattenForSync(kind, value) {
+  const rows = [];
+  if (kind === 'notes') {
+    (value || []).forEach(r => rows.push({ id: r.id, record: r }));
+    return rows;
+  }
+  Object.entries(value || {}).forEach(([listKey, arr]) => {
+    (arr || []).forEach(r => {
+      const record = kind === 'archivedTasks'
+        ? { ...r, listKey, archived: true }
+        : { ...r, listKey };
+      rows.push({ id: r.id, record });
+    });
+  });
+  return rows;
+}
+
+// Firestore rejects `undefined` anywhere in a document (it is not a JSON
+// value), and legacy records can carry undefined fields. Strip rather than
+// convert: an absent field and a null field mean the same thing to the merge,
+// and absent matches what an old device would have pushed anyway.
+function stripUndefined(obj) {
+  const out = {};
+  Object.entries(obj).forEach(([k, v]) => {
+    if (v !== undefined) out[k] = v;
+  });
+  return out;
 }
 
 function useEditorHistory({ rehydrate, save }) {
@@ -6274,6 +6347,7 @@ function LittleFiresApp() {
     });
     return unsubscribe;
   }, []);
+
   // Narrow-screen flag. Many layout values live in inline styles (which media
   // queries can't reach), so we track viewport width in state instead.
   const [isMobile, setIsMobile] = useState(
@@ -8870,6 +8944,115 @@ function LittleFiresApp() {
   useEffect(() => {
     queueSetItem('little_fires_deleted_goals', () => JSON.stringify(deletedGoalIds));
   }, [deletedGoalIds, queueSetItem]);
+
+  // ---- Session 3: the mirror -----------------------------------------------
+  // One-way, local -> cloud. The app never reads Firestore in this session,
+  // which is the safety property: local data cannot be corrupted by sync,
+  // because nothing listens. Worst case is wrong data in the cloud, which is
+  // deletable and re-pushable.
+  //
+  // Signed out, all of this is inert - the effects check authUser and return.
+  // That is the local-first rule holding: sign-in ADDS the mirror, nothing
+  // more.
+  //
+  // pushedStampsRef records, per record id, the updatedAt that last reached
+  // the cloud - so each effect run pushes only what changed. Deliberately a
+  // ref, not state or storage: losing it (reload) merely means the next run
+  // re-pushes everything once, which is idempotent - the same docs written
+  // with the same content.
+  const pushedStampsRef = React.useRef({
+    tasks: {}, archivedTasks: {}, projects: {}, goals: {}, notes: {}
+  });
+  const [syncStatus, setSyncStatus] = useState('');
+
+  const mirrorKind = React.useCallback((kind, value) => {
+    if (!authUser) return;
+    const stamps = pushedStampsRef.current[kind];
+    const rows = flattenForSync(kind, value);
+    const dirty = diffDirtyRecords(rows.map(r => r.record), stamps);
+    if (!dirty.length) return;
+    const uid = authUser.uid;
+    const col = SYNC_COLLECTIONS[kind];
+    const ops = dirty.map(r => ({
+      path: 'users/' + uid + '/' + col + '/' + r.id,
+      data: stripUndefined(r)
+    }));
+    pushDocs(ops).then(() => {
+      dirty.forEach(r => { stamps[r.id] = r.updatedAt || 'pushed'; });
+    }).catch((err) => {
+      // Never blocks local work. The stamp is NOT advanced on failure, so the
+      // same records are simply dirty again next run - offline persistence
+      // makes this rare (queued writes resolve), but a rules rejection would
+      // land here and must not vanish.
+      console.error('mirror push failed:', err);
+      setSyncStatus('Cloud copy failed - will retry on next change.');
+    });
+  }, [authUser]);
+
+  useEffect(() => { mirrorKind('tasks', allLists); }, [allLists, mirrorKind]);
+  useEffect(() => { mirrorKind('archivedTasks', archivedTasks); }, [archivedTasks, mirrorKind]);
+  useEffect(() => { mirrorKind('projects', projects); }, [projects, mirrorKind]);
+  useEffect(() => { mirrorKind('goals', goals); }, [goals, mirrorKind]);
+  useEffect(() => { mirrorKind('notes', notes); }, [notes, mirrorKind]);
+
+  // Tombstones ride as four single documents under users/{uid}/meta - they
+  // are id->timestamp maps, not per-record data, and a delete on this device
+  // must reach the cloud or Session 4 resurrects it from there.
+  useEffect(() => {
+    if (!authUser) return;
+    const uid = authUser.uid;
+    pushDocs([
+      { path: 'users/' + uid + '/meta/tombstones_tasks', data: deletedTaskIds },
+      { path: 'users/' + uid + '/meta/tombstones_notes', data: deletedNoteIds },
+      { path: 'users/' + uid + '/meta/tombstones_projects', data: deletedProjectIds },
+      { path: 'users/' + uid + '/meta/tombstones_goals', data: deletedGoalIds }
+    ]).catch((err) => console.error('tombstone push failed:', err));
+  }, [authUser, deletedTaskIds, deletedNoteIds, deletedProjectIds, deletedGoalIds]);
+
+  // ---- The sweep -----------------------------------------------------------
+  // One deliberate button, pressed on ONE device: whichever presses it founds
+  // the cloud copy with its entire corpus. Mirror-on-write above only sends
+  // what changes from now on; this sends everything that already exists.
+  // Idempotent - running it twice writes the same documents twice.
+  const [sweepState, setSweepState] = useState('');
+  const runFullSweep = () => {
+    if (!authUser) return;
+    const uid = authUser.uid;
+    const ops = [];
+    Object.entries({
+      tasks: allLists, archivedTasks: archivedTasks,
+      projects: projects, goals: goals, notes: notes
+    }).forEach(([kind, value]) => {
+      flattenForSync(kind, value).forEach(({ id, record }) => {
+        ops.push({
+          path: 'users/' + uid + '/' + SYNC_COLLECTIONS[kind] + '/' + id,
+          data: stripUndefined(record)
+        });
+      });
+    });
+    ops.push(
+      { path: 'users/' + uid + '/meta/tombstones_tasks', data: deletedTaskIds },
+      { path: 'users/' + uid + '/meta/tombstones_notes', data: deletedNoteIds },
+      { path: 'users/' + uid + '/meta/tombstones_projects', data: deletedProjectIds },
+      { path: 'users/' + uid + '/meta/tombstones_goals', data: deletedGoalIds }
+    );
+    setSweepState('Pushing ' + ops.length + ' records…');
+    pushDocs(ops).then(() => {
+      const stamps = pushedStampsRef.current;
+      Object.entries({
+        tasks: allLists, archivedTasks: archivedTasks,
+        projects: projects, goals: goals, notes: notes
+      }).forEach(([kind, value]) => {
+        flattenForSync(kind, value).forEach(({ record }) => {
+          stamps[kind][record.id] = record.updatedAt || 'pushed';
+        });
+      });
+      setSweepState('Done - ' + ops.length + ' records in the cloud.');
+    }).catch((err) => {
+      console.error('sweep failed:', err);
+      setSweepState('Sweep failed: ' + (err && err.code ? err.code : 'unknown') + '. Nothing local was touched.');
+    });
+  };
 
   // Auto-archive completed tasks from previous months on app load and daily.
   //
@@ -25832,10 +26015,36 @@ function LittleFiresApp() {
                           </div>
                         </div>
                         <div style={sub}>
-                          Signed in. Nothing syncs yet — this account is the
-                          groundwork for keeping your lists on every device,
-                          coming in a later update.
+                          Signed in. New changes on this device now keep a
+                          copy in your cloud account automatically. Two-way
+                          sync between devices comes in a later update.
                         </div>
+                        {/* The sweep: press on ONE device - the one whose
+                            data should found the cloud copy. Everything that
+                            already exists here is pushed; from then on the
+                            automatic mirror keeps it current. */}
+                        <button
+                          onClick={runFullSweep}
+                          disabled={!!sweepState && sweepState.startsWith('Pushing')}
+                          style={{
+                            marginTop: '12px', padding: '10px 18px', borderRadius: '20px',
+                            border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                            background: 'rgba(var(--surface-rgb), 0.8)',
+                            color: 'var(--text)', cursor: 'pointer',
+                            fontFamily: 'var(--font-ui)', boxShadow: 'none',
+                            display: 'block'
+                          }}
+                        >
+                          Push all existing data to the cloud
+                        </button>
+                        {sweepState ? (
+                          <div style={{ ...sub, marginTop: '8px' }}>{sweepState}</div>
+                        ) : null}
+                        {syncStatus ? (
+                          <div style={{ marginTop: '8px', color: '#b4232c', fontSize: '0.9rem' }}>
+                            {syncStatus}
+                          </div>
+                        ) : null}
                         <button
                           onClick={() => {
                             setAuthBusy(true);

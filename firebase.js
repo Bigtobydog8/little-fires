@@ -25,6 +25,8 @@ import {
   initializeFirestore,
   persistentLocalCache,
   doc,
+  collection,
+  onSnapshot,
   writeBatch
 } from 'firebase/firestore';
 
@@ -56,7 +58,7 @@ export function endSignIn() {
   return signOut(auth);
 }
 
-export { onAuthStateChanged, getRedirectResult };
+export { onAuthStateChanged, getRedirectResult, onSnapshot, collection, doc };
 
 // The one write primitive the mirror uses. Takes [{ path, data }] and commits
 // them as batches of up to 450 (Firestore's limit is 500; headroom is cheap).

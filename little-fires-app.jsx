@@ -2675,6 +2675,149 @@ function insertList(detailsArea, tag, pushHistory) {
   document.execCommand(tag === 'ol' ? 'insertOrderedList' : 'insertUnorderedList', false, null);
 }
 
+// Rewrites copied editor content so it survives the trip into an email.
+//
+// The clipboard carries markup but not the stylesheet, so everything these
+// checklists look like - the flex checkbox lines, the accent boxes, the fonts -
+// evaporates on paste: Gmail sees class names it has no rules for. Only INLINE
+// styles survive. This walks the copied fragment and bakes the look in.
+//
+// The <input> checkboxes are also replaced with unicode boxes. Pasted inputs
+// happen to render in Gmail's composer, but form elements are routinely
+// stripped when mail is actually sent, so what looked fine leaving can arrive
+// blank. A styled character cannot be stripped.
+function buildEmailClipboard(fragment) {
+  const accent = (getComputedStyle(document.documentElement)
+    .getPropertyValue('--accent') || '#53745f').trim() || '#53745f';
+
+  const wrap = document.createElement('div');
+  wrap.appendChild(fragment);
+
+  // Checkbox lines: block layout with the indent inline, and the box DRAWN
+  // rather than typed. A unicode box is whatever glyph the recipient's font
+  // has - in Gmail, a small grey outline that looks nothing like the app. An
+  // inline-block span with a border, a radius and the accent colour is the
+  // app's own checkbox rebuilt from properties Gmail is known to keep.
+  wrap.querySelectorAll('.checkbox-line').forEach(line => {
+    const box = line.querySelector('.task-checkbox');
+    const checked = !!(box && (box.checked || box.hasAttribute('checked')));
+    const indent = (line.style && line.style.marginLeft) || '0px';
+    // An empty checkbox line is scaffolding you were about to type into; in
+    // an email it reads as a mistake. Skip it.
+    const lineText = (line.textContent || '').replace(/\u00A0/g, '').trim();
+    if (lineText === '') { line.remove(); return; }
+    const div = document.createElement('div');
+    div.setAttribute('data-em-box', checked ? '1' : '0');
+    div.setAttribute('data-em-indent', indent);
+    div.setAttribute('style',
+      'margin:8px 0 8px ' + indent + ';line-height:1.6;');
+    const mark = document.createElement('span');
+    mark.setAttribute('style',
+      'display:inline-block;width:15px;height:15px;' +
+      'border:2px solid ' + accent + ';border-radius:5px;' +
+      'margin-right:9px;vertical-align:-3px;' +
+      (checked
+        ? 'background:' + accent + ';color:#ffffff;font-size:12px;' +
+          'line-height:15px;text-align:center;font-weight:bold;'
+        : 'background:transparent;'));
+    mark.textContent = checked ? '\u2713' : '';
+    div.appendChild(mark);
+    const text = document.createElement('span');
+    if (checked) text.setAttribute('style', 'text-decoration:line-through;opacity:0.75;');
+    line.querySelectorAll('span[contenteditable], span:not(.task-checkbox)').forEach(s => {
+      if (!s.closest('.task-checkbox')) text.innerHTML += s.innerHTML;
+    });
+    if (!text.innerHTML) {
+      // Partial selections can hand over a line with bare text nodes.
+      const clone = line.cloneNode(true);
+      const cb = clone.querySelector('.task-checkbox');
+      if (cb) cb.remove();
+      text.innerHTML = clone.innerHTML;
+    }
+    div.appendChild(text);
+    line.replaceWith(div);
+  });
+
+  // Section headings: the accent rule under them is the recognisable part.
+  wrap.querySelectorAll('.follow-up-heading').forEach(h => {
+    const div = document.createElement('div');
+    div.setAttribute('style',
+      'font-weight:bold;margin:14px 0 6px;padding-bottom:4px;' +
+      'border-bottom:2px solid ' + accent + ';');
+    div.textContent = h.textContent;
+    h.replaceWith(div);
+  });
+
+  wrap.querySelectorAll('ul,ol').forEach(l =>
+    l.setAttribute('style', 'margin:6px 0;padding-left:26px;'));
+  wrap.querySelectorAll('li').forEach(l =>
+    l.setAttribute('style', 'margin:4px 0;line-height:1.6;'));
+
+  // Leftover editor-only attributes have no business in an email.
+  wrap.querySelectorAll('[contenteditable]').forEach(el =>
+    el.removeAttribute('contenteditable'));
+  wrap.querySelectorAll('input').forEach(el => el.remove());
+
+  // Plain-text twin for anywhere that cannot take HTML.
+  const plainLines = [];
+  const walkPlain = (el, depth) => {
+    for (const child of el.children.length ? el.children : []) {
+      const isBoxLine = child.getAttribute && child.getAttribute('data-em-box') !== null;
+      if (isBoxLine) {
+        const checked = child.getAttribute('data-em-box') === '1';
+        const ind = parseInt(child.getAttribute('data-em-indent')) || 0;
+        const pad = '  '.repeat(Math.round(ind / 20));
+        plainLines.push(pad + (checked ? '[x] ' : '[ ] ') + child.textContent.replace(/\u2713\s*/, ''));
+      } else if (child.tagName === 'LI') {
+        plainLines.push('  - ' + child.textContent);
+      } else if (child.children.length) {
+        walkPlain(child, depth + 1);
+      } else if (child.textContent.trim()) {
+        plainLines.push(child.textContent);
+      }
+    }
+  };
+  walkPlain(wrap, 0);
+  // The data attributes existed for the plain-text pass; the HTML ships clean.
+  wrap.querySelectorAll('[data-em-box]').forEach(el => {
+    el.removeAttribute('data-em-box');
+    el.removeAttribute('data-em-indent');
+  });
+  const html =
+    '<div style="font-family:Georgia,\'Times New Roman\',serif;' +
+    'color:#2d2a26;line-height:1.6;">' + wrap.innerHTML + '</div>';
+  return { html, text: plainLines.join('\n') };
+}
+
+// The one clipboard payload has to serve two destinations with opposite needs.
+// The outside world wants the portable version above - inline styles, drawn
+// boxes, no form elements. The app's OWN paste handler wants the raw structure
+// back, or a checklist moved between two tasks arrives as decorated text
+// instead of live checkboxes. So the raw markup rides along base64-encoded in
+// a data attribute on the wrapper: invisible everywhere else, recovered first
+// by our paste handlers. encodeURIComponent before btoa because btoa alone
+// throws on anything outside Latin-1.
+function embedRawForRoundTrip(emailHtml, rawHtml) {
+  try {
+    const encoded = btoa(encodeURIComponent(rawHtml));
+    return emailHtml.replace('<div style="font-family:Georgia',
+      '<div data-lf-raw="' + encoded + '" style="font-family:Georgia');
+  } catch (err) {
+    return emailHtml;
+  }
+}
+
+// The matching read. Returns the original markup if this HTML came from one of
+// our editors, null for anything from the outside world.
+function extractRawFromClipboard(html) {
+  try {
+    const m = /data-lf-raw="([A-Za-z0-9+/=]+)"/.exec(html || '');
+    return m ? decodeURIComponent(atob(m[1])) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 function useEditorHistory({ rehydrate, save }) {
   const historyRef = React.useRef({ past: [], future: [], lastPushAt: 0, lastWasTyping: false });
 
@@ -2950,7 +3093,14 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     if (!g.active) return;
     const passed = g.axis === 'x' && g.dx >= SWIPE_TRIGGER;
     g.active = false;
-    if (passed && !task.completed) {
+    // The same gesture means the next step in the task's life, whichever
+    // section it is in: open -> complete, complete -> archive. It used to call
+    // requestComplete unconditionally, which for an already-completed task
+    // TOGGLED it back to open - so the gesture that felt like "put this away"
+    // quietly resurrected the task instead.
+    const willComplete = passed && !task.completed;
+    const willArchive = passed && task.completed && !task.isArchived;
+    if (willComplete || willArchive) {
       // Clear the styles written during the gesture so React's own style prop
       // takes over cleanly. Direct DOM writes and React's transform were both
       // targeting the same property, and React won on the next render - which
@@ -2971,10 +3121,17 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
       // expand on the way past.
       swipe.current.justSwiped = true;
       setTimeout(() => { swipe.current.justSwiped = false; }, 400);
+    }
+    if (willComplete) {
       // The same path the checkbox takes - so a swipe and a tick produce
       // exactly the same hold, fade and collapse rather than two different
       // ideas of what completing a task looks like.
       requestComplete();
+    } else if (willArchive) {
+      // Same exit the section-move buttons use: slide off, collapse, no
+      // completion hold - the box is already ticked, there is nothing to
+      // show off. MOVE_HOLD_MS rather than COMPLETE_HOLD_MS for that reason.
+      runExit(() => archiveTask(listName, task.id), MOVE_HOLD_MS);
     }
     g.dx = 0;
     g.axis = null;
@@ -3169,8 +3326,18 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     if (!captured || !captured.html || !e.clipboardData) return null;
     try {
       e.preventDefault();
-      e.clipboardData.setData('text/plain', captured.text);
-      e.clipboardData.setData('text/html', captured.html);
+      // The HTML goes out styled for the world rather than raw. Raw markup
+      // depends on this app's stylesheet, which does not travel with the
+      // clipboard - class names are meaningless in Gmail, and pasted <input>
+      // checkboxes are stripped by most clients on SEND even when the
+      // composer shows them. buildEmailClipboard inlines the look and swaps
+      // the boxes for characters that cannot be stripped.
+      const tpl = document.createElement('template');
+      tpl.innerHTML = captured.html;
+      const email = buildEmailClipboard(tpl.content);
+      e.clipboardData.setData('text/plain', email.text || captured.text);
+      e.clipboardData.setData('text/html',
+        embedRawForRoundTrip(email.html, captured.html));
       return captured;
     } catch (err) {
       // Blocked - let the browser write its own version rather than nothing.
@@ -5207,7 +5374,13 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
               // HTML, which is the common case on iOS. Matched on the plain
               // text so a copy made elsewhere in between can't be mistaken
               // for this one.
-              const clipboardHtml = (e.clipboardData?.getData('text/html') || '');
+              let clipboardHtml = (e.clipboardData?.getData('text/html') || '');
+              // HTML that left one of our own editors carries its original
+              // structure embedded - recover it, so a checklist moved between
+              // tasks or notes arrives as live checkboxes rather than as the
+              // styled-for-email rendition.
+              const lfRaw = extractRawFromClipboard(clipboardHtml);
+              if (lfRaw) clipboardHtml = lfRaw;
               // The stash takes precedence over the browser's own HTML when
               // it matches. The browser serialises the raw selection, which
               // has the same gap - a checkbox left outside the range - so
@@ -9816,6 +9989,29 @@ function LittleFiresApp() {
     document.addEventListener('beforeinput', onNoteBeforeInput);
     return () => document.removeEventListener('beforeinput', onNoteBeforeInput);
   }, [noteHistory]);
+
+  // Copying out of either rich editor rewrites the clipboard so the checklist
+  // arrives in an email looking like it does here, instead of as bare text
+  // with orphaned inputs. Delegated for the same reason as beforeinput above.
+  React.useEffect(() => {
+    const onCopy = (e) => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const node = sel.anchorNode;
+      const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+      const area = el && el.closest ? el.closest('.details-richtext, .note-content') : null;
+      if (!area || !e.clipboardData) return;
+      const rawTpl = document.createElement('div');
+      rawTpl.appendChild(sel.getRangeAt(0).cloneContents());
+      const payload = buildEmailClipboard(sel.getRangeAt(0).cloneContents());
+      e.preventDefault();
+      e.clipboardData.setData('text/html',
+        embedRawForRoundTrip(payload.html, rawTpl.innerHTML));
+      e.clipboardData.setData('text/plain', payload.text);
+    };
+    document.addEventListener('copy', onCopy);
+    return () => document.removeEventListener('copy', onCopy);
+  }, []);
 
   const updateNote = (id, content) => {
     setNotes(prev => prev.map(note => 
@@ -17720,6 +17916,45 @@ function LittleFiresApp() {
                             if (!selection.rangeCount) return;
                             const range = selection.getRangeAt(0);
                             range.deleteContents();
+
+                            // This handler has only ever read plain text, so
+                            // anything pasted into a note flattened. That stays
+                            // true for HTML from the outside world - but HTML
+                            // that left one of OUR editors carries its original
+                            // structure embedded, and recovering it means a
+                            // checklist moved from a task into a note arrives
+                            // as live checkboxes. Sanitized on the way in like
+                            // every other paste.
+                            const lfRaw = extractRawFromClipboard(
+                              e.clipboardData?.getData('text/html') || '');
+                            if (lfRaw) {
+                              const area = e.currentTarget;
+                              noteHistory.pushHistory(area);
+                              const tpl = document.createElement('template');
+                              tpl.innerHTML = sanitizeRichText(lfRaw);
+                              tpl.content.querySelectorAll('.task-checkbox').forEach(cb => {
+                                cb.contentEditable = 'false';
+                                cb.checked = cb.hasAttribute('checked');
+                              });
+                              const lastNode = tpl.content.lastChild;
+                              range.insertNode(tpl.content);
+                              if (lastNode) {
+                                const nr = document.createRange();
+                                nr.setStartAfter(lastNode);
+                                nr.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(nr);
+                              }
+                              const entry = area.closest('.note-entry');
+                              if (entry && entry.dataset.noteId) {
+                                updateNoteRef.current(entry.dataset.noteId, area.innerHTML);
+                              }
+                              setTimeout(() => {
+                                refreshListMarkers(area);
+                                refreshNoteOutdentVisibility(area);
+                              }, 0);
+                              return;
+                            }
                             
                             // A single pasted URL becomes a compact "Link" anchor
                             const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(trimmed);

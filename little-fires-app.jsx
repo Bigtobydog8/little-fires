@@ -2739,7 +2739,10 @@ function buildEmailClipboard(fragment) {
     mark.textContent = checked ? '\u2713' : '';
     div.appendChild(mark);
     const text = document.createElement('span');
-    if (checked) text.setAttribute('style', 'text-decoration:line-through;opacity:0.75;');
+    // No strikethrough on checked items, deliberately - matching the app,
+    // which never strikes them either. The filled box already says "done"
+    // unambiguously; a struck line can also read as "crossed off, not
+    // needed", which in a request list is the opposite message.
     line.querySelectorAll('span[contenteditable], span:not(.task-checkbox)').forEach(s => {
       if (!s.closest('.task-checkbox')) text.innerHTML += s.innerHTML;
     });

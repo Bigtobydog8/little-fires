@@ -2972,7 +2972,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -3038,6 +3038,28 @@ function flattenForSync(kind, value) {
 // have no orderIndex; they sink below indexed ones, newest-first among
 // themselves, deterministically - so two devices holding the same records
 // always render the same order even mid-migration.
+// Session 2b: shared tasks store 'me' / 'partner' locally - every badge,
+// cycle and filter in the app was built on those strings, and they stay.
+// Real uids exist only in the household's cloud copy; these translate at the
+// sync boundary, each direction. 'me' is whoever is looking: the same cloud
+// record renders as "you" on your device and as your name on your partner's.
+function translateAssigneesOut(record, myUid, partnerUid) {
+  const map = (v) => v === 'me' ? myUid : v === 'partner' ? (partnerUid || v) : v;
+  const out = { ...record };
+  ['assignedTo', 'createdBy', 'completedBy'].forEach(k => {
+    if (out[k] !== undefined && out[k] !== null) out[k] = map(out[k]);
+  });
+  return out;
+}
+function translateAssigneesIn(record, myUid) {
+  const map = (v) => v === myUid ? 'me' : (typeof v === 'string' && v.length > 12 ? 'partner' : v);
+  const out = { ...record };
+  ['assignedTo', 'createdBy', 'completedBy'].forEach(k => {
+    if (out[k] !== undefined && out[k] !== null) out[k] = map(out[k]);
+  });
+  return out;
+}
+
 function sortByOrderIndex(records) {
   return [...records].sort((a, b) => {
     const ia = typeof a.orderIndex === 'number' ? a.orderIndex : Infinity;
@@ -9146,10 +9168,23 @@ function LittleFiresApp() {
     };
   }, []);
 
+  // Shared list keys, readable from listener callbacks without stale
+  // closures. Derived state can't be closed over by once-attached listeners.
+  const sharedKeysRef = React.useRef([]);
+  sharedKeysRef.current = sharedListKeys;
+
   const mirrorKind = React.useCallback((kind, value) => {
     if (!authUser) return;
     const stamps = pushedStampsRef.current[kind];
-    const rows = flattenForSync(kind, value);
+    // Session 2b: shared lists have their own home (the household) and their
+    // own mirror below. The personal tree never carries them again - the
+    // pre-2b copies already up there are ignored by the personal listener
+    // for the same reason.
+    const shared = new Set(sharedKeysRef.current);
+    const scoped = (kind === 'tasks' || kind === 'archivedTasks')
+      ? Object.fromEntries(Object.entries(value || {}).filter(([k]) => !shared.has(k)))
+      : value;
+    const rows = flattenForSync(kind, scoped);
     const dirty = diffDirtyRecords(rows.map(r => r.record), stamps);
     if (!dirty.length) return;
     const uid = authUser.uid;
@@ -9270,13 +9305,20 @@ function LittleFiresApp() {
       }));
     };
 
-    attach('tasks', (remote) => {
+    attach('tasks', (remote0) => {
+      // Stale pre-2b copies of shared-list tasks still sit in the personal
+      // tree; merging them would resurrect the shared list from the wrong
+      // source. The household listener is their only door now.
+      const shared = new Set(sharedKeysRef.current);
+      const remote = remote0.filter(r => !shared.has(r.listKey));
       const tomb = unionTombstones(deletedTaskIdsRef.current, remoteTombstonesRef.current.tasks);
       // ONE keyspace: live + archived merge together; the archived flag on
       // each surviving record decides which store it returns to.
+      const noShared = (byList) => Object.fromEntries(
+        Object.entries(byList || {}).filter(([k]) => !shared.has(k)));
       const localFlat = [
-        ...flattenForSync('tasks', allListsRef.current),
-        ...flattenForSync('archivedTasks', archivedTasksRef.current)
+        ...flattenForSync('tasks', noShared(allListsRef.current)),
+        ...flattenForSync('archivedTasks', noShared(archivedTasksRef.current))
       ].map(r => r.record);
       const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
       if (!changedIds.size) return;
@@ -9293,8 +9335,21 @@ function LittleFiresApp() {
       const inOrder = sortByCreatedDesc(merged);
       const live = inOrder.filter(r => !r.archived);
       const archived = inOrder.filter(r => r.archived);
-      setAllLists(unflattenByList(live, TASK_LISTS));
-      setArchivedTasks(unflattenByList(archived.map(({ archived: _a, ...rest }) => ({ ...rest, listKey: rest.listKey })), TASK_LISTS));
+      // Merge output covers PERSONAL lists only - spread over prev so the
+      // shared lists (the household listener's territory) pass through
+      // untouched.
+      const liveByList = unflattenByList(live, TASK_LISTS);
+      const archByList = unflattenByList(archived.map(({ archived: _a, ...rest }) => rest), TASK_LISTS);
+      setAllLists(prev => {
+        const next = { ...prev };
+        Object.keys(next).forEach(k => { if (!shared.has(k)) next[k] = liveByList[k] || []; });
+        return next;
+      });
+      setArchivedTasks(prev => {
+        const next = { ...prev };
+        Object.keys(next).forEach(k => { if (!shared.has(k)) next[k] = archByList[k] || []; });
+        return next;
+      });
     });
 
     attach('projects', (remote) => {
@@ -9551,6 +9606,121 @@ function LittleFiresApp() {
       setPairStatus(describeSyncError(err));
     }
   };
+
+  // ---- Session 2b: the shared list itself ---------------------------------
+  // Shared tasks live in the household, not under either person - the
+  // decision the whole model rests on. Same mirror/merge machinery the
+  // personal sync proved, pointed at households/{hid}/tasks, with uid
+  // translation at the boundary (see translateAssigneesOut/In).
+  //
+  // Gated on household + authUser, NOT on syncAdopted: adoption protects a
+  // device's personal corpus from a surprise union, and shared lists touch
+  // none of it. A freshly signed-in partner with an empty app receives the
+  // shared list immediately - which is the whole product.
+  const householdRef = React.useRef(null);
+  householdRef.current = household;
+  const partnerUidOf = (hh) => {
+    if (!hh || !authUser) return null;
+    return (hh.members || []).find(m => m !== authUser.uid) || null;
+  };
+
+  const mirrorShared = React.useCallback(() => {
+    const hh = householdRef.current;
+    if (!authUser || !hh) return;
+    const myUid = authUser.uid;
+    const pUid = partnerUidOf(hh);
+    const shared = new Set(sharedKeysRef.current);
+    const onlyShared = (byList) => Object.fromEntries(
+      Object.entries(byList || {}).filter(([k]) => shared.has(k)));
+    const stamps = pushedStampsRef.current.sharedTasks ||
+      (pushedStampsRef.current.sharedTasks = {});
+    const rows = [
+      ...flattenForSync('tasks', onlyShared(allListsRef.current)),
+      ...flattenForSync('archivedTasks', onlyShared(archivedTasksRef.current))
+    ].map(r => r.record);
+    const dirty = diffDirtyRecords(rows, stamps);
+    if (!dirty.length) return;
+    const ops = dirty.map(r => ({
+      path: 'households/' + hh.id + '/tasks/' + r.id,
+      data: stripUndefined(translateAssigneesOut(r, myUid, pUid))
+    }));
+    pushDocs(ops).then(() => {
+      dirty.forEach(r => { stamps[r.id] = r.updatedAt || 'pushed'; });
+      setSyncStatus('');
+    }).catch((err) => {
+      console.error('shared mirror failed:', err);
+      setSyncStatus(describeSyncError(err));
+    });
+  }, [authUser]);
+
+  useEffect(() => { mirrorShared(); }, [allLists, archivedTasks, household, mirrorShared]);
+
+  // Shared tombstones: one doc in the household. The whole local map goes up
+  // - ids are globally unique, so personal ids in it are inert noise, and
+  // shipping the subset would mean tracking which delete was shared.
+  useEffect(() => {
+    if (!authUser || !household) return;
+    pushDocs([{
+      path: 'households/' + household.id + '/meta/tombstones_tasks',
+      data: deletedTaskIds
+    }]).catch((err) => console.error('shared tombstone push failed:', err));
+  }, [authUser, household, deletedTaskIds]);
+
+  const remoteSharedTombstonesRef = React.useRef({});
+  useEffect(() => {
+    if (!authUser || !household) return;
+    const hid = household.id;
+    const myUid = authUser.uid;
+    const unsubs = [];
+    unsubs.push(onSnapshot(doc(db, 'households/' + hid + '/meta/tombstones_tasks'), (snap) => {
+      remoteSharedTombstonesRef.current = snap.exists() ? (snap.data() || {}) : {};
+    }, (err) => console.error('shared tombstone listen failed:', err)));
+
+    unsubs.push(onSnapshot(collection(db, 'households/' + hid + '/tasks'), (snap) => {
+      const remote = [];
+      snap.forEach(d => remote.push(translateAssigneesIn(d.data(), myUid)));
+      const shared = new Set(sharedKeysRef.current);
+      const fallbackKey = sharedKeysRef.current[0] || 'partner';
+      // A shared listKey this device doesn't know (partner made a custom
+      // shared list - a later session's feature) routes to the first shared
+      // list rather than leaking into 'personal' via unflatten's default.
+      remote.forEach(r => { if (!shared.has(r.listKey)) r.listKey = fallbackKey; });
+      const onlyShared = (byList) => Object.fromEntries(
+        Object.entries(byList || {}).filter(([k]) => shared.has(k)));
+      const tomb = unionTombstones(deletedTaskIdsRef.current, remoteSharedTombstonesRef.current);
+      const localFlat = [
+        ...flattenForSync('tasks', onlyShared(allListsRef.current)),
+        ...flattenForSync('archivedTasks', onlyShared(archivedTasksRef.current))
+      ].map(r => r.record);
+      const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
+      if (!changedIds.size) return;
+      const stamps = pushedStampsRef.current.sharedTasks ||
+        (pushedStampsRef.current.sharedTasks = {});
+      merged.forEach(r => {
+        if (changedIds.has(r.id)) stamps[r.id] = r.updatedAt || 'pushed';
+      });
+      const inOrder = sortByCreatedDesc(merged);
+      const live = inOrder.filter(r => !r.archived);
+      const archived = inOrder.filter(r => r.archived);
+      const liveByList = unflattenByList(live, sharedKeysRef.current);
+      const archByList = unflattenByList(archived.map(({ archived: _a, ...rest }) => rest), sharedKeysRef.current);
+      setAllLists(prev => {
+        const next = { ...prev };
+        sharedKeysRef.current.forEach(k => { next[k] = liveByList[k] || []; });
+        return next;
+      });
+      setArchivedTasks(prev => {
+        const next = { ...prev };
+        sharedKeysRef.current.forEach(k => { next[k] = archByList[k] || []; });
+        return next;
+      });
+    }, (err) => {
+      console.error('shared task listen failed:', err);
+      setSyncStatus(describeSyncError(err));
+    }));
+
+    return () => unsubs.forEach(u => u());
+  }, [authUser, household]);
 
   // Auto-archive completed tasks from previous months on app load and daily.
   //

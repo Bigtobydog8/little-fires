@@ -2964,7 +2964,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -3008,6 +3008,26 @@ function flattenForSync(kind, value) {
     });
   });
   return rows;
+}
+
+// Session 5: turn Firestore's error codes into sentences a person on a phone
+// can act on. Anything unlisted keeps its code visible - "something went
+// wrong" with no code is undebuggable from a screenshot.
+function describeSyncError(err) {
+  const code = (err && err.code) || '';
+  switch (code) {
+    case 'permission-denied':
+      return 'The cloud rejected this account\'s writes. Usually the Firestore rules - or a sign-in that expired mid-session; try signing out and back in.';
+    case 'resource-exhausted':
+      return 'The cloud\'s free daily quota is used up. Changes are saved on this device and will sync after the quota resets.';
+    case 'unavailable':
+    case 'deadline-exceeded':
+      return 'Cloud unreachable right now. Changes are saved on this device and queued.';
+    case 'unauthenticated':
+      return 'Sign-in expired. Sign out and back in to resume syncing; nothing local is lost.';
+    default:
+      return 'Sync problem' + (code ? ' (' + code + ')' : '') + '. Changes stay safe on this device.';
+  }
 }
 
 // Firestore rejects `undefined` anywhere in a document (it is not a JSON
@@ -9064,6 +9084,21 @@ function LittleFiresApp() {
     tasks: {}, archivedTasks: {}, projects: {}, goals: {}, notes: {}
   });
   const [syncStatus, setSyncStatus] = useState('');
+  // Session 5: navigator.onLine plus its two events. Not perfect (a captive
+  // portal reads as online) but right for the honest 95%: the status line
+  // says "offline - queued" instead of implying a sync that cannot happen.
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine !== false);
+  useEffect(() => {
+    const up = () => setIsOnline(true);
+    const down = () => setIsOnline(false);
+    window.addEventListener('online', up);
+    window.addEventListener('offline', down);
+    return () => {
+      window.removeEventListener('online', up);
+      window.removeEventListener('offline', down);
+    };
+  }, []);
 
   const mirrorKind = React.useCallback((kind, value) => {
     if (!authUser) return;
@@ -9079,13 +9114,16 @@ function LittleFiresApp() {
     }));
     pushDocs(ops).then(() => {
       dirty.forEach(r => { stamps[r.id] = r.updatedAt || 'pushed'; });
+      // A success wipes any stale failure message - the status line reports
+      // the present, not the history.
+      setSyncStatus('');
     }).catch((err) => {
       // Never blocks local work. The stamp is NOT advanced on failure, so the
       // same records are simply dirty again next run - offline persistence
       // makes this rare (queued writes resolve), but a rules rejection would
       // land here and must not vanish.
       console.error('mirror push failed:', err);
-      setSyncStatus('Cloud copy failed - will retry on next change.');
+      setSyncStatus(describeSyncError(err));
     });
   }, [authUser]);
 
@@ -9165,7 +9203,10 @@ function LittleFiresApp() {
     ['tasks', 'notes', 'projects', 'goals'].forEach((kind) => {
       unsubs.push(onSnapshot(doc(db, 'users/' + uid + '/meta/tombstones_' + kind), (snap) => {
         remoteTombstonesRef.current[kind] = snap.exists() ? (snap.data() || {}) : {};
-      }, (err) => console.error('tombstone listen failed:', err)));
+      }, (err) => {
+        console.error('tombstone listen failed:', err);
+        setSyncStatus(describeSyncError(err));
+      }));
     });
 
     // One listener per collection. Each snapshot hands the FULL remote set to
@@ -9179,7 +9220,7 @@ function LittleFiresApp() {
         apply(remote);
       }, (err) => {
         console.error('sync listen failed (' + col + '):', err);
-        setSyncStatus('Cloud connection problem - local work is unaffected.');
+        setSyncStatus(describeSyncError(err));
       }));
     };
 
@@ -26288,9 +26329,14 @@ function LittleFiresApp() {
                         </div>
                         {syncAdopted ? (
                           <div style={sub}>
-                            ✓ Two-way sync is on for this device. Changes made
-                            anywhere on your account appear here, and changes
-                            here appear everywhere.
+                            {/* Present-tense truth, one line: error beats
+                                offline beats synced, because that is the
+                                order of what the person needs to know. */}
+                            {syncStatus
+                              ? null
+                              : isOnline
+                                ? '✓ Synced. Changes appear on all your devices.'
+                                : 'Offline — changes are saved here and will sync when you reconnect.'}
                           </div>
                         ) : (
                           <div style={sub}>

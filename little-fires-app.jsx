@@ -21867,7 +21867,14 @@ function LittleFiresApp() {
                   textAlign: 'center',
                   padding: '20px',
                   maxHeight: '90vh',
-                  overflowY: 'auto'
+                  overflowY: 'auto',
+                  // The timer ring is 210px inside a 180px box, offset -15px on
+                  // each side, so it deliberately overflows its parent. Without
+                  // this the modal grew a horizontal scrollbar for those 15px
+                  // and the whole dialog read as cramped and misfitted.
+                  // Vertical scrolling is still wanted; only the sideways
+                  // overflow is spurious.
+                  overflowX: 'hidden'
                 }}>
                   {/* Fire Logo */}
                   <div 
@@ -21882,7 +21889,11 @@ function LittleFiresApp() {
                     }}
                     style={{
                       cursor: 'pointer',
-                      marginTop: '40px',
+                      // Was 40px. The ring already carries 15px of its own above
+                      // the flame, and the dialog scrolls - so this was pushing
+                      // the first field further out of view for space that reads
+                      // as empty.
+                      marginTop: '18px',
                       marginBottom: '15px',
                       display: 'inline-block',
                       transition: 'transform 0.2s ease'

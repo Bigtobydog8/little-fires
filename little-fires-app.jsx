@@ -2280,6 +2280,69 @@ function restoreCaretOffset(area, offset) {
 // Consecutive keystrokes collapse into one undo step, the way every other text
 // field behaves. Long enough to group a word or a phrase, short enough that a
 // pause marks a boundary.
+// Draws the grouping rules between runs of checkbox lines at the same indent.
+//
+// AT MODULE SCOPE. It used to live inside Task, which meant the notes editor -
+// a completely separate part of the tree - could not see it. A call added there
+// looked correct, compiled, and would have thrown ReferenceError the first time
+// anyone backspaced a bullet in a note. Pure DOM work with no component
+// dependencies, so there was never a reason for it to be scoped to one editor.
+function refreshListMarkers(area) {
+  try {
+    if (!area) return;
+    const lines = Array.from(area.querySelectorAll('.checkbox-line'));
+    const getIndent = (l) => parseInt(l.style.marginLeft || '0') || 0;
+    // Clear existing markers first (both class and inline styles)
+    lines.forEach(l => {
+      l.classList.remove('has-children');
+      l.classList.remove('ends-list');
+      l.style.borderBottom = '';
+      l.style.borderTop = '';
+      // Only clear the spacing we control for markers
+      if (l.style.paddingBottom === '6px') l.style.paddingBottom = '';
+      if (l.style.paddingTop === '8px') l.style.paddingTop = '';
+    });
+    for (let i = 0; i < lines.length; i++) {
+      const indent = getIndent(lines[i]);
+      const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
+      const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
+      // "Directly under" means adjacent in the document, not merely the next
+      // checkbox line. This list is built from querySelectorAll, so anything
+      // that is not a checkbox line - an empty line most of all - is
+      // invisible to it, and a line separated from an indented line by a
+      // blank one was still being drawn as its heading.
+      const childIsAdjacent = i + 1 < lines.length &&
+        lines[i].nextElementSibling === lines[i + 1];
+      // Parent: a line immediately followed by a more-indented line, with text
+      if (nextIndent > indent && childIsAdjacent) {
+        const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
+        if (txt) {
+          // Class only. These used to also set fontWeight, borderBottom and
+          // paddingBottom inline, with a comment claiming that was what made
+          // the styling survive a save - but the sanitizer strips the style
+          // attribute, so those three lines never once did anything. The
+          // .has-children CSS is what actually renders it.
+          lines[i].classList.add('has-children');
+        }
+      } else {
+        // Not a parent anymore - remove any leftover bold from inline styles
+        lines[i].style.fontWeight = '';
+        const sp = lines[i].querySelector('span');
+        if (sp) sp.style.fontWeight = '';
+      }
+      // End-of-list boundary: a top-level line that comes right after a
+      // more-indented (child) line - i.e. indentation stepped back to 0.
+      if (indent === 0 && prevIndent > 0) {
+        lines[i].classList.add('ends-list');
+        lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
+        lines[i].style.paddingTop = '8px';
+      }
+    }
+  } catch (err) {
+    console.error('refreshListMarkers error:', err);
+  }
+}
+
 const HISTORY_COALESCE_MS = 600;
 const HISTORY_LIMIT = 60;
 
@@ -2482,6 +2545,202 @@ const LitFlame = () => (
 
 // Supplies Task with everything it needs from the app, so Task itself can live
 // at module scope and keep one stable identity for the life of the page.
+// Undo/redo for a contenteditable editor.
+//
+// AT MODULE SCOPE, and shared. This lived inside Task, which is the only reason
+// the notes editor had no undo at all: the functions simply were not reachable
+// from there. Nothing in here is task-specific once the two things that are -
+// how to rehydrate the DOM, and where to save - are passed in.
+//
+// Each call gets its own independent stack, which is what you want: undoing in
+// a note must not reach into a task's history.
+// Turns the caret's line into a <ul> or <ol> item, joining an adjacent list of
+// the same type and indent rather than starting a second one beside it.
+//
+// AT MODULE SCOPE so both editors can use it. The notes editor used to call
+// document.execCommand('insertUnorderedList') instead - which is unreliable in
+// a contenteditable made of <div> lines and was why bullets did not appear
+// there. Two ways of doing the same thing, and only one of them worked.
+//
+// pushHistory is passed in rather than closed over, so each editor's undo stack
+// records the insert on its own timeline.
+function insertList(detailsArea, tag, pushHistory) {
+  if (!detailsArea) return;
+  // Snapshot before mutating. This builds DOM directly, so it never fires
+  // beforeinput and the history would not otherwise see it.
+  pushHistory(detailsArea);
+  detailsArea.focus();
+  
+  // Ensure cursor is positioned
+  const selection = window.getSelection();
+  if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
+    const range = document.createRange();
+    range.selectNodeContents(detailsArea);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  
+  // execCommand handles ordinary block elements, but the editor's
+  // lines are custom checkbox-line divs containing an <input> -
+  // it either skips those or nests the box inside the new <li>.
+  // A multi-line selection is converted explicitly instead, and
+  // only genuinely plain lines fall through to the native path.
+  const range = selection.getRangeAt(0);
+  if (!range.collapsed) {
+    const blocks = Array.from(detailsArea.children).filter(
+      el => range.intersectsNode(el)
+    );
+    if (blocks.length > 1) {
+      const list = document.createElement(tag);
+      blocks[0].parentElement.insertBefore(list, blocks[0]);
+      blocks.forEach(block => {
+        const li = document.createElement('li');
+        // The checkbox itself is dropped: a line is either a
+        // checkbox or a bullet, and keeping both would leave a
+        // dead box sitting inside the bullet.
+        const box = block.querySelector('.task-checkbox');
+        if (box) box.remove();
+        while (block.firstChild) li.appendChild(block.firstChild);
+        if (!li.textContent.trim()) li.innerHTML = '<br>';
+        list.appendChild(li);
+        block.remove();
+      });
+      setTimeout(() => refreshListMarkers(detailsArea), 0);
+      return;
+    }
+  }
+
+  // A checkbox line at the caret becomes a bullet - the marker
+  // is REPLACED, not added to. A line is one thing or the other,
+  // and execCommand would wrap the whole .checkbox-line in an
+  // <li>, leaving a dead box sitting inside the bullet. This
+  // applies whether the line has text or not; an empty one is
+  // just the case where you made a checkbox and immediately
+  // changed your mind.
+  const caretNode = range.startContainer;
+  const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
+    ? caretNode : caretNode.parentElement;
+  const boxLine = caretEl && caretEl.closest
+    ? caretEl.closest('.checkbox-line') : null;
+  if (boxLine && detailsArea.contains(boxLine)) {
+    const hadText = (boxLine.textContent || '')
+      .replace(/\u00A0/g, '').trim() !== '';
+    // The box goes first, so it can't be carried into the <li>
+    // along with the text.
+    const box = boxLine.querySelector('.task-checkbox');
+    if (box) box.remove();
+    const source = boxLine.querySelector('span') || boxLine;
+    const li = document.createElement('li');
+    while (source.firstChild) li.appendChild(source.firstChild);
+    if (!(li.textContent || '').replace(/\u00A0/g, '').trim()) {
+      li.innerHTML = '<br>';
+    }
+
+    // Indent carries across so swapping the marker type doesn't
+    // silently promote the line back to the top level.
+    const indent = (boxLine.style && boxLine.style.marginLeft) || '';
+    // Join an adjacent list at the same indent rather than
+    // leaving two <ul>s abutting, which renders as a visible
+    // break in what the user sees as one list.
+    const isListAt = (el) => !!el && el.tagName === tag.toUpperCase() &&
+      ((el.style && el.style.marginLeft) || '') === indent;
+    const prev = boxLine.previousElementSibling;
+    const next = boxLine.nextElementSibling;
+    if (isListAt(prev)) {
+      prev.appendChild(li);
+      boxLine.remove();
+    } else if (isListAt(next)) {
+      next.insertBefore(li, next.firstChild);
+      boxLine.remove();
+    } else {
+      const list = document.createElement(tag);
+      if (indent) list.style.marginLeft = indent;
+      list.appendChild(li);
+      boxLine.parentElement.replaceChild(list, boxLine);
+    }
+
+    // Caret to the end of text that was already there, to the
+    // start of a line that is still empty.
+    const caret = document.createRange();
+    caret.selectNodeContents(li);
+    caret.collapse(!hadText);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+
+    setTimeout(() => refreshListMarkers(detailsArea), 0);
+    return;
+  }
+
+  document.execCommand(tag === 'ol' ? 'insertOrderedList' : 'insertUnorderedList', false, null);
+}
+
+function useEditorHistory({ rehydrate, save }) {
+  const historyRef = React.useRef({ past: [], future: [], lastPushAt: 0, lastWasTyping: false });
+
+  // Records the state BEFORE a change, which is what undo has to return to.
+  //
+  // `coalesce` groups a run of keystrokes into one step. Without it every
+  // character is its own undo, which is technically correct and unusable.
+  const pushHistory = React.useCallback((area, { coalesce = false } = {}) => {
+    if (!area) return;
+    const h = historyRef.current;
+    const html = area.innerHTML;
+    const top = h.past[h.past.length - 1];
+    // Nothing changed since the last snapshot - a button pressed twice, or a
+    // keystroke that the browser rejected.
+    if (top && top.html === html) return;
+    const now = Date.now();
+    // The window measures time since the last TYPING snapshot, not since any
+    // snapshot. Without that distinction, typing within the window of a
+    // structural action merges into it - so inserting a bullet and then typing
+    // in it becomes one undo step, and taking back the words also takes back
+    // the bullet. They are different kinds of action and deserve their own
+    // steps however fast they follow each other.
+    if (coalesce && top && h.lastWasTyping && now - h.lastPushAt < HISTORY_COALESCE_MS) {
+      h.lastPushAt = now;
+      return;
+    }
+    h.past.push({ html, caret: captureCaretOffset(area) });
+    h.lastWasTyping = coalesce;
+    if (h.past.length > HISTORY_LIMIT) h.past.shift();
+    // A new edit makes any redo unreachable, exactly as it does everywhere
+    // else. Keeping it would let undo/edit/redo splice together two versions
+    // that never coexisted.
+    h.future.length = 0;
+    h.lastPushAt = now;
+  }, []);
+
+  const applyHistory = React.useCallback((area, from, to) => {
+    if (!area || !from.length) return false;
+    const entry = from.pop();
+    to.push({ html: area.innerHTML, caret: captureCaretOffset(area) });
+    area.innerHTML = entry.html;
+    if (rehydrate) rehydrate(area);
+    restoreCaretOffset(area, entry.caret);
+    // Undo is an edit like any other and has to reach storage, or closing the
+    // editor would write back the state you just undid.
+    if (save) save(area);
+    return true;
+  }, [rehydrate, save]);
+
+  const undoEdit = React.useCallback((area) => {
+    const h = historyRef.current;
+    // Breaks the coalescing window, so typing after an undo starts a fresh
+    // step rather than joining the one before it.
+    h.lastPushAt = 0;
+    return applyHistory(area, h.past, h.future);
+  }, [applyHistory]);
+
+  const redoEdit = React.useCallback((area) => {
+    const h = historyRef.current;
+    h.lastPushAt = 0;
+    return applyHistory(area, h.future, h.past);
+  }, [applyHistory]);
+
+  return { pushHistory, undoEdit, redoEdit };
+}
+
 const TaskContext = React.createContext(null);
 
 // One field of a project or goal detail view, in either mode.
@@ -3053,8 +3312,6 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
 
   // ---- Undo / redo ---------------------------------------------------------
   // See the notes beside captureCaretOffset for why this exists at all.
-  const historyRef = React.useRef({ past: [], future: [], lastPushAt: 0, lastWasTyping: false });
-
   // Everything that has to be true of the editor's DOM but isn't carried by its
   // HTML. Undo restores markup; these put back the live state that markup
   // cannot express.
@@ -3077,65 +3334,15 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     refreshOutdentVisibility(area);
   }, [refreshOutdentVisibility]);
 
-  // Records the state BEFORE a change, which is what undo has to return to.
-  //
-  // `coalesce` groups a run of keystrokes into one step. Without it every
-  // character is its own undo, which is technically correct and unusable.
-  const pushHistory = React.useCallback((area, { coalesce = false } = {}) => {
-    if (!area) return;
-    const h = historyRef.current;
-    const html = area.innerHTML;
-    const top = h.past[h.past.length - 1];
-    // Nothing changed since the last snapshot - a button pressed twice, or a
-    // keystroke that the browser rejected.
-    if (top && top.html === html) return;
-    const now = Date.now();
-    // The window measures time since the last TYPING snapshot, not since any
-    // snapshot. Without that distinction, typing within the window of a
-    // structural action merges into it - so inserting a bullet and then typing
-    // in it becomes one undo step, and taking back the words also takes back
-    // the bullet. They are different kinds of action and deserve their own
-    // steps however fast they follow each other.
-    if (coalesce && top && h.lastWasTyping && now - h.lastPushAt < HISTORY_COALESCE_MS) {
-      h.lastPushAt = now;
-      return;
-    }
-    h.past.push({ html, caret: captureCaretOffset(area) });
-    h.lastWasTyping = coalesce;
-    if (h.past.length > HISTORY_LIMIT) h.past.shift();
-    // A new edit makes any redo unreachable, exactly as it does everywhere
-    // else. Keeping it would let undo/edit/redo splice together two versions
-    // that never coexisted.
-    h.future.length = 0;
-    h.lastPushAt = now;
-  }, []);
-
-  const applyHistory = React.useCallback((area, from, to) => {
-    if (!area || !from.length) return false;
-    const entry = from.pop();
-    to.push({ html: area.innerHTML, caret: captureCaretOffset(area) });
-    area.innerHTML = entry.html;
-    rehydrateEditor(area);
-    restoreCaretOffset(area, entry.caret);
-    // Undo is an edit like any other and has to reach storage, or collapsing
-    // the task would write back the state you just undid.
-    saveDetails(area);
-    return true;
-  }, [rehydrateEditor]);
-
-  const undoEdit = React.useCallback((area) => {
-    const h = historyRef.current;
-    // Breaks the coalescing window, so typing after an undo starts a fresh
-    // step rather than joining the one before it.
-    h.lastPushAt = 0;
-    return applyHistory(area, h.past, h.future);
-  }, [applyHistory]);
-
-  const redoEdit = React.useCallback((area) => {
-    const h = historyRef.current;
-    h.lastPushAt = 0;
-    return applyHistory(area, h.future, h.past);
-  }, [applyHistory]);
+  // Undo/redo for this editor. The machinery lives at module scope now - see
+  // useEditorHistory - so the notes editor can have its own independent stack
+  // instead of going without. Task supplies what is particular to it: how to
+  // put the live DOM back together, and where a restored value has to be
+  // written.
+  const { pushHistory, undoEdit, redoEdit } = useEditorHistory({
+    rehydrate: rehydrateEditor,
+    save: (area) => saveDetails(area)
+  });
 
   // The single path from live editor DOM to saved value. A checkbox's ticked
   // state lives on the DOM property, not in the markup, so it has to be
@@ -3191,61 +3398,6 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
   // Recompute list markers across the editor: which lines are parents
   // (have indented children below them) and which top-level lines end a
   // nested group. Runs on every content change so markers never go stale.
-  const refreshListMarkers = (area) => {
-    try {
-      if (!area) return;
-      const lines = Array.from(area.querySelectorAll('.checkbox-line'));
-      const getIndent = (l) => parseInt(l.style.marginLeft || '0') || 0;
-      // Clear existing markers first (both class and inline styles)
-      lines.forEach(l => {
-        l.classList.remove('has-children');
-        l.classList.remove('ends-list');
-        l.style.borderBottom = '';
-        l.style.borderTop = '';
-        // Only clear the spacing we control for markers
-        if (l.style.paddingBottom === '6px') l.style.paddingBottom = '';
-        if (l.style.paddingTop === '8px') l.style.paddingTop = '';
-      });
-      for (let i = 0; i < lines.length; i++) {
-        const indent = getIndent(lines[i]);
-        const nextIndent = i + 1 < lines.length ? getIndent(lines[i + 1]) : -1;
-        const prevIndent = i > 0 ? getIndent(lines[i - 1]) : -1;
-        // "Directly under" means adjacent in the document, not merely the next
-        // checkbox line. This list is built from querySelectorAll, so anything
-        // that is not a checkbox line - an empty line most of all - is
-        // invisible to it, and a line separated from an indented line by a
-        // blank one was still being drawn as its heading.
-        const childIsAdjacent = i + 1 < lines.length &&
-          lines[i].nextElementSibling === lines[i + 1];
-        // Parent: a line immediately followed by a more-indented line, with text
-        if (nextIndent > indent && childIsAdjacent) {
-          const txt = (lines[i].textContent || '').replace(/\u00A0/g, '').trim();
-          if (txt) {
-            // Class only. These used to also set fontWeight, borderBottom and
-            // paddingBottom inline, with a comment claiming that was what made
-            // the styling survive a save - but the sanitizer strips the style
-            // attribute, so those three lines never once did anything. The
-            // .has-children CSS is what actually renders it.
-            lines[i].classList.add('has-children');
-          }
-        } else {
-          // Not a parent anymore - remove any leftover bold from inline styles
-          lines[i].style.fontWeight = '';
-          const sp = lines[i].querySelector('span');
-          if (sp) sp.style.fontWeight = '';
-        }
-        // End-of-list boundary: a top-level line that comes right after a
-        // more-indented (child) line - i.e. indentation stepped back to 0.
-        if (indent === 0 && prevIndent > 0) {
-          lines[i].classList.add('ends-list');
-          lines[i].style.borderTop = '2px solid rgba(var(--accent-rgb), 0.55)';
-          lines[i].style.paddingTop = '8px';
-        }
-      }
-    } catch (err) {
-      console.error('refreshListMarkers error:', err);
-    }
-  };
 
   const syncParentCheckboxes = (detailsArea) => {
     try {
@@ -3987,116 +4139,6 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
   //
   // `tag` is 'ul' or 'ol'. isListAt compares against it, so a bulleted list is
   // never silently joined onto a numbered one.
-  const insertList = React.useCallback((detailsArea, tag) => {
-    if (!detailsArea) return;
-    // Snapshot before mutating. This builds DOM directly, so it never fires
-    // beforeinput and the history would not otherwise see it.
-    pushHistory(detailsArea);
-    detailsArea.focus();
-    
-    // Ensure cursor is positioned
-    const selection = window.getSelection();
-    if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) {
-      const range = document.createRange();
-      range.selectNodeContents(detailsArea);
-      range.collapse(false);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    
-    // execCommand handles ordinary block elements, but the editor's
-    // lines are custom checkbox-line divs containing an <input> -
-    // it either skips those or nests the box inside the new <li>.
-    // A multi-line selection is converted explicitly instead, and
-    // only genuinely plain lines fall through to the native path.
-    const range = selection.getRangeAt(0);
-    if (!range.collapsed) {
-      const blocks = Array.from(detailsArea.children).filter(
-        el => range.intersectsNode(el)
-      );
-      if (blocks.length > 1) {
-        const list = document.createElement(tag);
-        blocks[0].parentElement.insertBefore(list, blocks[0]);
-        blocks.forEach(block => {
-          const li = document.createElement('li');
-          // The checkbox itself is dropped: a line is either a
-          // checkbox or a bullet, and keeping both would leave a
-          // dead box sitting inside the bullet.
-          const box = block.querySelector('.task-checkbox');
-          if (box) box.remove();
-          while (block.firstChild) li.appendChild(block.firstChild);
-          if (!li.textContent.trim()) li.innerHTML = '<br>';
-          list.appendChild(li);
-          block.remove();
-        });
-        setTimeout(() => refreshListMarkers(detailsArea), 0);
-        return;
-      }
-    }
-
-    // A checkbox line at the caret becomes a bullet - the marker
-    // is REPLACED, not added to. A line is one thing or the other,
-    // and execCommand would wrap the whole .checkbox-line in an
-    // <li>, leaving a dead box sitting inside the bullet. This
-    // applies whether the line has text or not; an empty one is
-    // just the case where you made a checkbox and immediately
-    // changed your mind.
-    const caretNode = range.startContainer;
-    const caretEl = caretNode.nodeType === Node.ELEMENT_NODE
-      ? caretNode : caretNode.parentElement;
-    const boxLine = caretEl && caretEl.closest
-      ? caretEl.closest('.checkbox-line') : null;
-    if (boxLine && detailsArea.contains(boxLine)) {
-      const hadText = (boxLine.textContent || '')
-        .replace(/\u00A0/g, '').trim() !== '';
-      // The box goes first, so it can't be carried into the <li>
-      // along with the text.
-      const box = boxLine.querySelector('.task-checkbox');
-      if (box) box.remove();
-      const source = boxLine.querySelector('span') || boxLine;
-      const li = document.createElement('li');
-      while (source.firstChild) li.appendChild(source.firstChild);
-      if (!(li.textContent || '').replace(/\u00A0/g, '').trim()) {
-        li.innerHTML = '<br>';
-      }
-
-      // Indent carries across so swapping the marker type doesn't
-      // silently promote the line back to the top level.
-      const indent = (boxLine.style && boxLine.style.marginLeft) || '';
-      // Join an adjacent list at the same indent rather than
-      // leaving two <ul>s abutting, which renders as a visible
-      // break in what the user sees as one list.
-      const isListAt = (el) => !!el && el.tagName === tag.toUpperCase() &&
-        ((el.style && el.style.marginLeft) || '') === indent;
-      const prev = boxLine.previousElementSibling;
-      const next = boxLine.nextElementSibling;
-      if (isListAt(prev)) {
-        prev.appendChild(li);
-        boxLine.remove();
-      } else if (isListAt(next)) {
-        next.insertBefore(li, next.firstChild);
-        boxLine.remove();
-      } else {
-        const list = document.createElement(tag);
-        if (indent) list.style.marginLeft = indent;
-        list.appendChild(li);
-        boxLine.parentElement.replaceChild(list, boxLine);
-      }
-
-      // Caret to the end of text that was already there, to the
-      // start of a line that is still empty.
-      const caret = document.createRange();
-      caret.selectNodeContents(li);
-      caret.collapse(!hadText);
-      selection.removeAllRanges();
-      selection.addRange(caret);
-
-      setTimeout(() => refreshListMarkers(detailsArea), 0);
-      return;
-    }
-
-    document.execCommand(tag === 'ol' ? 'insertOrderedList' : 'insertUnorderedList', false, null);
-  }, [pushHistory, refreshListMarkers]);
 
   // Bring a freshly expanded task into view.
   //
@@ -4617,7 +4659,35 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                       return;
                     }
                     if (hasCheckbox && lineText === '') {
-                      // Empty checkbox line that still has its box - nothing to do
+                      // Toggle off. An empty checkbox is an intent you have
+                      // changed your mind about, so pressing the button again
+                      // takes it back rather than doing nothing - matching the
+                      // Next Steps button and the bullet Backspace behaviour.
+                      //
+                      // Only while empty: once anything is typed, a second
+                      // press must not delete what you wrote.
+                      pushHistory(detailsArea);
+                      const plain = document.createElement('div');
+                      plain.style.display = 'block';
+                      const plainSpan = document.createElement('span');
+                      plainSpan.contentEditable = 'true';
+                      plainSpan.innerHTML = '&nbsp;';
+                      plain.appendChild(plainSpan);
+                      // Indent carries across, so a nested checkbox does not
+                      // jump back to the left margin on the way out.
+                      if (currentLine.style && currentLine.style.marginLeft) {
+                        plain.style.marginLeft = currentLine.style.marginLeft;
+                      }
+                      currentLine.parentElement.replaceChild(plain, currentLine);
+                      const caret = document.createRange();
+                      caret.setStart(plainSpan.firstChild || plainSpan, 0);
+                      caret.collapse(true);
+                      selection.removeAllRanges();
+                      selection.addRange(caret);
+                      setTimeout(() => {
+                        syncParentCheckboxes(detailsArea);
+                        refreshListMarkers(detailsArea);
+                      }, 0);
                       return;
                     }
                     // else: leftover markup with no checkbox - fall through to convert it
@@ -4819,7 +4889,7 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 e.stopPropagation();
                 const detailsArea = e.target.closest('.task-details-section')
                   .querySelector('.details-richtext');
-                insertList(detailsArea, 'ul');
+                insertList(detailsArea, 'ul', pushHistory);
               }}
               title="Bullet List"
               aria-label="Bullet list"
@@ -9689,11 +9759,41 @@ function LittleFiresApp() {
     ));
   };
 
+  // Undo/redo for the open note. One stack rather than one per note: only one
+  // note is open at a time, and the stack is cleared when the open note
+  // changes, so history can never bleed from one note into another.
+  //
+  // Rehydrate is the notes equivalent of Task's: markup alone does not carry a
+  // checkbox's contentEditable=false or its ticked state, so both are replayed
+  // or one undo turns every checkbox into a caret trap.
+  const noteHistory = useEditorHistory({
+    rehydrate: React.useCallback((area) => {
+      if (!area) return;
+      area.querySelectorAll('.task-checkbox').forEach(cb => {
+        cb.contentEditable = 'false';
+        cb.checked = cb.hasAttribute('checked');
+      });
+      refreshListMarkers(area);
+      refreshNoteOutdentVisibility(area);
+    }, []),
+    save: React.useCallback((area) => {
+      const entry = area && area.closest ? area.closest('.note-entry') : null;
+      const id = entry && entry.dataset ? entry.dataset.noteId : null;
+      if (id) updateNoteRef.current(id, area.innerHTML);
+    }, [])
+  });
+
+  // updateNote through a ref so the save callback above can stay stable - a
+  // changing `save` would rebuild applyHistory on every render and thaw the
+  // memoisation the hook depends on.
+  const updateNoteRef = React.useRef(null);
+
   const updateNote = (id, content) => {
     setNotes(prev => prev.map(note => 
       note.id === id ? { ...note, content: sanitizeRichText(content) } : note
     ));
   };
+  updateNoteRef.current = updateNote;
 
   const deleteNote = (id) => {
     setNotes(prev => prev.filter(note => note.id !== id));
@@ -11164,17 +11264,39 @@ function LittleFiresApp() {
     </svg>
   );
 
-  const CheckedBox = () => (
-    <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  const CheckedBox = () => {
+    const gradientId = React.useId();
+    return (
+    // Optically sized, not geometrically. The art spans 14.5..65.5 (the 16..64
+    // box plus its 3-wide stroke), centred on 40.
+    //
+    //   0..80  original - art fills 64%, read as undersized next to the others
+    //   12..68 fitted    - art fills 91%, read as oversized
+    //   8..72  here      - art fills 80%
+    //
+    // A solid filled shape carries more visual weight than a silhouette or an
+    // outline at the same bounding box, so matching the flame geometrically
+    // makes this look bigger than it. Filled icons want to be drawn a little
+    // smaller to sit level with them.
+    <svg viewBox="8 8 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
       {/* Rounded checkbox background */}
       <rect x="16" y="16" width="48" height="48" rx="12" ry="12" 
-            fill="url(#checkboxGradient)" stroke="#6a8f76" strokeWidth="3"/>
+            fill={`url(#${gradientId})`} stroke="var(--accent-light)" strokeWidth="3"/>
       
-      {/* Gradient definition */}
+      {/* Gradient definition.
+          Colours come from the accent variables rather than the literals
+          #53745f / #6a8f76 that used to be here - those were the matcha
+          defaults, which is why this icon stayed green after the accent was
+          switched to ember while every other coloured thing followed.
+
+          The id is per-instance. This icon renders in four places, and a
+          single hardcoded id meant four duplicate ids in one document: legal-
+          looking only because all four were identical. The moment they can
+          differ, every instance would resolve to whichever came first. */}
       <defs>
-        <linearGradient id="checkboxGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#53745f"/>
-          <stop offset="100%" stopColor="#6a8f76"/>
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="var(--accent)"/>
+          <stop offset="100%" stopColor="var(--accent-light)"/>
         </linearGradient>
       </defs>
       
@@ -11182,10 +11304,22 @@ function LittleFiresApp() {
       <path d="M 26 40 L 36 50 L 54 30" 
             stroke="#ffffff" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
     </svg>
-  );
+    );
+  };
 
   const CutLog = () => (
-    <svg viewBox="0 0 600 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+    // viewBox starts at x=38, not 0, and is 584 wide rather than 600.
+    //
+    // The artwork actually spans x = 46..614 once stroke width is counted, so
+    // the original 0..600 box clipped 14 units off the right - the flat edge
+    // visible on the top log. It also left 46 units of dead space on the left,
+    // which is why simply widening to 620 would have shrunk the icon and
+    // pushed it off-centre.
+    //
+    // This box is fitted to the art with 8 units of padding either side, so
+    // nothing is cut and the logs sit centred in the space. No new asset
+    // needed - the drawing was always complete, the window onto it was wrong.
+    <svg viewBox="38 0 584 512" fill="none" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <style>{`
           .log { fill: #c0c0c0; stroke: #808080; stroke-width: 8; }
@@ -15898,11 +16032,28 @@ function LittleFiresApp() {
         .note-content ul, .note-content ol {
           padding-left: 30px;
           margin: 8px 0;
+          /* These three were the reason bullets never appeared in a note. The
+             task editor declares them and renders markers; notes inherited
+             whatever the cascade left and rendered none. Spelling them out is
+             what the task editor learned to do, and the two editors are meant
+             to behave identically. */
+          list-style-position: outside;
+        }
+
+        .note-content ul {
+          list-style-type: disc;
+        }
+
+        .note-content ol {
+          list-style-type: decimal;
         }
 
         .note-content ul li, .note-content ol li {
           color: var(--text);
           margin: 4px 0;
+          /* Without this an <li> can be laid out as a plain block and the
+             marker is simply not drawn. */
+          display: list-item;
         }
 
         .note-content ul li::marker {
@@ -17193,6 +17344,9 @@ function LittleFiresApp() {
                               e.stopPropagation();
                               
                               const noteContent = e.target.closest('.note-entry').querySelector('.note-content');
+                              // Snapshot before the button mutates the DOM, or the change is
+                              // invisible to undo.
+                              noteHistory.pushHistory(noteContent);
                               noteContent.focus();
                               
                               const selection = window.getSelection();
@@ -17238,9 +17392,30 @@ function LittleFiresApp() {
                                   const hasCheckbox = currentLine.querySelector('.task-checkbox');
                                   const lineText = (currentLine.textContent || '').replace(/\u00A0/g, '').trim();
                                   if (hasCheckbox && lineText !== '') {
+                                    // Populated - a second press must not delete
+                                    // what was written.
                                     return;
                                   }
                                   if (hasCheckbox && lineText === '') {
+                                    // Toggle off, same as the task editor: an
+                                    // empty checkbox is an intent you have
+                                    // changed your mind about.
+                                    const plain = document.createElement('div');
+                                    plain.style.display = 'block';
+                                    const plainSpan = document.createElement('span');
+                                    plainSpan.contentEditable = 'true';
+                                    plainSpan.innerHTML = '&nbsp;';
+                                    plain.appendChild(plainSpan);
+                                    if (currentLine.style && currentLine.style.marginLeft) {
+                                      plain.style.marginLeft = currentLine.style.marginLeft;
+                                    }
+                                    currentLine.parentElement.replaceChild(plain, currentLine);
+                                    const caret = document.createRange();
+                                    caret.setStart(plainSpan.firstChild || plainSpan, 0);
+                                    caret.collapse(true);
+                                    selection.removeAllRanges();
+                                    selection.addRange(caret);
+                                    setTimeout(() => refreshListMarkers(noteContent), 0);
                                     return;
                                   }
                                   // else: leftover markup with no checkbox - fall through to convert it
@@ -17275,8 +17450,9 @@ function LittleFiresApp() {
                               }
                             }}
                             title="Insert Checkbox"
+                            aria-label="Insert checkbox"
                           >
-                            <CheckboxIcon />Box
+                            <CheckboxIcon /><span className="toolbar-btn-label">Box</span>
                           </button>
                           <button 
                             className="toolbar-btn"
@@ -17285,22 +17461,19 @@ function LittleFiresApp() {
                               e.stopPropagation();
                               
                               const noteContent = e.target.closest('.note-entry').querySelector('.note-content');
-                              noteContent.focus();
-                              
-                              const selection = window.getSelection();
-                              if (!selection.rangeCount || !noteContent.contains(selection.anchorNode)) {
-                                const range = document.createRange();
-                                range.selectNodeContents(noteContent);
-                                range.collapse(false);
-                                selection.removeAllRanges();
-                                selection.addRange(range);
-                              }
-                              
-                              document.execCommand('insertUnorderedList', false, null);
+                              if (!noteContent) return;
+                              // The same insertList the task editor uses, rather
+                              // than execCommand('insertUnorderedList'). That
+                              // command is unreliable in a contenteditable made
+                              // of <div> lines - it was the reason bullets did
+                              // not show up in notes at all. insertList builds
+                              // the markup itself and takes its own snapshot.
+                              insertList(noteContent, 'ul', noteHistory.pushHistory);
                             }}
                             title="Bullet List"
+                            aria-label="Bullet list"
                           >
-                            • Bullets
+                            <BulletsIcon /><span className="toolbar-btn-label">Bullets</span>
                           </button>
                           <button 
                             className="toolbar-btn"
@@ -17309,15 +17482,21 @@ function LittleFiresApp() {
                               e.stopPropagation();
                               
                               const noteContent = e.target.closest('.note-entry').querySelector('.note-content');
+                              // Snapshot before the button mutates the DOM, or the change is
+                              // invisible to undo.
+                              noteHistory.pushHistory(noteContent);
                               noteContent.focus();
                               
                               document.execCommand('bold', false, null);
                             }}
                             title="Bold"
+                            aria-label="Bold"
                           >
-                            {/* 700, not 900: 900 isn't among the loaded weights,
-                                so the browser was synthesising it. */}
-                            <strong style={{fontWeight: 700}}>B</strong>
+                            {/* Matches the task toolbar: a span rather than
+                                <strong>, since <strong> overrode the toolbar's
+                                own weight and sat heavier than its neighbours.
+                                The label collapses on mobile, leaving "B". */}
+                            <span style={{ textDecoration: 'underline' }}>B<span className="toolbar-btn-label">old</span></span>
                           </button>
                           {/* Indent / outdent, matching the task editor.
                               
@@ -17338,6 +17517,9 @@ function LittleFiresApp() {
                               const area = e.target.closest('.note-entry')
                                 .querySelector('.note-content');
                               if (!area) return;
+                              // Snapshot before the button mutates the DOM, or
+                              // the change is invisible to undo.
+                              noteHistory.pushHistory(area);
                               area.focus();
                               const selection = window.getSelection();
                               if (!selection.rangeCount || !area.contains(selection.anchorNode)) {
@@ -17380,6 +17562,9 @@ function LittleFiresApp() {
                               const area = e.target.closest('.note-entry')
                                 .querySelector('.note-content');
                               if (!area) return;
+                              // Snapshot before the button mutates the DOM, or
+                              // the change is invisible to undo.
+                              noteHistory.pushHistory(area);
                               area.focus();
                               const selection = window.getSelection();
                               if (!selection.rangeCount || !area.contains(selection.anchorNode)) return;
@@ -17499,7 +17684,53 @@ function LittleFiresApp() {
                           }}
                           onKeyDown={(e) => {
                             e.stopPropagation();
-                            
+
+                            // Undo/redo. Handled before anything else so a
+                            // structural branch below cannot consume the key.
+                            const mod = e.metaKey || e.ctrlKey;
+                            if (mod && (e.key === 'z' || e.key === 'Z')) {
+                              e.preventDefault();
+                              const area = e.currentTarget;
+                              if (e.shiftKey) noteHistory.redoEdit(area);
+                              else noteHistory.undoEdit(area);
+                              return;
+                            }
+                            if (mod && (e.key === 'y' || e.key === 'Y')) {
+                              e.preventDefault();
+                              noteHistory.redoEdit(e.currentTarget);
+                              return;
+                            }
+
+                            // Snapshot before the structural keys and, coalesced,
+                            // before ordinary typing. Structural first so an
+                            // indent or a new bullet is its own undo step rather
+                            // than merging into whatever was typed just before.
+                            if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'Backspace') {
+                              noteHistory.pushHistory(e.currentTarget);
+                            } else if (e.key.length === 1 && !mod) {
+                              noteHistory.pushHistory(e.currentTarget, { coalesce: true });
+                            }
+
+                            // A bold+underline run ends at the line it was
+                            // written on. contentEditable carries active
+                            // formatting across a newline, so without this a
+                            // heading quietly turns the rest of the note bold,
+                            // and switching it off means hunting for the button
+                            // again. Deferred a tick: the new line has to exist
+                            // before the commands apply to it. Ported from the
+                            // task details editor, which has had this since the
+                            // formatting button landed.
+                            if (e.key === 'Enter') {
+                              const wasBold = document.queryCommandState('bold');
+                              const wasUnderline = document.queryCommandState('underline');
+                              if (wasBold || wasUnderline) {
+                                setTimeout(() => {
+                                  if (document.queryCommandState('bold')) document.execCommand('bold', false, null);
+                                  if (document.queryCommandState('underline')) document.execCommand('underline', false, null);
+                                }, 0);
+                              }
+                            }
+
                             const selection = window.getSelection();
                             if (!selection.rangeCount) return;
                             

@@ -2689,6 +2689,14 @@ function insertList(detailsArea, tag, pushHistory) {
 function buildEmailClipboard(fragment) {
   const accent = (getComputedStyle(document.documentElement)
     .getPropertyValue('--accent') || '#53745f').trim() || '#53745f';
+  // The group rules under parent items are drawn in the app from
+  // rgba(var(--accent-rgb), 0.55) - and CSS variables do not exist outside
+  // this document, so any exported style still referencing one arrives as a
+  // colour the mail client cannot compute and silently drops. Resolve to a
+  // literal rgba here, once, and use it wherever a rule is emitted.
+  const accentRgbVar = (getComputedStyle(document.documentElement)
+    .getPropertyValue('--accent-rgb') || '83, 116, 95').trim() || '83, 116, 95';
+  const rule = '2px solid rgba(' + accentRgbVar + ', 0.55)';
 
   const wrap = document.createElement('div');
   wrap.appendChild(fragment);
@@ -2709,8 +2717,16 @@ function buildEmailClipboard(fragment) {
     const div = document.createElement('div');
     div.setAttribute('data-em-box', checked ? '1' : '0');
     div.setAttribute('data-em-indent', indent);
+    // The parent/child group rules. In the app these are class-driven
+    // (.has-children / .ends-list); classes mean nothing where this is going,
+    // so the same lines are re-drawn inline with the resolved accent.
+    const groupRule =
+      (line.classList.contains('has-children')
+        ? 'border-bottom:' + rule + ';padding-bottom:6px;' : '') +
+      (line.classList.contains('ends-list')
+        ? 'border-top:' + rule + ';padding-top:8px;' : '');
     div.setAttribute('style',
-      'margin:8px 0 8px ' + indent + ';line-height:1.6;');
+      'margin:8px 0 8px ' + indent + ';line-height:1.6;' + groupRule);
     const mark = document.createElement('span');
     mark.setAttribute('style',
       'display:inline-block;width:15px;height:15px;' +

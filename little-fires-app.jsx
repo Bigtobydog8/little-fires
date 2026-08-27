@@ -140,7 +140,7 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
   const field = {
     ...btnReset,
     padding: '10px 12px', background: 'rgba(var(--surface-rgb), 0.8)',
-    backdropFilter: 'blur(10px)',
+    backdropFilter: 'blur(4px)',
     border: '2px solid rgba(var(--accent-rgb), 0.2)', borderRadius: '20px',
     // No shadow. Inside an outlined panel a lifted control reads as floating
     // above the box that contains it; the border already separates it.
@@ -9788,6 +9788,35 @@ function LittleFiresApp() {
   // memoisation the hook depends on.
   const updateNoteRef = React.useRef(null);
 
+  // Undo, redo and typing snapshots for notes arrive through a NATIVE
+  // beforeinput listener, not React's onBeforeInput prop. React synthesises
+  // that prop from keypress and composition events, so a real beforeinput -
+  // which is how Cmd-Z, iOS shake-to-undo and the keyboard's undo button all
+  // announce themselves - never reaches it. The task editor learned this and
+  // attaches with addEventListener; this is the same fix, delegated to the
+  // document because notes render from a map and have no per-note effect to
+  // attach in. The filter keeps it out of the task editor's way, which has its
+  // own copy of exactly this listener.
+  React.useEffect(() => {
+    const onNoteBeforeInput = (evt) => {
+      const t = evt.target;
+      const area = t && t.closest ? t.closest('.note-content') : null;
+      if (!area) return;
+      const type = evt.inputType;
+      if (type === 'historyUndo' || type === 'historyRedo') {
+        evt.preventDefault();
+        if (type === 'historyUndo') noteHistory.undoEdit(area);
+        else noteHistory.redoEdit(area);
+        return;
+      }
+      const coalesce = type === 'insertText' ||
+        type === 'deleteContentBackward' || type === 'deleteContentForward';
+      noteHistory.pushHistory(area, { coalesce });
+    };
+    document.addEventListener('beforeinput', onNoteBeforeInput);
+    return () => document.removeEventListener('beforeinput', onNoteBeforeInput);
+  }, [noteHistory]);
+
   const updateNote = (id, content) => {
     setNotes(prev => prev.map(note => 
       note.id === id ? { ...note, content: sanitizeRichText(content) } : note
@@ -12248,6 +12277,18 @@ function LittleFiresApp() {
           -webkit-backdrop-filter: none !important;
         }
 
+        /* The same relief, driven by the OS instead of an app toggle. iOS and
+           macOS both expose "Reduce Transparency" as an accessibility setting,
+           and honouring it here means the single most GPU-expensive thing the
+           app does turns off for exactly the people who asked their device
+           for that. */
+        @media (prefers-reduced-transparency: reduce) {
+          *, *::before, *::after {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+          }
+        }
+
         /* The ambient glow layer: fixed, 200% x 200% - four screens of area -
            and three stacked radial gradients. Being fixed, the compositor holds
            that whole surface while you scroll. Hiding it is the single biggest
@@ -12381,10 +12422,10 @@ function LittleFiresApp() {
           gap: 6px;
           padding: 10px;
           background: rgba(var(--surface-rgb), 0.8);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border-radius: 12px;
           border: 2px solid rgba(var(--border-rgb), 0.3);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .hamburger-icon:hover {
@@ -12397,7 +12438,7 @@ function LittleFiresApp() {
           height: 3px;
           background: #B8B8B8;
           border-radius: 2px;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .menu-dropdown {
@@ -12405,7 +12446,7 @@ function LittleFiresApp() {
           top: 70px;
           left: 20px;
           background: rgba(var(--surface-rgb), 0.95);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border-radius: 15px;
           border: 2px solid rgba(var(--border-rgb), 0.4);
           padding: 10px;
@@ -12417,7 +12458,7 @@ function LittleFiresApp() {
           padding: 12px 24px;
           cursor: pointer;
           border-radius: 10px;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           font-family: var(--font-ui);
           font-weight: 600;
           font-size: 1rem;
@@ -12487,7 +12528,7 @@ function LittleFiresApp() {
 
         .tab {
           background: rgba(var(--surface-rgb), 0.8);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border: 2px solid rgba(var(--accent-rgb), 0.2);
           padding: 12px 24px;
           color: var(--text);
@@ -12495,7 +12536,7 @@ function LittleFiresApp() {
           font-weight: 600;
           font-size: 0.9rem;
           cursor: pointer;
-          transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+          transition: background 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), max-height 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
           border-radius: 30px;
           box-shadow: 0 4px 15px rgba(var(--shadow-rgb), 0.3);
         }
@@ -12559,7 +12600,7 @@ function LittleFiresApp() {
         input[type="text"].search-box {
           flex: 1;
           background: rgba(var(--surface-rgb), 0.8);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 25px;
           padding: 12px 20px;
@@ -12567,7 +12608,7 @@ function LittleFiresApp() {
           font-family: var(--font-body);
           font-size: 0.95rem;
           outline: none;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         input[type="text"].search-box:focus {
@@ -12591,7 +12632,7 @@ function LittleFiresApp() {
 
         input[type="text"] {
           background: rgba(var(--surface-rgb), 0.8);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border: 2px solid rgba(var(--accent-rgb), 0.2);
           border-radius: 25px;
           padding: 16px 24px;
@@ -12599,7 +12640,7 @@ function LittleFiresApp() {
           font-family: var(--font-body);
           font-size: 1rem;
           outline: none;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           box-shadow: 0 4px 15px rgba(var(--shadow-rgb), 0.3);
           box-sizing: border-box;
           flex: 1;
@@ -12643,7 +12684,7 @@ function LittleFiresApp() {
              different kinds of control. */
           font-size: 0.95rem;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           outline: none;
           min-width: 150px;
           /* The mobile block sets width: 100% on this control. There is no
@@ -12682,7 +12723,7 @@ function LittleFiresApp() {
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           user-select: none;
         }
 
@@ -12764,7 +12805,7 @@ function LittleFiresApp() {
           border-radius: 50%;
           border: 2px solid transparent;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .priority-btn.high {
@@ -12798,7 +12839,7 @@ function LittleFiresApp() {
           font-weight: 700;
           font-size: 1rem;
           cursor: pointer;
-          transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+          transition: background 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), max-height 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
           box-shadow: 0 6px 20px rgba(var(--accent-rgb), 0.4);
           text-transform: uppercase;
           letter-spacing: 1px;
@@ -12830,7 +12871,7 @@ function LittleFiresApp() {
           padding: 12px 16px;
           font-size: 1.2rem;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           outline: none;
         }
 
@@ -12847,7 +12888,7 @@ function LittleFiresApp() {
 
         .tasks-container {
           background: rgba(var(--surface-deep-rgb), 0.5);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border-radius: 20px;
           padding: 25px;
           box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.4);
@@ -12978,12 +13019,12 @@ function LittleFiresApp() {
              looks like the card is jammed against the rim. */
           scroll-margin-top: 12px;
           background: rgba(var(--surface-raised-rgb), 0.6);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border: 2px solid rgba(var(--accent-rgb), 0.15);
           border-radius: 15px;
           padding: 16px;
           margin-bottom: 12px;
-          transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+          transition: background 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), max-height 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
           cursor: pointer;
           position: relative;
         }
@@ -13068,7 +13109,7 @@ function LittleFiresApp() {
           border-radius: 8px;
           cursor: pointer;
           position: relative;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           background: transparent;
         }
 
@@ -13513,7 +13554,7 @@ function LittleFiresApp() {
              main way into typing when a task is full of checkboxes, so there
              has to be some of it even when the text is short. */
           min-height: 120px;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           box-sizing: border-box;
           word-wrap: break-word;
           overflow-wrap: break-word;
@@ -13538,7 +13579,7 @@ function LittleFiresApp() {
           max-height: 300px;
           overflow-y: auto;
           overflow-x: hidden;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           box-sizing: border-box;
           word-wrap: break-word;
           overflow-wrap: break-word;
@@ -13758,7 +13799,7 @@ function LittleFiresApp() {
           font-weight: 600;
           text-decoration: none;
           cursor: pointer;
-          transition: all 0.2s ease;
+          transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease, color 0.2s ease, max-height 0.2s ease;
           user-select: none;
         }
 
@@ -13810,7 +13851,7 @@ function LittleFiresApp() {
           cursor: pointer;
           font-size: 0.85rem;
           font-weight: 600;
-          transition: all 0.2s ease;
+          transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease, color 0.2s ease, max-height 0.2s ease;
           flex-shrink: 0;
           white-space: nowrap;
         }
@@ -13936,7 +13977,7 @@ function LittleFiresApp() {
              shadow was the one thing it missed. */
           box-shadow: none;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           font-weight: 600;
           text-transform: none;
           letter-spacing: 0;
@@ -14016,7 +14057,7 @@ function LittleFiresApp() {
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.2s ease;
+          transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease, color 0.2s ease, max-height 0.2s ease;
           opacity: 0;
         }
 
@@ -14077,7 +14118,7 @@ function LittleFiresApp() {
           border-radius: 16px;
           padding: 20px;
           margin-bottom: 15px;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .archived-task:hover {
@@ -14141,11 +14182,11 @@ function LittleFiresApp() {
 
         .goal-card {
           background: rgba(var(--surface-raised-rgb), 0.6);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border-radius: 20px;
           padding: 20px;
           border: 2px solid rgba(var(--accent-rgb), 0.3);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           user-select: none;
           -webkit-user-select: none;
           -moz-user-select: none;
@@ -14307,11 +14348,11 @@ function LittleFiresApp() {
 
         .project-card {
           background: rgba(var(--surface-raised-rgb), 0.6);
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
           border-radius: 20px;
           padding: 20px;
           border: 2px solid rgba(var(--border-rgb), 0.2);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           user-select: none;
           -webkit-user-select: none;
           -moz-user-select: none;
@@ -14464,7 +14505,7 @@ function LittleFiresApp() {
           color: var(--text);
           font-size: 0.95rem;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           font-family: var(--font-body);
           font-weight: 600;
           align-self: flex-start;
@@ -14513,7 +14554,7 @@ function LittleFiresApp() {
           font-size: 0.8rem;
           font-weight: 600;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           text-transform: none;
           letter-spacing: normal;
           box-shadow: none;
@@ -14534,7 +14575,7 @@ function LittleFiresApp() {
           font-size: 0.9rem;
           font-weight: 600;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           text-transform: none;
           letter-spacing: normal;
           box-shadow: none;
@@ -14604,7 +14645,7 @@ function LittleFiresApp() {
           font-family: var(--font-body);
           font-size: 1rem;
           outline: none;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           box-sizing: border-box;
           min-width: 0;
         }
@@ -14882,7 +14923,7 @@ function LittleFiresApp() {
           border-radius: 20px;
           padding: 20px;
           border: 2px solid rgba(var(--border-rgb), 0.2);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         /* backdrop-filter deliberately NOT on .note-entry.
@@ -14900,7 +14941,7 @@ function LittleFiresApp() {
            the closed cards keep the frosted look and the open one cannot trap
            its own overlay. */
         .note-entry:not(.note-entry-open) {
-          backdrop-filter: blur(10px);
+          backdrop-filter: blur(4px);
         }
 
         .note-entry:hover {
@@ -15115,7 +15156,7 @@ function LittleFiresApp() {
           min-height: 150px;
           max-height: 500px;
           overflow-y: auto;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           font-family: var(--font-body);
         }
 
@@ -15149,7 +15190,7 @@ function LittleFiresApp() {
           color: var(--text);
           font-size: 0.85rem;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           font-family: var(--font-body);
           font-weight: 600;
         }
@@ -15195,7 +15236,7 @@ function LittleFiresApp() {
           color: #fff;
           font-size: 16px;
           line-height: 1;
-          transition: all 0.2s ease;
+          transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease, color 0.2s ease, max-height 0.2s ease;
           padding: 0;
         }
 
@@ -15230,7 +15271,7 @@ function LittleFiresApp() {
           color: var(--text);
           font-size: 0.9rem;
           outline: none;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           font-family: var(--font-body);
           width: 100%;
           /* width: 100% plus side padding and a border, with no global
@@ -15285,7 +15326,7 @@ function LittleFiresApp() {
           background: rgba(var(--surface-rgb), 0.6);
           border-radius: 12px;
           border: 2px solid rgba(var(--border-rgb), 0.3);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .calendar-checkbox:hover {
@@ -15302,7 +15343,7 @@ function LittleFiresApp() {
           cursor: pointer;
           position: relative;
           background: rgba(var(--surface-deep-rgb), 0.6);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .calendar-checkbox input[type="checkbox"]:checked {
@@ -15334,7 +15375,7 @@ function LittleFiresApp() {
           color: var(--text);
           font-size: 1.5rem;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .month-nav-btn:hover {
@@ -15432,7 +15473,7 @@ function LittleFiresApp() {
           align-items: center;
           justify-content: flex-start;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           position: relative;
         }
 
@@ -15653,7 +15694,7 @@ function LittleFiresApp() {
           padding: 15px;
           margin-bottom: 10px;
           border: 2px solid rgba(var(--border-rgb), 0.2);
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
         }
 
         .calendar-item:hover {
@@ -15696,7 +15737,7 @@ function LittleFiresApp() {
           font-size: 0.9rem;
           font-weight: 600;
           cursor: pointer;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           box-shadow: 0 4px 15px rgba(45, 106, 79, 0.3);
           width: 100%;
           /* Same as .project-selector: 20px side padding outside a 100%
@@ -16112,7 +16153,7 @@ function LittleFiresApp() {
           border-radius: 8px;
           cursor: pointer;
           position: relative;
-          transition: all 0.3s ease;
+          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease, opacity 0.3s ease, color 0.3s ease, max-height 0.3s ease;
           background: rgba(var(--surface-rgb), 0.8);
           flex-shrink: 0;
           margin-top: 2px;
@@ -17709,30 +17750,15 @@ function LittleFiresApp() {
                           onKeyDown={(e) => {
                             e.stopPropagation();
 
-                            // Undo/redo. Handled before anything else so a
-                            // structural branch below cannot consume the key.
-                            const mod = e.metaKey || e.ctrlKey;
-                            if (mod && (e.key === 'z' || e.key === 'Z')) {
-                              e.preventDefault();
-                              const area = e.currentTarget;
-                              if (e.shiftKey) noteHistory.redoEdit(area);
-                              else noteHistory.undoEdit(area);
-                              return;
-                            }
-                            if (mod && (e.key === 'y' || e.key === 'Y')) {
-                              e.preventDefault();
-                              noteHistory.redoEdit(e.currentTarget);
-                              return;
-                            }
-
-                            // Snapshot before the structural keys and, coalesced,
-                            // before ordinary typing. Structural first so an
-                            // indent or a new bullet is its own undo step rather
-                            // than merging into whatever was typed just before.
+                            // Snapshot before the structural keys. Typing and
+                            // undo/redo are handled in onBeforeInput below, the
+                            // way the task editor does it - keydown only sees
+                            // the keyboard, and on iOS undo arrives by shake or
+                            // the keyboard's own button, neither of which is a
+                            // keydown. Catching mod+Z here worked on a desktop
+                            // and silently did not exist on the phone.
                             if (e.key === 'Tab' || e.key === 'Enter' || e.key === 'Backspace') {
                               noteHistory.pushHistory(e.currentTarget);
-                            } else if (e.key.length === 1 && !mod) {
-                              noteHistory.pushHistory(e.currentTarget, { coalesce: true });
                             }
 
                             // A bold+underline run ends at the line it was

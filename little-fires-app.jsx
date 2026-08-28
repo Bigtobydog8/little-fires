@@ -7858,6 +7858,7 @@ function LittleFiresApp() {
           partner: [...(prev.partner || []), ...movers]
         }));
       }
+      setDeletedListKeys(prev => ({ ...prev, [key]: new Date().toISOString() }));
     } else {
       // Personal (or shared-but-unpaired, which never reached any cloud):
       // deletion is real - and now tombstoned. Without these, the cloud
@@ -8224,6 +8225,16 @@ function LittleFiresApp() {
   };
   const [deletedNoteIds, setDeletedNoteIds] = useState(() =>
     loadTombstones('little_fires_deleted_notes'));
+  // Session 2c: deleted SHARED LIST keys. Exists because the definitions doc
+  // is whole-document LWW: a device pushing from a pre-deletion snapshot can
+  // clobber the doc without the deleted entry, resurrecting the list. Local
+  // stickiness fixes it - every push re-asserts these, every reconcile
+  // honors them, so a clobbered doc is corrected on the next cycle instead
+  // of winning. Same 90-day-TTL table pattern as the task tombstones.
+  const [deletedListKeys, setDeletedListKeys] = useState(() =>
+    loadTombstones('little_fires_deleted_lists'));
+  const deletedListKeysRef = React.useRef({});
+  deletedListKeysRef.current = deletedListKeys;
   const [deletedProjectIds, setDeletedProjectIds] = useState(() =>
     loadTombstones('little_fires_deleted_projects'));
   const [deletedGoalIds, setDeletedGoalIds] = useState(() =>
@@ -9197,6 +9208,9 @@ function LittleFiresApp() {
   useEffect(() => {
     queueSetItem('little_fires_deleted_goals', () => JSON.stringify(deletedGoalIds));
   }, [deletedGoalIds, queueSetItem]);
+  useEffect(() => {
+    queueSetItem('little_fires_deleted_lists', () => JSON.stringify(deletedListKeys));
+  }, [deletedListKeys, queueSetItem]);
 
   // ---- Session 3: the mirror -----------------------------------------------
   // One-way, local -> cloud. The app never reads Firestore in this session,
@@ -9812,8 +9826,10 @@ function LittleFiresApp() {
           label: ((listLabelsRef.current || {})[key] || '').trim() || label,
           color
         }));
-      const { merged, localChanged, pushNeeded } =
-        reconcileSharedLists(local, remoteListsDocRef.current, MAX_LISTS_PER_SET);
+      const { merged, localChanged, pushNeeded } = reconcileSharedLists(local, {
+        lists: remoteListsDocRef.current.lists,
+        deleted: { ...remoteListsDocRef.current.deleted, ...deletedListKeysRef.current }
+      }, MAX_LISTS_PER_SET);
 
       if (localChanged) {
         const mergedKeys = new Set(merged.map(l => l.key));
@@ -9847,6 +9863,14 @@ function LittleFiresApp() {
             return next;
           });
           setCurrentList(prevKey => removedKeys.includes(prevKey) ? 'master' : prevKey);
+          // Stickiness on THIS side as well: if our own next push races the
+          // partner's, we won't resurrect what they deleted.
+          setDeletedListKeys(prev => {
+            const next = { ...prev };
+            const now = new Date().toISOString();
+            removedKeys.forEach(k => { if (!next[k]) next[k] = now; });
+            return next;
+          });
         }
         if (newKeys.length) {
           // Buckets up front, same as local creation - nothing guards for a
@@ -9886,7 +9910,10 @@ function LittleFiresApp() {
       if (pushNeeded) {
         pushDocs([{
           path: 'households/' + hid + '/meta/lists',
-          data: { lists: merged, deleted: remoteListsDocRef.current.deleted }
+          data: {
+            lists: merged,
+            deleted: { ...remoteListsDocRef.current.deleted, ...deletedListKeysRef.current }
+          }
         }]).then(() => {
           lastPushedSharedListsRef.current = JSON.stringify(merged);
           listsDocLoadedRef.current = true;
@@ -9938,7 +9965,10 @@ function LittleFiresApp() {
     const t = setTimeout(() => {
       const prev = lastPushedSharedListsRef.current
         ? JSON.parse(lastPushedSharedListsRef.current) : [];
-      const deleted = { ...(remoteListsDocRef.current.deleted || {}) };
+      const deleted = {
+        ...(remoteListsDocRef.current.deleted || {}),
+        ...deletedListKeysRef.current
+      };
       prev.forEach(l => {
         if (!defs.some(d => d.key === l.key)) deleted[l.key] = new Date().toISOString();
       });

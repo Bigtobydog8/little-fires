@@ -9575,7 +9575,17 @@ function LittleFiresApp() {
         const data = d.data();
         if (data && data.active) active = { id: d.id, ...data };
       });
-      setHousehold(active);
+      // Identity-stable: four effects key off this object, so a fresh
+      // identity per snapshot re-attaches every shared listener (reads) and
+      // re-pushes the tombstone doc (writes) - a quota amplifier discovered
+      // the day the free tier ran out. Same id, members, and active flag =
+      // same object.
+      setHousehold(prev => {
+        if (!prev || !active) return active;
+        const same = prev.id === active.id && prev.active === active.active
+          && JSON.stringify(prev.members) === JSON.stringify(active.members);
+        return same ? prev : active;
+      });
       if (active) setPairStatus('');
     }, (err) => {
       console.error('household listen failed:', err);

@@ -7776,13 +7776,18 @@ function LittleFiresApp() {
 
   // Keys are slugs generated once at creation and never changed - labels stay
   // editable, so the key can't be derived from the label at read time.
+  //
+  // The timestamp suffix makes every key unique FOREVER, not merely unique
+  // among lists currently alive. Session 2c made deletions sticky (a local
+  // tombstone table outvotes stale copies of the household doc), which
+  // exposed the flaw in name-derived keys: delete "New Shared List", create
+  // another, and the newborn inherited the dead list's key - the tombstone
+  // killed it at birth, a flash and gone. Tombstones may only ever refer to
+  // the actual dead list, so no key can ever be minted twice.
   const makeListKey = (label) => {
     const base = String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '').slice(0, 20) || 'list';
-    let key = base;
-    let n = 2;
-    while (TASK_LISTS.includes(key)) { key = `${base}_${n}`; n++; }
-    return key;
+    return base + '_' + Date.now().toString(36);
   };
 
   const addCustomList = (label, shared = false) => {

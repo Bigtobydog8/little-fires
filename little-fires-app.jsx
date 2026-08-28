@@ -2972,7 +2972,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -3043,6 +3043,34 @@ function flattenForSync(kind, value) {
 // Real uids exist only in the household's cloud copy; these translate at the
 // sync boundary, each direction. 'me' is whoever is looking: the same cloud
 // record renders as "you" on your device and as your name on your partner's.
+// Session 2c: shared list DEFINITIONS sync through one household doc:
+// households/{hid}/meta/lists = { lists: [{key,label,color}], deleted: {key: ISO} }.
+// The built-in Partner list is implied, never stored. The deleted map exists
+// for one reason: without it, a deletion would resurrect - the deleting
+// device drops the entry, the partner's device still has it locally, and a
+// naive union would put it straight back. Deletion must outrank presence.
+//
+// Whole-doc last-write-wins for label/color edits: at two-person scale,
+// simultaneous offline renames of the same list are a shrug, not a schema.
+function reconcileSharedLists(localShared, remoteDoc, cap) {
+  const remote = (remoteDoc && Array.isArray(remoteDoc.lists)) ? remoteDoc.lists : [];
+  const deleted = (remoteDoc && remoteDoc.deleted) || {};
+  const seen = new Set(remote.map(l => l && l.key).filter(Boolean));
+  const merged = remote.filter(l => l && l.key);
+  for (const l of (localShared || [])) {
+    if (!l || !l.key || seen.has(l.key) || deleted[l.key]) continue;
+    merged.push({ key: l.key, label: l.label, color: l.color });
+    seen.add(l.key);
+  }
+  const capped = merged.slice(0, cap || 10);
+  const sig = (a) => JSON.stringify((a || []).filter(l => l && l.key).map(l => [l.key, l.label, l.color]));
+  return {
+    merged: capped,
+    localChanged: sig(capped) !== sig(localShared),
+    pushNeeded: sig(capped) !== sig(remote)
+  };
+}
+
 function translateAssigneesOut(record, myUid, partnerUid) {
   const map = (v) => v === 'me' ? myUid : v === 'partner' ? (partnerUid || v) : v;
   const out = { ...record };
@@ -7795,13 +7823,50 @@ function LittleFiresApp() {
     const open = (allLists[key] || []).length;
     const archived = (archivedTasks[key] || []).length;
     const total = open + archived;
+
+    // A shared list in a live household dissolves for BOTH people - so the
+    // confirm says so, and its tasks are moved, never destroyed (the same
+    // philosophy as unpair: cross-account structural actions don't delete).
+    const sharedLive = !!(entry.shared && household);
     const ok = await confirmAction(
-      `Delete "${listLabel(key)}"?\n\n` +
-      (total > 0
-        ? `This permanently deletes ${total} task${total === 1 ? '' : 's'} (${open} active, ${archived} archived). This can't be undone.`
-        : 'This list is empty.')
+      sharedLive
+        ? `Delete "${listLabel(key)}" for both of you?\n\n` +
+          (total > 0
+            ? `This shared list disappears from both accounts. Its ${total} task${total === 1 ? '' : 's'} move${total === 1 ? 's' : ''} to the Partner list's archive — nothing is deleted.`
+            : 'This shared list is empty and disappears from both accounts.')
+        : `Delete "${listLabel(key)}"?\n\n` +
+          (total > 0
+            ? `This permanently deletes ${total} task${total === 1 ? '' : 's'} (${open} active, ${archived} archived). This can't be undone.`
+            : 'This list is empty.')
     );
     if (!ok) return;
+
+    if (sharedLive) {
+      // Option A: relocate every task (live + archived) into the Partner
+      // archive, stamped, BEFORE the buckets die. The stamp makes the shared
+      // mirror push them under their new home; the same ids overwrite the
+      // household docs, so the partner's device receives the move as an
+      // ordinary task update.
+      const now = new Date().toISOString();
+      const movers = [
+        ...(allLists[key] || []),
+        ...(archivedTasks[key] || [])
+      ].map(t => ({ ...t, archivedAt: t.archivedAt || now, updatedAt: now }));
+      if (movers.length) {
+        setArchivedTasks(prev => ({
+          ...prev,
+          partner: [...(prev.partner || []), ...movers]
+        }));
+      }
+    } else {
+      // Personal (or shared-but-unpaired, which never reached any cloud):
+      // deletion is real - and now tombstoned. Without these, the cloud
+      // copies survived the local delete and the next merge resurrected
+      // every task into Personal via the unknown-key fallback. Latent since
+      // Session 4; fixed the first time list deletion met sync.
+      [...(allLists[key] || []), ...(archivedTasks[key] || [])]
+        .forEach(t => { if (t && t.id) recordDeletion(t.id); });
+    }
 
     setAllLists(prev => { const next = { ...prev }; delete next[key]; return next; });
     setArchivedTasks(prev => { const next = { ...prev }; delete next[key]; return next; });
@@ -9172,6 +9237,9 @@ function LittleFiresApp() {
   // closures. Derived state can't be closed over by once-attached listeners.
   const sharedKeysRef = React.useRef([]);
   sharedKeysRef.current = sharedListKeys;
+  const customListsRef = React.useRef([]);
+  customListsRef.current = customLists;
+  const sharedKeysSig = sharedListKeys.join('|');
 
   const mirrorKind = React.useCallback((kind, value) => {
     if (!authUser) return;
@@ -9680,11 +9748,14 @@ function LittleFiresApp() {
       const remote = [];
       snap.forEach(d => remote.push(translateAssigneesIn(d.data(), myUid)));
       const shared = new Set(sharedKeysRef.current);
-      const fallbackKey = sharedKeysRef.current[0] || 'partner';
-      // A shared listKey this device doesn't know (partner made a custom
-      // shared list - a later session's feature) routes to the first shared
-      // list rather than leaking into 'personal' via unflatten's default.
-      remote.forEach(r => { if (!shared.has(r.listKey)) r.listKey = fallbackKey; });
+      // A task on a listKey this device doesn't know yet (the partner's new
+      // shared list, definition still in flight) stays CLOUD-ONLY rather
+      // than being relabeled into the first shared list: a relabel would
+      // stick - equal stamps keep local - and the task would sit in the
+      // wrong list forever. These listeners re-attach when the shared key
+      // set changes (see the effect deps), so held-out tasks appear the
+      // moment their list exists here.
+      const remoteKnown = remote.filter(r => shared.has(r.listKey));
       const onlyShared = (byList) => Object.fromEntries(
         Object.entries(byList || {}).filter(([k]) => shared.has(k)));
       const tomb = unionTombstones(deletedTaskIdsRef.current, remoteSharedTombstonesRef.current);
@@ -9692,7 +9763,7 @@ function LittleFiresApp() {
         ...flattenForSync('tasks', onlyShared(allListsRef.current)),
         ...flattenForSync('archivedTasks', onlyShared(archivedTasksRef.current))
       ].map(r => r.record);
-      const { merged, changedIds } = mergeSyncedRecords(localFlat, remote, tomb);
+      const { merged, changedIds } = mergeSyncedRecords(localFlat, remoteKnown, tomb);
       if (!changedIds.size) return;
       const stamps = pushedStampsRef.current.sharedTasks ||
         (pushedStampsRef.current.sharedTasks = {});
@@ -9719,8 +9790,146 @@ function LittleFiresApp() {
       setSyncStatus(describeSyncError(err));
     }));
 
+    // ---- Session 2c: shared list definitions --------------------------------
+    // One doc, reconciled by reconcileSharedLists (see module scope for the
+    // deletion-outranks-presence reasoning). The listener owns FIRST contact:
+    // it unions local and remote at pairing and pushes the union. The mirror
+    // effect below owns ongoing local edits, and is gated on this listener
+    // having delivered once - pushing before the first snapshot would
+    // overwrite the partner's doc with only this device's view.
+    unsubs.push(onSnapshot(doc(db, 'households/' + hid + '/meta/lists'), (snap) => {
+      const data = snap.exists() ? (snap.data() || {}) : {};
+      remoteListsDocRef.current = {
+        lists: Array.isArray(data.lists) ? data.lists : [],
+        deleted: data.deleted || {}
+      };
+      const local = (customListsRef.current || [])
+        .filter(c => c && c.shared && c.key)
+        .map(({ key, label, color }) => ({ key, label, color }));
+      const { merged, localChanged, pushNeeded } =
+        reconcileSharedLists(local, remoteListsDocRef.current, MAX_LISTS_PER_SET);
+
+      if (localChanged) {
+        const mergedKeys = new Set(merged.map(l => l.key));
+        const removedKeys = local.filter(l => !mergedKeys.has(l.key)).map(l => l.key);
+        const newKeys = merged.filter(l => !local.some(x => x.key === l.key)).map(l => l.key);
+        const now = new Date().toISOString();
+
+        if (removedKeys.length) {
+          // The partner deleted a shared list. Anything still sitting in the
+          // local buckets moves to the Partner archive - option A applies on
+          // BOTH sides. Existing stamps are kept, so the deleting device's
+          // rewritten household docs win the merge; this move is the local
+          // safety net for anything not yet synced.
+          setArchivedTasks(prev => {
+            const next = { ...prev };
+            const movers = [];
+            removedKeys.forEach(k => {
+              movers.push(...(allListsRef.current[k] || []), ...(next[k] || []));
+              delete next[k];
+            });
+            if (movers.length) {
+              next.partner = [...(next.partner || []), ...movers.map(t => ({
+                ...t, archivedAt: t.archivedAt || now, updatedAt: t.updatedAt || now
+              }))];
+            }
+            return next;
+          });
+          setAllLists(prev => {
+            const next = { ...prev };
+            removedKeys.forEach(k => { delete next[k]; });
+            return next;
+          });
+          setCurrentList(prevKey => removedKeys.includes(prevKey) ? 'master' : prevKey);
+        }
+        if (newKeys.length) {
+          // Buckets up front, same as local creation - nothing guards for a
+          // missing key later.
+          setAllLists(prev => {
+            const next = { ...prev };
+            newKeys.forEach(k => { if (!next[k]) next[k] = []; });
+            return next;
+          });
+          setArchivedTasks(prev => {
+            const next = { ...prev };
+            newKeys.forEach(k => { if (!next[k]) next[k] = []; });
+            return next;
+          });
+        }
+        setSettings(prev => {
+          const personal = (prev.customLists || []).filter(c => c && !c.shared);
+          const labels = { ...(prev.listLabels || {}) };
+          const hidden = { ...(prev.hiddenLists || {}) };
+          removedKeys.forEach(k => { delete labels[k]; delete hidden[k]; });
+          let order = (prev.listOrder || []).filter(k => !removedKeys.includes(k));
+          newKeys.forEach(k => { if (!order.includes(k)) order = [...order, k]; });
+          return {
+            ...prev,
+            customLists: [...personal, ...merged.map(l => ({ ...l, shared: true }))],
+            listLabels: labels,
+            hiddenLists: hidden,
+            listOrder: order
+          };
+        });
+      }
+
+      if (pushNeeded) {
+        pushDocs([{
+          path: 'households/' + hid + '/meta/lists',
+          data: { lists: merged, deleted: remoteListsDocRef.current.deleted }
+        }]).then(() => {
+          lastPushedSharedListsRef.current = JSON.stringify(merged);
+          listsDocLoadedRef.current = true;
+        }).catch((err) => {
+          console.error('shared lists push failed:', err);
+          setSyncStatus(describeSyncError(err));
+        });
+      } else {
+        lastPushedSharedListsRef.current = JSON.stringify(merged);
+        listsDocLoadedRef.current = true;
+      }
+    }, (err) => {
+      console.error('shared lists listen failed:', err);
+      setSyncStatus(describeSyncError(err));
+    }));
+
     return () => unsubs.forEach(u => u());
-  }, [authUser, household]);
+    // sharedKeysSig: re-attach when the shared key SET changes so a fresh
+    // snapshot delivers any held-out tasks under their newly known list.
+    // A string, because the derived array is a new identity every render.
+  }, [authUser, household, sharedKeysSig]);
+
+  // Ongoing local edits to shared list definitions (create, rename, recolor,
+  // delete) flow up declaratively: diff the current shared defs against the
+  // last pushed set; anything that vanished joins the deleted map. Gated on
+  // the listener having loaded once (see above).
+  const remoteListsDocRef = React.useRef({ lists: [], deleted: {} });
+  const lastPushedSharedListsRef = React.useRef(null);
+  const listsDocLoadedRef = React.useRef(false);
+  useEffect(() => {
+    if (!authUser || !household || !listsDocLoadedRef.current) return;
+    const defs = (settings.customLists || [])
+      .filter(c => c && c.shared && c.key)
+      .map(({ key, label, color }) => ({ key, label, color }));
+    const sig = JSON.stringify(defs);
+    if (sig === lastPushedSharedListsRef.current) return;
+    const prev = lastPushedSharedListsRef.current
+      ? JSON.parse(lastPushedSharedListsRef.current) : [];
+    const deleted = { ...(remoteListsDocRef.current.deleted || {}) };
+    prev.forEach(l => {
+      if (!defs.some(d => d.key === l.key)) deleted[l.key] = new Date().toISOString();
+    });
+    pushDocs([{
+      path: 'households/' + household.id + '/meta/lists',
+      data: { lists: defs, deleted }
+    }]).then(() => {
+      lastPushedSharedListsRef.current = sig;
+      setSyncStatus('');
+    }).catch((err) => {
+      console.error('shared lists push failed:', err);
+      setSyncStatus(describeSyncError(err));
+    });
+  }, [authUser, household, settings.customLists]);
 
   // Auto-archive completed tasks from previous months on app load and daily.
   //
@@ -10171,16 +10380,19 @@ function LittleFiresApp() {
           </span>
         </>
       ),
-      // Shared lists are Sessions 2-3, not built yet. Written as coming rather
-      // than present tense on purpose: a first-run tour that names a feature
-      // someone then cannot find makes the app feel broken rather than
-      // forthcoming. When pairing ships, this becomes its own card - drop the
-      // "soon", say what it does, and the counter follows automatically.
+      // Present tense as of 27 Aug 2026 - pairing and shared lists shipped.
+      // This aside now carries the whole account story in two sentences:
+      // nothing requires sign-in, and the two things it buys are named. The
+      // three-tier messaging (use it / sign in to sync / pair to share)
+      // lives here and on the Account card, and nowhere else - one story,
+      // two tellings.
       asideTitle: 'Shared lists',
       aside: (
         <>
-          Coming soon — a list you and someone else both work from, so you can
-          get things done together without texts or emails.
+          A list you and one other person both work from — add something and
+          it appears on their phone, no texts or emails. Everything here works
+          without an account; signing in (Settings) is only for syncing your
+          own devices and pairing with someone.
         </>
       )
     },
@@ -26686,10 +26898,13 @@ function LittleFiresApp() {
                     }}>
                       <span style={{
                         width: '8px', height: '8px', borderRadius: '50%',
-                        background: 'var(--text-muted)', flexShrink: 0
+                        background: household ? 'var(--accent)' : 'var(--text-muted)',
+                        flexShrink: 0
                       }} />
                       <span style={{ ...hint, marginTop: 0 }}>
-                        Not linked — syncing isn't available yet.
+                        {household
+                          ? 'Paired — the shared list syncs live. These settings style how your partner appears.'
+                          : 'These settings style how your partner appears on shared tasks. To actually share, sign in and pair in the cards below.'}
                       </span>
                     </div>
                   </div>
@@ -27014,9 +27229,10 @@ function LittleFiresApp() {
                     ) : (
                       <>
                         <div style={sub}>
-                          Optional — the app works fully without it. Signing in
-                          is the groundwork for syncing your lists across
-                          devices and sharing them, coming in later updates.
+                          Optional — the app works fully without it. Sign in
+                          for exactly two things: keeping your lists in sync
+                          across your own devices, and pairing with one other
+                          person to share a list.
                         </div>
                         <button
                           onClick={() => {

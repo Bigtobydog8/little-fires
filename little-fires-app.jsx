@@ -9239,6 +9239,8 @@ function LittleFiresApp() {
   sharedKeysRef.current = sharedListKeys;
   const customListsRef = React.useRef([]);
   customListsRef.current = customLists;
+  const listLabelsRef = React.useRef({});
+  listLabelsRef.current = settings.listLabels || {};
   const sharedKeysSig = sharedListKeys.join('|');
 
   const mirrorKind = React.useCallback((kind, value) => {
@@ -9805,7 +9807,11 @@ function LittleFiresApp() {
       };
       const local = (customListsRef.current || [])
         .filter(c => c && c.shared && c.key)
-        .map(({ key, label, color }) => ({ key, label, color }));
+        .map(({ key, label, color }) => ({
+          key,
+          label: ((listLabelsRef.current || {})[key] || '').trim() || label,
+          color
+        }));
       const { merged, localChanged, pushNeeded } =
         reconcileSharedLists(local, remoteListsDocRef.current, MAX_LISTS_PER_SET);
 
@@ -9861,6 +9867,10 @@ function LittleFiresApp() {
           const labels = { ...(prev.listLabels || {}) };
           const hidden = { ...(prev.hiddenLists || {}) };
           removedKeys.forEach(k => { delete labels[k]; delete hidden[k]; });
+          // The display resolves listLabels first, so the synced label must
+          // land there too - otherwise a stale local override keeps showing
+          // the old name and the rename "never arrives".
+          merged.forEach(l => { labels[l.key] = l.label; });
           let order = (prev.listOrder || []).filter(k => !removedKeys.includes(k));
           newKeys.forEach(k => { if (!order.includes(k)) order = [...order, k]; });
           return {
@@ -9908,28 +9918,43 @@ function LittleFiresApp() {
   const listsDocLoadedRef = React.useRef(false);
   useEffect(() => {
     if (!authUser || !household || !listsDocLoadedRef.current) return;
+    // The label that syncs is the EFFECTIVE one: the rename input writes
+    // settings.listLabels[key], while the customLists entry keeps its birth
+    // name forever - pushing entry.label shipped "New Shared List" to the
+    // partner and made renames invisible to sync. Both bugs, one line.
     const defs = (settings.customLists || [])
       .filter(c => c && c.shared && c.key)
-      .map(({ key, label, color }) => ({ key, label, color }));
+      .map(({ key, label, color }) => ({
+        key,
+        label: ((settings.listLabels || {})[key] || '').trim() || label,
+        color
+      }));
     const sig = JSON.stringify(defs);
     if (sig === lastPushedSharedListsRef.current) return;
-    const prev = lastPushedSharedListsRef.current
-      ? JSON.parse(lastPushedSharedListsRef.current) : [];
-    const deleted = { ...(remoteListsDocRef.current.deleted || {}) };
-    prev.forEach(l => {
-      if (!defs.some(d => d.key === l.key)) deleted[l.key] = new Date().toISOString();
-    });
-    pushDocs([{
-      path: 'households/' + household.id + '/meta/lists',
-      data: { lists: defs, deleted }
-    }]).then(() => {
-      lastPushedSharedListsRef.current = sig;
-      setSyncStatus('');
-    }).catch((err) => {
-      console.error('shared lists push failed:', err);
-      setSyncStatus(describeSyncError(err));
-    });
-  }, [authUser, household, settings.customLists]);
+    // Debounced: the rename input fires per keystroke, and each would
+    // otherwise be a doc write. 800ms of quiet, then one push of the
+    // settled value - the deletion inference below is unaffected because
+    // it diffs settled states.
+    const t = setTimeout(() => {
+      const prev = lastPushedSharedListsRef.current
+        ? JSON.parse(lastPushedSharedListsRef.current) : [];
+      const deleted = { ...(remoteListsDocRef.current.deleted || {}) };
+      prev.forEach(l => {
+        if (!defs.some(d => d.key === l.key)) deleted[l.key] = new Date().toISOString();
+      });
+      pushDocs([{
+        path: 'households/' + household.id + '/meta/lists',
+        data: { lists: defs, deleted }
+      }]).then(() => {
+        lastPushedSharedListsRef.current = sig;
+        setSyncStatus('');
+      }).catch((err) => {
+        console.error('shared lists push failed:', err);
+        setSyncStatus(describeSyncError(err));
+      });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [authUser, household, settings.customLists, settings.listLabels]);
 
   // Auto-archive completed tasks from previous months on app load and daily.
   //

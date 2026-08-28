@@ -3055,8 +3055,13 @@ function flattenForSync(kind, value) {
 function reconcileSharedLists(localShared, remoteDoc, cap) {
   const remote = (remoteDoc && Array.isArray(remoteDoc.lists)) ? remoteDoc.lists : [];
   const deleted = (remoteDoc && remoteDoc.deleted) || {};
-  const seen = new Set(remote.map(l => l && l.key).filter(Boolean));
-  const merged = remote.filter(l => l && l.key);
+  // Deletion outranks presence on BOTH sides. The original only filtered the
+  // local union side, so a remote doc still carrying a just-deleted list
+  // (its corrective push in flight) re-added it on every reconcile - delete,
+  // confirm, watch it come back. Every path into merged goes through the
+  // deleted map, no exceptions.
+  const merged = remote.filter(l => l && l.key && !deleted[l.key]);
+  const seen = new Set(merged.map(l => l.key));
   for (const l of (localShared || [])) {
     if (!l || !l.key || seen.has(l.key) || deleted[l.key]) continue;
     merged.push({ key: l.key, label: l.label, color: l.color });

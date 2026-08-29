@@ -3373,6 +3373,13 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     if (!el) return;
     el.style.transition = animate ? 'transform 0.2s ease' : 'none';
     el.style.transform = dx ? `translateX(${dx}px)` : '';
+    // Direction drives which reveal glyph shows: the completion check sits
+    // at the card's left edge (revealed by rightward travel); the backlog
+    // glyph sits at the right edge (revealed by leftward travel). Published
+    // as a data attribute so it's pure CSS from here.
+    if (dx < 0) el.dataset.swipeDir = 'left';
+    else if (dx > 0) el.dataset.swipeDir = 'right';
+    else delete el.dataset.swipeDir;
     // The reveal layer is a pseudo-element of the card, so it would slide
     // along with it and never be revealed. Publishing the offset lets the
     // CSS cancel it out, holding the check still while the card moves off it.
@@ -3406,10 +3413,14 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     }
     if (g.axis !== 'x') return;
 
-    // Only rightward. Leftward is left alone deliberately - it's where a
-    // delete gesture would live, and an accidental destructive swipe is a
-    // much worse failure than a missed one.
-    g.dx = Math.max(0, dx);
+    // Rightward is the task's next step (complete / archive). Leftward is
+    // "not now": open To Do tasks slide left into the Backlog. Left stays
+    // dead for everything else - and delete deliberately lives on no swipe
+    // at all, because an accidental destructive swipe is a much worse
+    // failure than a missed one; backlog is safe precisely because it's
+    // one tap to undo.
+    const canLeft = task.section === 'todo' && !task.completed;
+    g.dx = canLeft ? dx : Math.max(0, dx);
     setSwipeVisual(g.dx, false);
   };
 
@@ -3417,6 +3428,8 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     const g = swipe.current;
     if (!g.active) return;
     const passed = g.axis === 'x' && g.dx >= SWIPE_TRIGGER;
+    const passedLeft = g.axis === 'x' && g.dx <= -SWIPE_TRIGGER
+      && task.section === 'todo' && !task.completed;
     g.active = false;
     // The same gesture means the next step in the task's life, whichever
     // section it is in: open -> complete, complete -> archive. It used to call
@@ -3425,7 +3438,8 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     // quietly resurrected the task instead.
     const willComplete = passed && !task.completed;
     const willArchive = passed && task.completed && !task.isArchived;
-    if (willComplete || willArchive) {
+    const willBacklog = passedLeft;
+    if (willComplete || willArchive || willBacklog) {
       // Clear the styles written during the gesture so React's own style prop
       // takes over cleanly. Direct DOM writes and React's transform were both
       // targeting the same property, and React won on the next render - which
@@ -3436,12 +3450,13 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
         el.style.transform = '';
         el.style.removeProperty('--swipe-dx');
         el.style.removeProperty('--swipe-progress');
+        delete el.dataset.swipeDir;
       }
-      setSwipedOut(true);
+      setSwipedOut(willBacklog ? 'left' : 'right');
     } else {
       setSwipeVisual(0, true);
     }
-    if (passed) {
+    if (passed || passedLeft) {
       // Suppress the click that follows the touch, or the card would also
       // expand on the way past.
       swipe.current.justSwiped = true;
@@ -3457,6 +3472,11 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
       // completion hold - the box is already ticked, there is nothing to
       // show off. MOVE_HOLD_MS rather than COMPLETE_HOLD_MS for that reason.
       runExit(() => archiveTask(listName, task.id), MOVE_HOLD_MS);
+    } else if (willBacklog) {
+      // The exact path the "move to backlog" section button takes, so a
+      // swipe and a tap produce one idea of what shelving a task looks
+      // like (including the completion-delay setting's instant mode).
+      requestSectionMove('backlog');
     }
     g.dx = 0;
     g.axis = null;
@@ -4832,10 +4852,13 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
         // Swiped out: the card stays opaque and slides clear, so what you're
         // left looking at is the full green panel and its checkmark. Ticked:
         // it fades in place as before.
-        ...(swipedOut ? { '--swipe-progress': 1, '--swipe-dx': '110%' } : {}),
+        ...(swipedOut ? {
+          '--swipe-progress': 1,
+          '--swipe-dx': swipedOut === 'left' ? '-110%' : '110%'
+        } : {}),
         opacity: task.isArchived ? 0.7 : (isExiting && !swipedOut ? 0 : 1),
         transform: swipedOut
-          ? 'translateX(110%)'
+          ? (swipedOut === 'left' ? 'translateX(-110%)' : 'translateX(110%)')
           : (isExiting ? 'translateX(14px) scale(0.97)' : 'none'),
         // Height collapse: pinned to the measured value first, then driven to 0
         // once `collapsing` flips, which pulls the rows below up smoothly.
@@ -17357,6 +17380,16 @@ function LittleFiresApp() {
           opacity: 0;
         }
 
+        /* Leftward reveal: the backlog glyph, at the right edge where a
+           left-travelling card uncovers it. Same box/counter-translate
+           mechanics as the check - only content and alignment change. */
+        .task[data-swipe-dir="left"]::after {
+          content: '≡';
+          justify-content: flex-end;
+          padding-left: 0;
+          padding-right: 20px;
+        }
+
         /* An already-complete task swipes the same way to un-complete, so the
            gesture is reversible and never destructive. */
         .task.completed::after {
@@ -18410,9 +18443,10 @@ function LittleFiresApp() {
                     frame centers the INK horizontally and lifts by half the
                     centroid offset - the same optics solved for the app
                     icon. Ink bbox in art units: x 201..1090, y 9..932;
-                    centroid ~98 units below box center. */}
+                    centroid ~98 units below box center; the ring build then
+                    took an extra 30-unit lift by eye (28 Aug). */}
                 <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                  viewBox="5.5 -120.75 1280 1280"
+                  viewBox="5.5 -90.75 1280 1280"
                   preserveAspectRatio="xMidYMid meet"
                   style={{width: '100%', height: '100%'}}>
                   <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"

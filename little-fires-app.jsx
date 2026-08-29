@@ -18404,8 +18404,15 @@ function LittleFiresApp() {
                 width: '100%',
                 height: '100%'
               }}>
+                {/* viewBox shifted, not the art: the flame's bounding box
+                    carries dead space below the ink, so the default frame
+                    seats it high (tip kissing the ring, moat below). This
+                    frame centers the INK horizontally and lifts by half the
+                    centroid offset - the same optics solved for the app
+                    icon. Ink bbox in art units: x 201..1090, y 9..932;
+                    centroid ~98 units below box center. */}
                 <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 1280.000000 1280.000000"
+                  viewBox="5.5 -120.75 1280 1280"
                   preserveAspectRatio="xMidYMid meet"
                   style={{width: '100%', height: '100%'}}>
                   <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"

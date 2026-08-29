@@ -23579,7 +23579,7 @@ function LittleFiresApp() {
                         animation: (isLogging && !isMobile) ? 'flameGlow 10s ease-in-out infinite' : 'none'
                       }}>
                         <svg version="1.0" xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 1280.000000 1280.000000"
+                          viewBox="5.5 -90.75 1280 1280"
                           preserveAspectRatio="xMidYMid meet"
                           style={{width: '100%', height: '100%'}}>
                           <g transform="translate(0.000000,1280.000000) scale(0.100000,-0.100000)"

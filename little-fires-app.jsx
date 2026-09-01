@@ -10374,6 +10374,18 @@ function LittleFiresApp() {
     // The || [] already covers it, but the explicit check says why: two of the
     // values this can hold are tabs rather than lists.
     if (currentList === SUGGESTIONS_TAB) return [];
+    // While searching, a single list surfaces its archive too - the master
+    // view has always done this, and search results navigating to archived
+    // tasks depend on it (the query is still active on arrival, so the
+    // archived row is present and can be expanded).
+    if (searchQuery && archivedTasks[currentList]) {
+      return [
+        ...(allLists[currentList] || []),
+        ...archivedTasks[currentList].map((task, index) => ({
+          ...task, sourceList: currentList, sourceIndex: index, isArchived: true
+        }))
+      ];
+    }
     return allLists[currentList] || [];
   };
 
@@ -25430,23 +25442,31 @@ function LittleFiresApp() {
                     
                     const query = searchQuery.toLowerCase();
                     
-                    // Search Tasks
-                    const listNames = visibleTaskLists;
+                    // Search Tasks. Search means "look over EVERYTHING":
+                    // every list including hidden ones (hiding is a display
+                    // preference; typing a query is explicit intent), and
+                    // the archive alongside the living - archived hits are
+                    // flagged so the row can say so.
+                    const listNames = TASK_LISTS;
                     const listLabels = Object.fromEntries(TASK_LISTS.map(k => [k, listSectionLabel(k)]));
+                    const taskMatches = (task) =>
+                      task.text.toLowerCase().includes(query) ||
+                      (task.details && task.details.toLowerCase().includes(query));
 
                     listNames.forEach(listName => {
-                      if (!allLists[listName]) return;
-                      
-                      const matchingTasks = allLists[listName].filter(task => 
-                        task.text.toLowerCase().includes(query) ||
-                        (task.details && task.details.toLowerCase().includes(query))
-                      );
-
-                      matchingTasks.forEach(task => {
+                      (allLists[listName] || []).filter(taskMatches).forEach(task => {
                         searchResults.tasks.push({
                           item: task,
                           listName,
                           label: listLabels[listName]
+                        });
+                      });
+                      (archivedTasks[listName] || []).filter(taskMatches).forEach(task => {
+                        searchResults.tasks.push({
+                          item: { ...task, isArchived: true },
+                          listName,
+                          label: listLabels[listName],
+                          isArchived: true
                         });
                       });
                     });
@@ -25461,7 +25481,8 @@ function LittleFiresApp() {
                           searchResults.projects.push({
                             item: project,
                             listName,
-                            label: listLabels[listName]
+                            label: listLabels[listName],
+                            isArchived: !!project.archived
                           });
                         }
                       });
@@ -25477,7 +25498,8 @@ function LittleFiresApp() {
                           searchResults.goals.push({
                             item: goal,
                             listName,
-                            label: listLabels[listName]
+                            label: listLabels[listName],
+                            isArchived: !!goal.archived
                           });
                         }
                       });
@@ -25542,6 +25564,14 @@ function LittleFiresApp() {
                               <div key={result.item.id} style={{marginBottom: '15px'}}>
                                 <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px', marginLeft: '10px'}}>
                                   {result.label}
+                                  {result.isArchived ? (
+                                    <span style={{
+                                      marginLeft: '8px', fontSize: '0.75rem',
+                                      color: 'var(--text-muted)',
+                                      border: '1px solid var(--text-muted)',
+                                      borderRadius: '8px', padding: '1px 7px'
+                                    }}>Archived</span>
+                                  ) : null}
                                 </div>
                                 <Task
                                   task={result.item}
@@ -25578,6 +25608,14 @@ function LittleFiresApp() {
                               >
                                 <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
                                   {result.label}
+                                  {result.isArchived ? (
+                                    <span style={{
+                                      marginLeft: '8px', fontSize: '0.75rem',
+                                      color: 'var(--text-muted)',
+                                      border: '1px solid var(--text-muted)',
+                                      borderRadius: '8px', padding: '1px 7px'
+                                    }}>Archived</span>
+                                  ) : null}
                                 </div>
                                 <div style={{fontSize: '1.1rem', fontWeight: '600', color: 'var(--text)', marginBottom: '5px'}}>
                                   {result.item.name}
@@ -25622,6 +25660,14 @@ function LittleFiresApp() {
                               >
                                 <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
                                   {result.label}
+                                  {result.isArchived ? (
+                                    <span style={{
+                                      marginLeft: '8px', fontSize: '0.75rem',
+                                      color: 'var(--text-muted)',
+                                      border: '1px solid var(--text-muted)',
+                                      borderRadius: '8px', padding: '1px 7px'
+                                    }}>Archived</span>
+                                  ) : null}
                                 </div>
                                 <div style={{fontSize: '1.1rem', fontWeight: '600', color: 'var(--text)', marginBottom: '5px'}}>
                                   {result.item.name}

@@ -5932,19 +5932,18 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 pushHistory(e.currentTarget);
                 const textSpan = checkboxLine.querySelector('span');
                 // Determine if the caret is at the very start of the line's text.
-                let atStart = false;
-                const container = range.startContainer;
-                const offset = range.startOffset;
-                if (textSpan) {
-                  if (offset === 0 && (container === textSpan || container === textSpan.firstChild || (textSpan.firstChild && container === textSpan.firstChild))) {
-                    atStart = true;
-                  }
-                  // Also treat "&nbsp;-only" placeholder spans with caret at 0/1 as start
-                  const spanText = (textSpan.textContent || '').replace(/\u00A0/g, '');
-                  if (spanText === '' && offset <= 1) atStart = true;
-                } else if (container === checkboxLine && offset === 0) {
-                  atStart = true;
-                }
+                // "At the start" means no text between the line's start and the
+                // caret - measured with a Range, so it holds no matter how deeply
+                // the caret is nested. The old check only recognised a caret sitting
+                // directly in the text span or its first child; pasted content
+                // (a <b> from Gmail, say) put the caret one level deeper and
+                // Backspace concluded "not at start" and did nothing - the first
+                // checkbox became impossible to remove. The checkbox input has no
+                // text, so it never counts.
+                const beforeCaret = document.createRange();
+                beforeCaret.setStart(checkboxLine, 0);
+                beforeCaret.setEnd(range.startContainer, range.startOffset);
+                const atStart = beforeCaret.toString().replace(/\u00A0/g, '').trim() === '';
                 // If caret is somewhere inside actual text (not at start), let default run
                 if (atStart) {
                   e.preventDefault();
@@ -6108,13 +6107,13 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   // land on a fresh checkbox where it used to be. Inserting below
                   // regardless left the text where it was and gave you a blank
                   // line underneath, which is the opposite of what was asked for.
+                  // Range-measured, like the Backspace check: true when no text
+                  // sits between the line's start and the caret, however nested.
                   const caretAtLineStart = (() => {
-                    if (range.startOffset !== 0) return false;
-                    const c = range.startContainer;
-                    if (c === textSpan || c === textSpan.firstChild) return true;
-                    // Caret parked on the line itself, before the text span.
-                    if (c === checkboxLine) return true;
-                    return false;
+                    const before = document.createRange();
+                    before.setStart(checkboxLine, 0);
+                    before.setEnd(range.startContainer, range.startOffset);
+                    return before.toString().replace(/\u00A0/g, '').trim() === '';
                   })();
                   
                   // Create new checkbox line with same indent
@@ -6139,6 +6138,40 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   // Above when the caret is at the start, below otherwise.
                   // Either way the caret ends up on the new empty line, so the
                   // next thing typed goes into the item just created.
+                  // Mid-line Enter SPLITS the line: everything after the caret
+                  // moves onto the new item, formatting intact (extractContents
+                  // clones partial ancestors, so a bold run cut in half stays
+                  // bold on both sides). Before this, Enter anywhere in a line
+                  // made an empty item and left the text where it was - which
+                  // nobody noticed until pasting a paragraph and trying to
+                  // carve it into items. At-start and at-end behave as before.
+                  if (!caretAtLineStart) {
+                    const tail = document.createRange();
+                    tail.setStart(range.startContainer, range.startOffset);
+                    tail.setEnd(checkboxLine, checkboxLine.childNodes.length);
+                    const frag = tail.extractContents();
+                    const tailText = (frag.textContent || '').replace(/\u00A0/g, ' ').trim();
+                    if (tailText) {
+                      newTextSpan.innerHTML = '';
+                      // The tail may arrive wrapped in a clone of the original
+                      // text span; unwrap plain wrappers so the line keeps one span.
+                      const unwrap = (node) => {
+                        const only = node.childNodes.length === 1 ? node.firstChild : null;
+                        if (only && only.nodeType === 1 && only.tagName === 'SPAN'
+                            && !only.style.fontWeight && !only.getAttribute('style')) {
+                          return unwrap(only);
+                        }
+                        return node;
+                      };
+                      const srcNode = unwrap(frag);
+                      while (srcNode.firstChild) newTextSpan.appendChild(srcNode.firstChild);
+                      // Never leave the head with nothing editable - an empty span
+                      // is where carets go to vanish.
+                      const headSpan = checkboxLine.querySelector('span');
+                      if (headSpan && !headSpan.firstChild) headSpan.innerHTML = '&nbsp;';
+                    }
+                  }
+
                   checkboxLine.parentNode.insertBefore(
                     newCheckboxLine,
                     caretAtLineStart ? checkboxLine : checkboxLine.nextSibling
@@ -19449,18 +19482,18 @@ function LittleFiresApp() {
                             // Handle Backspace at the start of a checkbox line
                             else if (e.key === 'Backspace' && checkboxLine && selection.isCollapsed) {
                               const textSpan = checkboxLine.querySelector('span');
-                              let atStart = false;
-                              const container = range.startContainer;
-                              const offset = range.startOffset;
-                              if (textSpan) {
-                                if (offset === 0 && (container === textSpan || container === textSpan.firstChild)) {
-                                  atStart = true;
-                                }
-                                const spanText = (textSpan.textContent || '').replace(/\u00A0/g, '');
-                                if (spanText === '' && offset <= 1) atStart = true;
-                              } else if (container === checkboxLine && offset === 0) {
-                                atStart = true;
-                              }
+                              // "At the start" means no text between the line's start and the
+                              // caret - measured with a Range, so it holds no matter how deeply
+                              // the caret is nested. The old check only recognised a caret sitting
+                              // directly in the text span or its first child; pasted content
+                              // (a <b> from Gmail, say) put the caret one level deeper and
+                              // Backspace concluded "not at start" and did nothing - the first
+                              // checkbox became impossible to remove. The checkbox input has no
+                              // text, so it never counts.
+                              const beforeCaret = document.createRange();
+                              beforeCaret.setStart(checkboxLine, 0);
+                              beforeCaret.setEnd(range.startContainer, range.startOffset);
+                              const atStart = beforeCaret.toString().replace(/\u00A0/g, '').trim() === '';
                               if (atStart) {
                                 e.preventDefault();
                                 const indent = parseInt(checkboxLine.style.marginLeft || '0') || 0;
@@ -19589,12 +19622,13 @@ function LittleFiresApp() {
                                 // Same rule as the task details editor: Enter at
                                 // the very start of an item makes room above it
                                 // rather than below.
+                                // Range-measured, like the Backspace check: true when no text
+                                // sits between the line's start and the caret, however nested.
                                 const caretAtLineStart = (() => {
-                                  if (range.startOffset !== 0) return false;
-                                  const c = range.startContainer;
-                                  if (c === textSpan || c === textSpan.firstChild) return true;
-                                  if (c === checkboxLine) return true;
-                                  return false;
+                                  const before = document.createRange();
+                                  before.setStart(checkboxLine, 0);
+                                  before.setEnd(range.startContainer, range.startOffset);
+                                  return before.toString().replace(/\u00A0/g, '').trim() === '';
                                 })();
 
                                 const newCheckboxLine = document.createElement('div');
@@ -19614,6 +19648,40 @@ function LittleFiresApp() {
                                 newCheckboxLine.appendChild(newCheckbox);
                                 newCheckboxLine.appendChild(newTextSpan);
                                 
+                                // Mid-line Enter SPLITS the line: everything after the caret
+                                // moves onto the new item, formatting intact (extractContents
+                                // clones partial ancestors, so a bold run cut in half stays
+                                // bold on both sides). Before this, Enter anywhere in a line
+                                // made an empty item and left the text where it was - which
+                                // nobody noticed until pasting a paragraph and trying to
+                                // carve it into items. At-start and at-end behave as before.
+                                if (!caretAtLineStart) {
+                                  const tail = document.createRange();
+                                  tail.setStart(range.startContainer, range.startOffset);
+                                  tail.setEnd(checkboxLine, checkboxLine.childNodes.length);
+                                  const frag = tail.extractContents();
+                                  const tailText = (frag.textContent || '').replace(/\u00A0/g, ' ').trim();
+                                  if (tailText) {
+                                    newTextSpan.innerHTML = '';
+                                    // The tail may arrive wrapped in a clone of the original
+                                    // text span; unwrap plain wrappers so the line keeps one span.
+                                    const unwrap = (node) => {
+                                      const only = node.childNodes.length === 1 ? node.firstChild : null;
+                                      if (only && only.nodeType === 1 && only.tagName === 'SPAN'
+                                          && !only.style.fontWeight && !only.getAttribute('style')) {
+                                        return unwrap(only);
+                                      }
+                                      return node;
+                                    };
+                                    const srcNode = unwrap(frag);
+                                    while (srcNode.firstChild) newTextSpan.appendChild(srcNode.firstChild);
+                                    // Never leave the head with nothing editable - an empty span
+                                    // is where carets go to vanish.
+                                    const headSpan = checkboxLine.querySelector('span');
+                                    if (headSpan && !headSpan.firstChild) headSpan.innerHTML = '&nbsp;';
+                                  }
+                                }
+
                                 checkboxLine.parentNode.insertBefore(
                                   newCheckboxLine,
                                   caretAtLineStart ? checkboxLine : checkboxLine.nextSibling

@@ -2483,6 +2483,63 @@ function resolveIndentTarget(area, node) {
   return wrapped ? { kind: 'block', line: wrapped } : null;
 }
 
+// Every indentable line the selection touches. A collapsed selection is
+// the one line at the caret (the original behaviour); a real selection is
+// each checkbox line, plain line, or bullet the range intersects - so an
+// indent on a multi-line selection moves the whole selection, as it would
+// in any editor. Boundary rule: a selection that ENDS exactly at a line's
+// start does not include that line (a drag that stops at the left edge of
+// the next row hasn't selected it), and likewise for one that starts at a
+// line's end.
+function resolveIndentTargets(area, range) {
+  if (range.collapsed) {
+    const t = resolveIndentTarget(area, range.startContainer);
+    return t ? [t] : [];
+  }
+  const touches = (el) => {
+    if (!range.intersectsNode(el)) return false;
+    const box = document.createRange();
+    box.selectNodeContents(el);
+    // range.end <= el.start, or range.start >= el.end -> only grazing.
+    // Constants read off the instance rather than the Range global, which
+    // some embedding environments (the jsdom harness) don't expose.
+    if (range.compareBoundaryPoints(range.START_TO_END, box) <= 0) return false;
+    if (range.compareBoundaryPoints(range.END_TO_START, box) >= 0) return false;
+    return true;
+  };
+  const out = [];
+  const seen = new Set();
+  const add = (t) => { if (t && !seen.has(t.line)) { seen.add(t.line); out.push(t); } };
+  area.querySelectorAll('li').forEach(li => { if (touches(li)) add({ kind: 'bullet', line: li }); });
+  Array.from(area.children).forEach(el => {
+    if (el.nodeType !== 1) return;
+    const tag = el.tagName;
+    if (tag === 'UL' || tag === 'OL') return;
+    if (touches(el)) add({ kind: 'block', line: el });
+  });
+  if (!out.length) {
+    const t = resolveIndentTarget(area, range.startContainer);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+// One indent / outdent step over a target set. Bullets go through
+// execCommand ONCE - it already acts on the whole live selection - and
+// blocks get marginLeft individually. Outdent removes the property at zero
+// rather than writing 0px (the app's "not indented" is an absent
+// declaration, and the sanitizer would keep a literal 0px forever).
+function applyIndentStep(targets, direction) {
+  if (targets.some(t => t.kind === 'bullet')) {
+    document.execCommand(direction > 0 ? 'indent' : 'outdent', false, null);
+  }
+  targets.filter(t => t.kind === 'block').forEach(t => {
+    const next = Math.max(0, blockIndent(t.line) + direction * EDITOR_INDENT_STEP);
+    if (next === 0) t.line.style.removeProperty('margin-left');
+    else t.line.style.marginLeft = next + 'px';
+  });
+}
+
 // Can the line at the caret be outdented right now?
 function canOutdentAt(area, node) {
   const target = indentTargetAt(area, node);
@@ -5583,18 +5640,15 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   selection.addRange(range);
                   return;
                 }
-                const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
-                if (!target) return;
+                // Every line the selection touches - one line for a caret, all of
+                // them for a multi-line selection.
+                const targets = resolveIndentTargets(detailsArea, selection.getRangeAt(0));
+                if (!targets.length) return;
                 // Snapshot covers both branches. The bullet one goes through
                 // execCommand and would be caught anyway; taking it here keeps
                 // the two paths on one rule instead of two.
                 pushHistory(detailsArea);
-                if (target.kind === 'bullet') {
-                  document.execCommand('indent', false, null);
-                } else {
-                  target.line.style.marginLeft =
-                    (blockIndent(target.line) + EDITOR_INDENT_STEP) + 'px';
-                }
+                applyIndentStep(targets, +1);
                 refreshListMarkers(detailsArea);
                 refreshOutdentVisibility(detailsArea);
               }}
@@ -5615,19 +5669,10 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   detailsArea.focus();
                   const selection = window.getSelection();
                   if (!selection.rangeCount || !detailsArea.contains(selection.anchorNode)) return;
-                  const target = resolveIndentTarget(detailsArea, selection.getRangeAt(0).startContainer);
-                  if (!target) return;
+                  const targets = resolveIndentTargets(detailsArea, selection.getRangeAt(0));
+                  if (!targets.length) return;
                   pushHistory(detailsArea);
-                  if (target.kind === 'bullet') {
-                    document.execCommand('outdent', false, null);
-                  } else {
-                    const next = Math.max(0, blockIndent(target.line) - EDITOR_INDENT_STEP);
-                    // Removed rather than set to 0px: an empty declaration is
-                    // what the rest of the app treats as "not indented", and
-                    // the sanitizer would keep a literal 0px around forever.
-                    if (next === 0) target.line.style.removeProperty('margin-left');
-                    else target.line.style.marginLeft = next + 'px';
-                  }
+                  applyIndentStep(targets, -1);
                   refreshListMarkers(detailsArea);
                   // Removing this button mid-press is what made the task
                   // collapse. The press starts on the button; by the time the
@@ -19175,14 +19220,11 @@ function LittleFiresApp() {
                                 selection.addRange(range);
                                 return;
                               }
-                              const target = resolveIndentTarget(area, selection.getRangeAt(0).startContainer);
-                              if (!target) return;
-                              if (target.kind === 'bullet') {
-                                document.execCommand('indent', false, null);
-                              } else {
-                                target.line.style.marginLeft =
-                                  (blockIndent(target.line) + EDITOR_INDENT_STEP) + 'px';
-                              }
+                              // Every line the selection touches - one for a caret, all of
+                              // them for a multi-line selection.
+                              const targets = resolveIndentTargets(area, selection.getRangeAt(0));
+                              if (!targets.length) return;
+                              applyIndentStep(targets, +1);
                               refreshNoteOutdentVisibility(area);
                             }}
                             title="Indent"
@@ -19210,15 +19252,9 @@ function LittleFiresApp() {
                               area.focus();
                               const selection = window.getSelection();
                               if (!selection.rangeCount || !area.contains(selection.anchorNode)) return;
-                              const target = resolveIndentTarget(area, selection.getRangeAt(0).startContainer);
-                              if (!target) return;
-                              if (target.kind === 'bullet') {
-                                document.execCommand('outdent', false, null);
-                              } else {
-                                const next = Math.max(0, blockIndent(target.line) - EDITOR_INDENT_STEP);
-                                if (next === 0) target.line.style.removeProperty('margin-left');
-                                else target.line.style.marginLeft = next + 'px';
-                              }
+                              const targets = resolveIndentTargets(area, selection.getRangeAt(0));
+                              if (!targets.length) return;
+                              applyIndentStep(targets, -1);
                               refreshNoteOutdentVisibility(area);
                             }}
                             title="Outdent"

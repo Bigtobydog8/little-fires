@@ -2662,6 +2662,58 @@ const LitFlame = () => (
 //
 // pushHistory is passed in rather than closed over, so each editor's undo stack
 // records the insert on its own timeline.
+// Blocks covered by a multi-line selection, with two traps disarmed.
+// (1) A contentEditable's FIRST line is usually a bare text node - element
+// iteration cannot see it, which is how "select four lines, press Box"
+// converted three: the top line was the bare one. Bare inline runs are
+// wrapped into <div>s first. Wrapping reparents nodes, and per DOM rules
+// that collapses any live Range boundary inside them - so the range is
+// rebuilt from endpoints saved up front and returned beside the blocks;
+// callers must use the returned range from then on.
+// (2) Lists arrive wholesale: an intersecting <ul>/<ol> is returned as
+// itself, and per-line converters expand it item by item rather than
+// swallowing the whole list into one line.
+function collectSelectedBlocks(area, range) {
+  const saved = {
+    sc: range.startContainer, so: range.startOffset,
+    ec: range.endContainer, eo: range.endOffset
+  };
+  const isBoundary = (n) => n.nodeType === 1 &&
+    ['BR', 'DIV', 'P', 'UL', 'OL'].includes(n.tagName);
+  let run = [];
+  const flush = () => {
+    if (!run.length) return;
+    const wrapper = document.createElement('div');
+    area.insertBefore(wrapper, run[0]);
+    run.forEach(n => wrapper.appendChild(n));
+    run = [];
+  };
+  Array.from(area.childNodes).forEach(n => {
+    if (isBoundary(n)) {
+      flush();
+      // A bare <br> separated runs; the wrapping now carries the line
+      // break, so keeping it would add a blank line.
+      if (n.tagName === 'BR') n.remove();
+    } else {
+      run.push(n);
+    }
+  });
+  flush();
+  const clamp = (node, off) => Math.min(off,
+    node.nodeType === 3 ? node.length : node.childNodes.length);
+  const r = document.createRange();
+  try {
+    r.setStart(saved.sc, clamp(saved.sc, saved.so));
+    r.setEnd(saved.ec, clamp(saved.ec, saved.eo));
+  } catch (err) {
+    r.selectNodeContents(area);
+  }
+  return {
+    blocks: Array.from(area.children).filter(el => r.intersectsNode(el)),
+    range: r
+  };
+}
+
 function insertList(detailsArea, tag, pushHistory) {
   if (!detailsArea) return;
   // Snapshot before mutating. This builds DOM directly, so it never fires
@@ -2684,15 +2736,27 @@ function insertList(detailsArea, tag, pushHistory) {
   // it either skips those or nests the box inside the new <li>.
   // A multi-line selection is converted explicitly instead, and
   // only genuinely plain lines fall through to the native path.
-  const range = selection.getRangeAt(0);
+  let range = selection.getRangeAt(0);
   if (!range.collapsed) {
-    const blocks = Array.from(detailsArea.children).filter(
-      el => range.intersectsNode(el)
-    );
+    const collected = collectSelectedBlocks(detailsArea, range);
+    const blocks = collected.blocks;
+    // The wrapping inside collectSelectedBlocks may have invalidated the
+    // live range; the rebuilt one is authoritative from here on.
+    range = collected.range;
+    selection.removeAllRanges();
+    selection.addRange(range);
     if (blocks.length > 1) {
       const list = document.createElement(tag);
       blocks[0].parentElement.insertBefore(list, blocks[0]);
       blocks.forEach(block => {
+        if (block.tagName === 'UL' || block.tagName === 'OL') {
+          // An existing list joins item by item, never as one lump.
+          Array.from(block.querySelectorAll('li')).forEach(item => {
+            list.appendChild(item);
+          });
+          block.remove();
+          return;
+        }
         const li = document.createElement('li');
         // The checkbox itself is dropped: a line is either a
         // checkbox or a bullet, and keeping both would leave a
@@ -5165,7 +5229,7 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   selection.removeAllRanges();
                   selection.addRange(range);
                 } else {
-                  const range = selection.getRangeAt(0);
+                  let range = selection.getRangeAt(0);
                   
                   // Helper to build a fresh checkbox line
                   const buildCheckboxLine = () => {
@@ -5194,15 +5258,39 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                   // from range.startContainer and never looks at where the
                   // selection ends - so multi-line is handled here and returns.
                   if (!range.collapsed) {
-                    const blocks = Array.from(detailsArea.children).filter(
-                      el => range.intersectsNode(el)
-                    );
+                    const collected = collectSelectedBlocks(detailsArea, range);
+                    const blocks = collected.blocks;
+                    // Wrapping may invalidate the live range; the rebuilt one
+                    // is authoritative from here on (including the single-line
+                    // fall-through below).
+                    range = collected.range;
+                    selection.removeAllRanges();
+                    selection.addRange(range);
                     if (blocks.length > 1) {
                       blocks.forEach(block => {
                         // Already a real checkbox line - leave it alone rather
                         // than nesting a second box inside it.
                         if (block.classList.contains('checkbox-line') &&
                             block.querySelector('.task-checkbox')) return;
+
+                        if (block.tagName === 'UL' || block.tagName === 'OL') {
+                          // Each item becomes its own checkbox line - treating
+                          // the list as one block would swallow every bullet
+                          // into a single box.
+                          const listIndent = (block.style && block.style.marginLeft) || '';
+                          Array.from(block.querySelectorAll('li')).forEach(item => {
+                            const { line, span } = buildCheckboxLine();
+                            span.innerHTML = '';
+                            while (item.firstChild) span.appendChild(item.firstChild);
+                            if (!span.textContent.trim()) span.innerHTML = '&nbsp;';
+                            const ind = (item.style && item.style.marginLeft) || listIndent;
+                            if (ind) line.style.marginLeft = ind;
+                            block.parentElement.insertBefore(line, block);
+                            item.remove();
+                          });
+                          block.remove();
+                          return;
+                        }
 
                         const { line, span } = buildCheckboxLine();
                         // Text is moved, not copied: this converts the line in

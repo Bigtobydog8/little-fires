@@ -49,6 +49,12 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
   // fails when there is not enough room in either direction; scrolling alone
   // fails when the popup would have to sit below the end of the content.
   const [placement, setPlacement] = React.useState('below');
+  // The horizontal twin of `placement`. The popup is anchored to the
+  // trigger's left edge, which is fine until the trigger sits indented in a
+  // task card on a phone - then a fixed-width calendar runs off the right of
+  // the screen and the last column of days is unreachable. This slides it
+  // back by however much it overhangs, never past the left margin.
+  const [shiftX, setShiftX] = React.useState(0);
 
   // The card above needs to know a popup is open inside it, so the tap that
   // dismisses this calendar isn't also read as a tap on the card.
@@ -75,6 +81,16 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
     } else {
       setPlacement('below');
     }
+
+    // Horizontal fit, measured the same way and in the same pass. EDGE keeps
+    // a little air between the calendar and the screen; the max() stops an
+    // over-correction from pushing the left edge off instead - on a screen
+    // too narrow for the popup, the left edge wins and maxWidth below does
+    // the rest.
+    const EDGE = 10;
+    const popupW = popup.offsetWidth;
+    const overflowRight = (t.left + popupW + EDGE) - window.innerWidth;
+    setShiftX(overflowRight > 0 ? -Math.min(overflowRight, Math.max(0, t.left - EDGE)) : 0);
   }, [open]);
 
   // Then scroll it fully into view. block:'nearest' moves the nearest
@@ -232,13 +248,17 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
 
       {open && (
         <div ref={popupRef} style={{
-          position: 'absolute', left: 0, zIndex: 2000,
+          position: 'absolute', left: shiftX + 'px', zIndex: 2000,
           ...(placement === 'above'
             ? { bottom: 'calc(100% + 6px)' }
             : { top: 'calc(100% + 6px)' }),
           background: 'rgba(var(--surface-deep-rgb), 0.99)',
           border: '2px solid rgba(var(--accent-rgb), 0.4)',
-          borderRadius: '12px', padding: '12px', width: '252px',
+          // Width caps to the viewport so the grid narrows rather than
+          // clipping on the smallest phones; box-sizing keeps the padding
+          // inside that cap.
+          borderRadius: '12px', padding: '12px',
+          width: '252px', maxWidth: 'calc(100vw - 20px)', boxSizing: 'border-box',
           boxShadow: '0 10px 30px rgba(var(--shadow-rgb),0.55)',
           fontFamily: 'var(--font-ui)'
         }}>

@@ -172,6 +172,7 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
     boxShadow: 'none',
     color: value ? 'var(--text)' : '#8a8a9a', fontFamily: "'Nunito', sans-serif",
     fontSize: '0.95rem', cursor: 'pointer', minWidth: '132px', textAlign: 'left',
+    display: 'flex', alignItems: 'center', gap: '8px',
     // When a caller sizes the wrapper (width, flex, etc), the button should
     // fill it rather than sitting at its natural content width inside it.
     ...(style ? { width: '100%' } : {})
@@ -193,12 +194,28 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
     }}
       onMouseDown={stop} onTouchStart={stop} onClick={stop}>
       <button type="button" style={field} onClick={(e) => { stop(e); setOpen(o => !o); }}>
-        {selected ? selected.toLocaleDateString('en-US',
-          { month: 'short', day: 'numeric', year: 'numeric' })
-          /* No placeholder text - an unset field reads as empty, like the
-             other inputs. The non-breaking space keeps the button from
-             collapsing to zero height when there's nothing to show. */
-          : '\u00A0'}
+        {/* A quiet affordance: without it an empty date field is just an
+            unlabeled pill, and people were left guessing what it was for.
+            Placeholder-grey (#8a8a9a - the same tone as the "Task" hint
+            text) whether or not a date is set, so it identifies the field
+            without ever competing with the value. */}
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="#8a8a9a" strokeWidth="2" strokeLinecap="round"
+          strokeLinejoin="round" aria-hidden="true"
+          style={{ flexShrink: 0, opacity: 0.85 }}>
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+          <line x1="16" y1="2" x2="16" y2="6" />
+          <line x1="8" y1="2" x2="8" y2="6" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+        </svg>
+        <span>
+          {selected ? selected.toLocaleDateString('en-US',
+            { month: 'short', day: 'numeric', year: 'numeric' })
+            /* No placeholder text - an unset field reads as empty, like the
+               other inputs. The non-breaking space keeps the button from
+               collapsing to zero height when there's nothing to show. */
+            : '\u00A0'}
+        </span>
       </button>
       {value && (
         <button type="button" title="Clear date" aria-label="Clear date"
@@ -2713,6 +2730,12 @@ function collectSelectedBlocks(area, range) {
     range: r
   };
 }
+
+// Suggested lists a new install offers rather than pre-installs. Travel
+// matches a dormant built-in and re-awakens it; the others create ordinary
+// custom lists. Chosen for universality - movement, supply, body - with no
+// assumption about household shape. Swappable in one line.
+const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
 function insertList(detailsArea, tag, pushHistory) {
   if (!detailsArea) return;
@@ -7983,6 +8006,12 @@ function LittleFiresApp() {
   })();
 
   const visibleTaskLists = orderedTaskLists.filter(k => !isListHidden(k));
+  // Goals and Projects follow the SAME visibility settings as the task tabs
+  // (a friend's out-of-sync report: goals showed home/travel/kids while the
+  // task tabs, per the default settings, hid them). Personal lists only:
+  // shared goals/projects don't exist, and a Partner tab here would promise
+  // sharing that isn't built. Order and labels follow settings too.
+  const visiblePlanLists = orderedTaskLists.filter(k => !isSharedList(k) && !isListHidden(k));
 
   // Keys are slugs generated once at creation and never changed - labels stay
   // editable, so the key can't be derived from the label at read time.
@@ -8003,8 +8032,9 @@ function LittleFiresApp() {
   const addCustomList = (label, shared = false) => {
     const name = String(label || '').trim();
     if (!name) return { ok: false, message: 'Give the list a name first.' };
-    const set = shared ? sharedListKeys : personalListKeys;
-    if (set.length >= MAX_LISTS_PER_SET) {
+    // Dormant built-ins don't spend personal slots (see isDormantBuiltin).
+    const count = shared ? sharedListKeys.length : activePersonalCount;
+    if (count >= MAX_LISTS_PER_SET) {
       return {
         ok: false,
         message: `You can have up to ${MAX_LISTS_PER_SET} ${shared ? 'shared' : 'personal'} lists.`
@@ -8013,7 +8043,10 @@ function LittleFiresApp() {
     // Name check spans BOTH sets: two lists called "Groceries", one personal
     // and one shared, would be indistinguishable everywhere they appear
     // together - All Tasks, search, reports.
-    const taken = TASK_LISTS.some(k => listLabel(k).toLowerCase() === name.toLowerCase());
+    // A dormant built-in doesn't reserve its name either - "you can't call
+    // a list Home because of a Home you cannot see" would be the original
+    // presumption wearing a trench coat.
+    const taken = TASK_LISTS.some(k => !isDormantBuiltin(k) && listLabel(k).toLowerCase() === name.toLowerCase());
     if (taken) return { ok: false, message: 'A list with that name already exists.' };
 
     const key = makeListKey(name);
@@ -8105,8 +8138,13 @@ function LittleFiresApp() {
   const moveList = (key, direction) => {
     const order = [...orderedTaskLists];
     const from = order.indexOf(key);
-    const to = from + direction;
-    if (from < 0 || to < 0 || to >= order.length) return;
+    if (from < 0) return;
+    // Step to the adjacent VISIBLE row: dormant built-ins sit in the order
+    // but not in Manage Lists, and swapping with an invisible neighbor
+    // would make the first press look like a no-op.
+    let to = from + direction;
+    while (to >= 0 && to < order.length && isDormantBuiltin(order[to])) to += direction;
+    if (to < 0 || to >= order.length) return;
     order.splice(to, 0, order.splice(from, 1)[0]);
     updateSetting('listOrder', order);
   };
@@ -8491,6 +8529,22 @@ function LittleFiresApp() {
     return parsed;
   });
 
+  // Option B (Sep 2026): a fresh install should presume nothing. The
+  // built-in Home/Travel/Kids lists ship hidden; while a hidden built-in
+  // also has no tasks anywhere (live or archived) it is DORMANT - it does
+  // not render in Manage Lists and does not count against the personal
+  // cap. The moment it holds data or is made visible it behaves exactly
+  // as it always did, so every existing user's lists are untouched.
+  // Buckets and constants stay: dormancy is a display-and-accounting
+  // state, never a schema change. Placed BELOW allLists and archivedTasks
+  // because the derived count evaluates at render (bug class #1).
+  const isDormantBuiltin = (key) =>
+    BUILT_IN_PERSONAL_LISTS.includes(key) &&
+    isListHidden(key) &&
+    (allLists[key] || []).length === 0 &&
+    (archivedTasks[key] || []).length === 0;
+  const activePersonalCount = personalListKeys.filter(k => !isDormantBuiltin(k)).length;
+
   const [notes, setNotes] = useState(() => {
     const saved = localStorage.getItem('little_fires_notes');
     return saved ? JSON.parse(saved) : [];
@@ -8735,6 +8789,23 @@ function LittleFiresApp() {
 
   const [selectedProject, setSelectedProject] = useState(null);
   const [currentProjectList, setCurrentProjectList] = useState('master');
+
+  // Hiding the list currently being viewed in Goals or Projects snaps that
+  // view to All - the same guard the task view runs, in its own effect
+  // because it must sit BELOW both currentGoalList and currentProjectList:
+  // an effect's dependency array is evaluated during render, so referencing
+  // later-declared state there is a temporal dead zone crash (the decisions
+  // file's bug class #1, met again on 11 Sep).
+  useEffect(() => {
+    if (currentProjectList !== 'master' && isListHidden(currentProjectList)) {
+      setCurrentProjectList('master');
+      setSelectedProject(null);
+    }
+    if (currentGoalList !== 'master' && isListHidden(currentGoalList)) {
+      setCurrentGoalList('master');
+      setSelectedGoal(null);
+    }
+  }, [settings.hiddenLists, currentProjectList, currentGoalList]);
   const [draggedProject, setDraggedProject] = useState(null);
   const [dragOverProject, setDragOverProject] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
@@ -9139,16 +9210,11 @@ function LittleFiresApp() {
       ? Object.fromEntries(visibleTaskLists.map(k => [k, true]))
       : {});
   };
-  const [showPersonalGoals, setShowPersonalGoals] = useState(true);
-  const [showWorkGoals, setShowWorkGoals] = useState(true);
-  const [showHomeGoals, setShowHomeGoals] = useState(true);
-  const [showTravelGoals, setShowTravelGoals] = useState(true);
-  const [showKidsGoals, setShowKidsGoals] = useState(true);
-  const [showPersonalProjects, setShowPersonalProjects] = useState(true);
-  const [showWorkProjects, setShowWorkProjects] = useState(true);
-  const [showHomeProjects, setShowHomeProjects] = useState(true);
-  const [showTravelProjects, setShowTravelProjects] = useState(true);
-  const [showKidsProjects, setShowKidsProjects] = useState(true);
+  // One keyed map per view instead of ten per-list booleans - custom lists
+  // need collapse state too, and dedicated useStates can't grow with them.
+  // Absent key = open (the old default).
+  const [closedGoalSections, setClosedGoalSections] = useState({});
+  const [closedProjectSections, setClosedProjectSections] = useState({});
   const [showStandaloneTimeLogs, setShowStandaloneTimeLogs] = useState(true);
   const [showGoalTimeLogs, setShowGoalTimeLogs] = useState(true);
   const [showJournalTimeLogs, setShowJournalTimeLogs] = useState(true);
@@ -11988,7 +12054,7 @@ function LittleFiresApp() {
     
     // Get projects based on start or end date
     if (showProjects && isFeatureOn('projects')) {
-      const allProjectLists = ['personal', 'work', 'home', 'travel', 'kids'];
+      const allProjectLists = visiblePlanLists;
       allProjectLists.forEach(listName => {
         (projects[listName] || []).forEach(project => {
           let shouldShow = false;
@@ -12026,7 +12092,7 @@ function LittleFiresApp() {
     // projects - a goal that starts and ends on one day is marked once, as
     // 'both', rather than appearing twice.
     if (showGoals && isFeatureOn('goals')) {
-      const allGoalLists = ['personal', 'work', 'home', 'travel', 'kids'];
+      const allGoalLists = visiblePlanLists;
       allGoalLists.forEach(listName => {
         (goals[listName] || []).forEach(goal => {
           let shouldShow = false;
@@ -12086,7 +12152,7 @@ function LittleFiresApp() {
     const monthEnd = new Date(year, month + 1, 0);
     const activeProjects = [];
     
-    const allProjectLists = ['personal', 'work', 'home', 'travel', 'kids'];
+    const allProjectLists = visiblePlanLists;
     allProjectLists.forEach(listName => {
       (projects[listName] || []).forEach(project => {
         if (!project.startDate || !project.endDate) return;
@@ -12549,9 +12615,12 @@ function LittleFiresApp() {
     recordGoalDeletion(id);
     // Same reasoning as deleteProject: unlinking is a change to each affected
     // project, so each gets stamped.
-    const allProjectLists = ['personal', 'work', 'home', 'travel', 'kids'];
     setProjects(prev => {
       const newProjects = { ...prev };
+      // Every bucket that exists, hidden and custom lists included: this is
+      // a data-integrity cascade, not a display choice. The old hardcoded
+      // five silently skipped custom lists' projects.
+      const allProjectLists = Object.keys(newProjects);
       allProjectLists.forEach(projectListName => {
         newProjects[projectListName] = (newProjects[projectListName] || []).map(project =>
           project.goalId == id
@@ -12634,7 +12703,7 @@ function LittleFiresApp() {
   const getCurrentGoals = () => {
     if (currentGoalList === 'master') {
       const masterGoals = [];
-      ['personal', 'work', 'home', 'travel', 'kids'].forEach(listName => {
+      visiblePlanLists.forEach(listName => {
         (goals[listName] || []).forEach(goal => {
           if (!goal.archived) {  // Filter out archived goals
             masterGoals.push({
@@ -12679,7 +12748,9 @@ function LittleFiresApp() {
   const getCurrentProjects = () => {
     if (currentProjectList === 'master') {
       const masterProjects = [];
-      ['personal', 'work', 'home', 'travel'].forEach(listName => {
+      // (The old hardcoded list here was missing 'kids' - All Projects never
+      // showed kids projects at all.)
+      visiblePlanLists.forEach(listName => {
         if (projects[listName]) {
           projects[listName].forEach(project => {
             if (!project.archived) {  // Filter out archived projects
@@ -20302,51 +20373,21 @@ function LittleFiresApp() {
                 All Projects
               </button>
               <div className="tabs">
-                <button
-                  className={`tab ${currentProjectList === 'personal' ? 'active' : ''}`}
-                  onClick={() => {
-                    setCurrentProjectList('personal');
-                    setSelectedProject(null);
-                  }}
-                >
-                  Personal
-                </button>
-                <button
-                  className={`tab ${currentProjectList === 'work' ? 'active' : ''}`}
-                  onClick={() => {
-                    setCurrentProjectList('work');
-                    setSelectedProject(null);
-                  }}
-                >
-                  Work
-                </button>
-                <button
-                  className={`tab ${currentProjectList === 'home' ? 'active' : ''}`}
-                  onClick={() => {
-                    setCurrentProjectList('home');
-                    setSelectedProject(null);
-                  }}
-                >
-                  Home
-                </button>
-                <button
-                  className={`tab ${currentProjectList === 'travel' ? 'active' : ''}`}
-                  onClick={() => {
-                    setCurrentProjectList('travel');
-                    setSelectedProject(null);
-                  }}
-                >
-                  Travel
-                </button>
-                <button
-                  className={`tab ${currentProjectList === 'kids' ? 'active' : ''}`}
-                  onClick={() => {
-                    setCurrentProjectList('kids');
-                    setSelectedProject(null);
-                  }}
-                >
-                  Kids
-                </button>
+                {/* Mapped, not hardcoded: the same visibility, order, and
+                    labels the task tabs follow. Hidden lists don't appear;
+                    custom personal lists and renames do. */}
+                {visiblePlanLists.map(k => (
+                  <button
+                    key={k}
+                    className={`tab ${currentProjectList === k ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrentProjectList(k);
+                      setSelectedProject(null);
+                    }}
+                  >
+                    {listLabel(k)}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -20630,39 +20671,25 @@ function LittleFiresApp() {
                       </div>
                     </div>
                   ) : currentProjectList === 'master' ? (
-                    // Master view - group by list
+                    // Master view - group by list. Visible lists only, labels
+                    // from settings - the same rules the tabs follow.
                     (() => {
-                      const showStates = {
-                        personal: showPersonalProjects,
-                        work: showWorkProjects,
-                        home: showHomeProjects,
-                        travel: showTravelProjects,
-                        kids: showKidsProjects
-                      };
-                      
-                      const toggleStates = {
-                        personal: setShowPersonalProjects,
-                        work: setShowWorkProjects,
-                        home: setShowHomeProjects,
-                        travel: setShowTravelProjects,
-                        kids: setShowKidsProjects
-                      };
-                      
-                      return ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
+                      return visiblePlanLists.map(listName => {
                         const listProjects = projects[listName] || [];
                         if (listProjects.length === 0) return null;
-                        
+                        const open = !closedProjectSections[listName];
                         return (
                           <div key={listName} className="list-section">
                             <div 
                               className="list-section-header"
-                              onClick={() => toggleStates[listName](!showStates[listName])}
+                              onClick={() => setClosedProjectSections(prev =>
+                                ({ ...prev, [listName]: open }))}
                               style={{cursor: 'pointer'}}
                             >
-                              <span style={{textTransform: 'capitalize'}}>{listName} Projects</span>
+                              <span>{listLabel(listName)} Projects</span>
                               <span className={`badge ${listName}`}>{listProjects.length}</span>
                             </div>
-                            {showStates[listName] && (
+                            {open && (
                               <>
                                 {listProjects.map(project => {
                                   return (
@@ -22499,51 +22526,20 @@ function LittleFiresApp() {
             </div>
 
             <div className="tabs">
-              <button
-                className={`tab ${currentGoalList === 'personal' ? 'active' : ''}`}
-                onClick={() => {
-                  setCurrentGoalList('personal');
-                  setSelectedGoal(null);
-                }}
-              >
-                Personal
-              </button>
-              <button
-                className={`tab ${currentGoalList === 'work' ? 'active' : ''}`}
-                onClick={() => {
-                  setCurrentGoalList('work');
-                  setSelectedGoal(null);
-                }}
-              >
-                Work
-              </button>
-              <button
-                className={`tab ${currentGoalList === 'home' ? 'active' : ''}`}
-                onClick={() => {
-                  setCurrentGoalList('home');
-                  setSelectedGoal(null);
-                }}
-              >
-                Home
-              </button>
-              <button
-                className={`tab ${currentGoalList === 'travel' ? 'active' : ''}`}
-                onClick={() => {
-                  setCurrentGoalList('travel');
-                  setSelectedGoal(null);
-                }}
-              >
-                Travel
-              </button>
-              <button
-                className={`tab ${currentGoalList === 'kids' ? 'active' : ''}`}
-                onClick={() => {
-                  setCurrentGoalList('kids');
-                  setSelectedGoal(null);
-                }}
-              >
-                Kids
-              </button>
+              {/* Mapped, not hardcoded - same visibility, order, and labels as
+                  the task tabs. */}
+              {visiblePlanLists.map(k => (
+                <button
+                  key={k}
+                  className={`tab ${currentGoalList === k ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentGoalList(k);
+                    setSelectedGoal(null);
+                  }}
+                >
+                  {listLabel(k)}
+                </button>
+              ))}
             </div>
 
             {currentGoalList !== 'master' && (
@@ -22633,39 +22629,25 @@ function LittleFiresApp() {
                       </div>
                     </div>
                   ) : currentGoalList === 'master' ? (
-                    // Master view - group by list
+                    // Master view - group by list. Visible lists only (the
+                    // same visibility the tabs follow), labels from settings.
                     (() => {
-                      const showStates = {
-                        personal: showPersonalGoals,
-                        work: showWorkGoals,
-                        home: showHomeGoals,
-                        travel: showTravelGoals,
-                        kids: showKidsGoals
-                      };
-                      
-                      const toggleStates = {
-                        personal: setShowPersonalGoals,
-                        work: setShowWorkGoals,
-                        home: setShowHomeGoals,
-                        travel: setShowTravelGoals,
-                        kids: setShowKidsGoals
-                      };
-                      
-                      return ['personal', 'work', 'home', 'travel', 'kids'].map(listName => {
+                      return visiblePlanLists.map(listName => {
                         const listGoals = goals[listName] || [];
                         if (listGoals.length === 0) return null;
-                        
+                        const open = !closedGoalSections[listName];
                         return (
                           <div key={listName} className="list-section">
                             <div 
                               className="list-section-header"
-                              onClick={() => toggleStates[listName](!showStates[listName])}
+                              onClick={() => setClosedGoalSections(prev =>
+                                ({ ...prev, [listName]: open }))}
                               style={{cursor: 'pointer'}}
                             >
-                              <span style={{textTransform: 'capitalize'}}>{listName} Goals</span>
+                              <span>{listLabel(listName)} Goals</span>
                               <span className={`badge ${listName}`}>{listGoals.length}</span>
                             </div>
-                            {showStates[listName] && (
+                            {open && (
                               <>
                                 {listGoals.map((goal, index) => {
                                   const isDragging = draggedGoal?.id === goal.id;
@@ -27093,7 +27075,7 @@ function LittleFiresApp() {
                         groups - which quietly made cross-group reordering
                         impossible, because a shared list had no personal list to
                         be dropped onto. */}
-                    {orderedTaskLists.map(renderListRow)}
+                    {orderedTaskLists.filter(k => !isDormantBuiltin(k)).map(renderListRow)}
 
                     <div style={divider} />
 
@@ -27101,21 +27083,21 @@ function LittleFiresApp() {
                       <div style={{ flex: 1, minWidth: '150px' }}>
                         <button
                           onClick={() => addListQuick(false)}
-                          disabled={personalListKeys.length >= MAX_LISTS_PER_SET}
+                          disabled={activePersonalCount >= MAX_LISTS_PER_SET}
                           style={{
                             width: '100%', padding: '12px 16px', borderRadius: '10px',
-                            cursor: personalListKeys.length >= MAX_LISTS_PER_SET ? 'default' : 'pointer',
+                            cursor: activePersonalCount >= MAX_LISTS_PER_SET ? 'default' : 'pointer',
                             background: 'rgba(var(--surface-rgb), 1)',
                             border: '2px solid rgba(var(--border-rgb), 0.35)',
                             color: 'var(--text-muted)', fontSize: '0.85rem', fontWeight: 600,
                             fontFamily: 'var(--font-ui)',
-                            opacity: personalListKeys.length >= MAX_LISTS_PER_SET ? 0.5 : 1
+                            opacity: activePersonalCount >= MAX_LISTS_PER_SET ? 0.5 : 1
                           }}
                         >
                           + Personal List
                         </button>
                         <div style={{ ...hint, marginTop: '6px', textAlign: 'center' }}>
-                          {personalListKeys.length} of {MAX_LISTS_PER_SET}
+                          {activePersonalCount} of {MAX_LISTS_PER_SET}
                         </div>
                       </div>
 
@@ -27144,6 +27126,53 @@ function LittleFiresApp() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Suggestions, not furniture: each chip either wakes the
+                        matching dormant built-in (Travel) or creates a normal
+                        custom list. A chip disappears once a list with that
+                        name is active. */}
+                    {(() => {
+                      const offered = SUGGESTED_LISTS.filter(label => {
+                        const active = TASK_LISTS.some(k =>
+                          !isDormantBuiltin(k) && listLabel(k).toLowerCase() === label.toLowerCase());
+                        return !active;
+                      });
+                      if (!offered.length) return null;
+                      return (
+                        <div style={{ marginTop: '14px' }}>
+                          <div style={{ ...hint, marginBottom: '8px' }}>
+                            Suggested — tap to add if useful:
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {offered.map(label => (
+                              <button
+                                key={label}
+                                onClick={() => {
+                                  const dormantKey = BUILT_IN_PERSONAL_LISTS.find(k =>
+                                    isDormantBuiltin(k) && listLabel(k).toLowerCase() === label.toLowerCase());
+                                  if (dormantKey) {
+                                    const hidden = { ...(settings.hiddenLists || {}) };
+                                    delete hidden[dormantKey];
+                                    updateSetting('hiddenLists', hidden);
+                                  } else {
+                                    addCustomList(label, false);
+                                  }
+                                }}
+                                style={{
+                                  padding: '8px 16px', borderRadius: '16px',
+                                  border: '2px dashed rgba(var(--border-rgb), 0.6)',
+                                  background: 'transparent', color: 'var(--text-muted)',
+                                  cursor: 'pointer', fontSize: '0.85rem',
+                                  fontFamily: 'var(--font-ui)'
+                                }}
+                              >
+                                + {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {listMessage && (
                       <div style={{

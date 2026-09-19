@@ -164,7 +164,10 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
   // row with them without looking like a different kind of control.
   const field = {
     ...btnReset,
-    padding: '10px 12px', background: 'rgba(var(--surface-rgb), 0.8)',
+    // Left padding matches the Task input above (2px border + 24px padding
+    // there vs 2px here), so the calendar icon's left edge lines up with
+    // the "T" of the Task placeholder.
+    padding: '10px 12px 10px 24px', background: 'rgba(var(--surface-rgb), 0.8)',
     backdropFilter: 'blur(4px)',
     border: '2px solid rgba(var(--accent-rgb), 0.2)', borderRadius: '20px',
     // No shadow. Inside an outlined panel a lifted control reads as floating
@@ -199,7 +202,7 @@ function InlineDatePicker({ value, onChange, style, onOpenChange }) {
             Placeholder-grey (#8a8a9a - the same tone as the "Task" hint
             text) whether or not a date is set, so it identifies the field
             without ever competing with the value. */}
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
           stroke="#8a8a9a" strokeWidth="2" strokeLinecap="round"
           strokeLinejoin="round" aria-hidden="true"
           style={{ flexShrink: 0, opacity: 0.85 }}>

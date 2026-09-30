@@ -2758,6 +2758,12 @@ function collectSelectedBlocks(area, range) {
 // matches a dormant built-in and re-awakens it; the others create ordinary
 // custom lists. Chosen for universality - movement, supply, body - with no
 // assumption about household shape. Swappable in one line.
+// Shown at the bottom of Settings. Its only job is to answer "am I actually
+// running the build I just deployed, or a cached one?" - a question that has
+// cost real debugging time, because a stale service-worker cache and a broken
+// feature look identical from the outside. Bumped on every delivery.
+const BUILD_STAMP = '2026-09-30 1620';
+
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
 function insertList(detailsArea, tag, pushHistory) {
@@ -28518,6 +28524,16 @@ function LittleFiresApp() {
                 </div>
               );
             })()}
+
+            {/* Literal styles, not the `hint` helper: that one is scoped to
+                the card-rendering closures above, and this sits outside
+                them. */}
+            <div style={{
+              textAlign: 'center', marginTop: '18px', marginBottom: '8px',
+              fontSize: '0.75rem', color: 'var(--text-muted)', opacity: 0.7
+            }}>
+              Build {BUILD_STAMP}
+            </div>
           </div>
         )}
 

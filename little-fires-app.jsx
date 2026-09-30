@@ -15643,8 +15643,14 @@ function LittleFiresApp() {
              the line box and the box. The static value is the fallback for
              browsers without lh units; the calc is exact and self-correcting
              if the font or line height ever changes. */
-          margin-top: 2px;
-          margin-top: calc((1lh - 20px) / 2);
+          margin-top: 4px;
+          /* The +1.5px is empirical and stays. Half the line-box difference
+             is geometrically correct but reads high, because a line box
+             includes descender space the glyphs of a word like "Test" never
+             use - so the ink's optical centre sits above the box's centre.
+             Eye beats arithmetic here; tune this one number if the font
+             ever changes. */
+          margin-top: calc((1lh - 20px) / 2 + 1.5px);
         }
 
         .details-richtext .checkbox-line.has-children,

@@ -9535,6 +9535,33 @@ function LittleFiresApp() {
     tasks: {}, archivedTasks: {}, projects: {}, goals: {}, notes: {}
   });
   const [syncStatus, setSyncStatus] = useState('');
+  // Sep 2026: a phone that had been backgrounded for days pushed fine but
+  // received nothing, while the status line said "Synced" - because that
+  // line only ever reported on WRITES. An iOS PWA gets suspended, its
+  // Firestore streams die, and on resume the listeners can stay dead
+  // without firing an error, so nothing local ever notices.
+  //
+  // Two fixes, both here. listenerEpoch is a version counter in every
+  // listener effect's deps: bumping it tears down and re-attaches the lot.
+  // syncLive tracks whether anything has actually ARRIVED since the current
+  // attach - Firestore delivers an initial snapshot immediately on listen,
+  // so "nothing received yet" is a real liveness signal rather than just a
+  // quiet app.
+  const [listenerEpoch, setListenerEpoch] = useState(0);
+  const [syncLive, setSyncLive] = useState(false);
+  const remountListeners = React.useCallback(() => {
+    setSyncLive(false);
+    setListenerEpoch(e => e + 1);
+  }, []);
+  // A grace period before saying anything: the first snapshot normally lands
+  // in well under a second, and a status line that flashes "Reconnecting" on
+  // every ordinary load would be noise rather than information.
+  const [syncSlow, setSyncSlow] = useState(false);
+  useEffect(() => {
+    if (syncLive) { setSyncSlow(false); return; }
+    const t = setTimeout(() => setSyncSlow(true), 6000);
+    return () => clearTimeout(t);
+  }, [syncLive, listenerEpoch]);
   // Session 5: navigator.onLine plus its two events. Not perfect (a captive
   // portal reads as online) but right for the honest 95%: the status line
   // says "offline - queued" instead of implying a sync that cannot happen.
@@ -9663,6 +9690,33 @@ function LittleFiresApp() {
   // because every merge re-applies the whole union.
   const remoteTombstonesRef = React.useRef({ tasks: {}, notes: {}, projects: {}, goals: {} });
 
+  // What actually re-establishes the streams. Threshold, because a quick
+  // app-switch doesn't kill a connection and every re-attach costs reads;
+  // a long absence is the case that does.
+  useEffect(() => {
+    if (!authUser) return;
+    const RESUME_AFTER_MS = 30000;
+    let hiddenAt = null;
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+      const away = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = null;
+      if (away >= RESUME_AFTER_MS) remountListeners();
+    };
+    // A bfcache restore hands back a page whose streams are long dead, and
+    // it fires no visibilitychange.
+    const onPageShow = (e) => { if (e && e.persisted) remountListeners(); };
+    const onOnline = () => remountListeners();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('online', onOnline);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [authUser, remountListeners]);
+
   useEffect(() => {
     if (!authUser || !syncAdopted) return;
     const uid = authUser.uid;
@@ -9684,6 +9738,8 @@ function LittleFiresApp() {
     // construction - that property has twenty pinned tests.
     const attach = (col, apply) => {
       unsubs.push(onSnapshot(collection(db, 'users/' + uid + '/' + col), (snap) => {
+        // Proof of an arriving stream, not merely a successful send.
+        setSyncLive(true);
         const remote = [];
         snap.forEach(d => remote.push(d.data()));
         apply(remote);
@@ -9770,7 +9826,7 @@ function LittleFiresApp() {
     });
 
     return () => unsubs.forEach(u => u());
-  }, [authUser, syncAdopted]);
+  }, [authUser, syncAdopted, listenerEpoch]);
 
   // The listener callbacks above read CURRENT state through refs rather than
   // closing over it - the effect deliberately depends only on auth+adoption,
@@ -10075,6 +10131,7 @@ function LittleFiresApp() {
     }, (err) => console.error('shared tombstone listen failed:', err)));
 
     unsubs.push(onSnapshot(collection(db, 'households/' + hid + '/tasks'), (snap) => {
+      setSyncLive(true);
       const remote = [];
       snap.forEach(d => remote.push(translateAssigneesIn(d.data(), myUid)));
       const shared = new Set(sharedKeysRef.current);
@@ -10248,7 +10305,7 @@ function LittleFiresApp() {
     // sharedKeysSig: re-attach when the shared key SET changes so a fresh
     // snapshot delivers any held-out tasks under their newly known list.
     // A string, because the derived array is a new identity every render.
-  }, [authUser, household, sharedKeysSig]);
+  }, [authUser, household, sharedKeysSig, listenerEpoch]);
 
   // Ongoing local edits to shared list definitions (create, rename, recolor,
   // delete) flow up declaratively: diff the current shared defs against the
@@ -15556,11 +15613,30 @@ function LittleFiresApp() {
 
         .details-richtext .checkbox-line {
           display: flex !important;
+          /* flex-start, NOT center: a wrapped item must keep its box beside
+             the FIRST line of text, not float to the middle of the block.
+             Centring on that first line is the box's own job, below. */
           align-items: flex-start;
           margin: 5px 0;
           gap: 8px;
           clear: both;
           width: 100%;
+          /* Explicit, because the editor inherited the default (~1.2) - about
+             18px at this font size, which is SHORTER than the 20px box, so
+             no offset could have centred it. 1.6 also matches the line
+             height the email export draws. (No backticks in here: this CSS
+             lives in a template literal and one would end the string.) */
+          line-height: 1.6;
+        }
+
+        .details-richtext .checkbox-line .task-checkbox,
+        .note-content .checkbox-line .task-checkbox {
+          /* Centre the box on the first line: half the difference between
+             the line box and the box. The static value is the fallback;
+             the calc is exact and self-correcting if the font or line
+             height ever changes (1lh = this element's own line height). */
+          margin-top: 2px;
+          margin-top: calc((1lh - 20px) / 2);
         }
 
         .details-richtext .checkbox-line.has-children,
@@ -17962,6 +18038,7 @@ function LittleFiresApp() {
           gap: 8px;
           clear: both;
           width: 100%;
+          line-height: 1.6;
         }
 
         .note-content .checkbox-line span {
@@ -27514,9 +27591,16 @@ function LittleFiresApp() {
                                 order of what the person needs to know. */}
                             {syncStatus
                               ? null
-                              : isOnline
-                                ? '✓ Synced. Changes appear on all your devices.'
-                                : 'Offline — changes are saved here and will sync when you reconnect.'}
+                              : !isOnline
+                                ? 'Offline — changes are saved here and will sync when you reconnect.'
+                                : (syncSlow && !syncLive)
+                                  /* The honest middle state. "Synced" used to
+                                     be claimed on the strength of writes
+                                     alone, which is how a phone could sit for
+                                     days receiving nothing while insisting it
+                                     was fine. */
+                                  ? 'Reconnecting — this device may not have the latest changes yet.'
+                                  : '✓ Synced. Changes appear on all your devices.'}
                           </div>
                         ) : (
                           <div style={sub}>

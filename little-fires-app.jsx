@@ -15631,10 +15631,18 @@ function LittleFiresApp() {
 
         .details-richtext .checkbox-line .task-checkbox,
         .note-content .checkbox-line .task-checkbox {
+          /* font-size FIRST, and it is load-bearing: 1lh below resolves
+             against this element's own font size, and an <input> does not
+             inherit font size from its parent - it takes the browser's
+             default (~13px). Without this the calc measured a line that
+             was never drawn and under-nudged the box, which read as the
+             text sitting low. Safe here because the tick is drawn from
+             borders, not typed as a character. */
+          font-size: inherit;
           /* Centre the box on the first line: half the difference between
-             the line box and the box. The static value is the fallback;
-             the calc is exact and self-correcting if the font or line
-             height ever changes (1lh = this element's own line height). */
+             the line box and the box. The static value is the fallback for
+             browsers without lh units; the calc is exact and self-correcting
+             if the font or line height ever changes. */
           margin-top: 2px;
           margin-top: calc((1lh - 20px) / 2);
         }

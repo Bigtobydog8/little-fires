@@ -2814,7 +2814,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-01 1540';
+const BUILD_STAMP = '2026-10-01 1625';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -26361,34 +26361,29 @@ function LittleFiresApp() {
                       {!isArchiveSectionCollapsed(`archive-tasks-${listName}`) && (
                   <div className={`section-shell ${sectionAnim[`archive-tasks-${listName}`] ? 'section-collapsed' : ''}`}>
                     <div className="section-shell-inner">
+                      {/* The real Task component, not a stripped-down copy.
+                          This view used to render its own markup - title,
+                          dates, two buttons - which is why an archived task
+                          could not be opened HERE even after archived tasks
+                          became readable everywhere else: there were no
+                          details in the markup to open. Task carries the
+                          read-only expansion and its own Unarchive; the one
+                          thing it does not offer is permanent deletion, so
+                          that button stays. */}
                       {tasks.map((task, idx) => {
                         return (
                           <div key={task.id ?? idx} className="archived-task">
-                            <div className="task-text">{task.text}</div>
-                            <div className="task-meta">
-                              {task.completedAt && (
-                                <span className="completed-date">
-                                  Completed {new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                </span>
-                              )}
-                              {task.archivedAt && (
-                                <span className="archived-date">
-                                  Archived {new Date(task.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                </span>
-                              )}
-                            </div>
+                            <Task
+                              task={{ ...task, isArchived: true }}
+                              listName={listName}
+                              showMoveButtons={false}
+                            />
                             <div className="archived-task-actions">
-                              <button
-                                className="edit-btn"
-                                onClick={() => unarchiveTask(listName, task.id)}
-                              >
-                                Unarchive
-                              </button>
                               <button
                                 className="delete-btn"
                                 onClick={() => deleteArchivedTask(listName, task.id)}
                               >
-                                Delete
+                                Delete Permanently
                               </button>
                             </div>
                           </div>
@@ -26400,33 +26395,21 @@ function LittleFiresApp() {
                     </div>
                   ));
                 } else {
+                  // Single-list archive: same treatment as the grouped view
+                  // above - the real Task, openable and read-only.
                   return tasksToShow.map((task, idx) => (
-                    <div key={idx} className="archived-task">
-                      <div className="task-text">{task.text}</div>
-                      <div className="task-meta">
-                        {task.completedAt && (
-                          <span className="completed-date">
-                            Completed {new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                          </span>
-                        )}
-                        {task.archivedAt && (
-                          <span className="archived-date">
-                            Archived {new Date(task.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                          </span>
-                        )}
-                      </div>
+                    <div key={task.id ?? idx} className="archived-task">
+                      <Task
+                        task={{ ...task, isArchived: true }}
+                        listName={currentList}
+                        showMoveButtons={false}
+                      />
                       <div className="archived-task-actions">
-                        <button
-                          className="edit-btn"
-                          onClick={() => unarchiveTask(currentList, task.id)}
-                        >
-                          Unarchive
-                        </button>
                         <button
                           className="delete-btn"
                           onClick={() => deleteArchivedTask(currentList, task.id)}
                         >
-                          Delete
+                          Delete Permanently
                         </button>
                       </div>
                     </div>

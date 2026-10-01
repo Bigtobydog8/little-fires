@@ -2259,6 +2259,58 @@ function byMostRecentlyCompleted(a, b) {
 
 // Empty buckets are dropped so a day with only completed tasks doesn't render
 // two empty headings above them.
+// Search results grouped the way the calendar groups a day: object type, then
+// list, then stage. Before this, every row carried its own "Personal Tasks /
+// Archived" label - the same words repeated down the page, which is noise
+// standing where structure should be.
+//
+// Stages reuse the calendar's definitions where they overlap, with Archived
+// added: search is the one place archived records surface, so they need a
+// heading of their own rather than a badge on every row.
+const SEARCH_TASK_STAGES = [
+  { key: 'todo', label: 'To Do' },
+  { key: 'backlog', label: 'Backlog' },
+  { key: 'complete', label: 'Complete' },
+  { key: 'archived', label: 'Archived' }
+];
+const SEARCH_RECORD_STAGES = [
+  { key: 'active', label: 'Active' },
+  { key: 'archived', label: 'Archived' }
+];
+
+function searchTaskStage(result) {
+  if (result.isArchived) return 'archived';
+  const t = result.item || {};
+  if (t.completed) return 'complete';
+  return t.section === 'backlog' ? 'backlog' : 'todo';
+}
+function searchRecordStage(result) {
+  return result.isArchived ? 'archived' : 'active';
+}
+
+// orderKeys fixes list order so search reads in the same sequence as the tabs;
+// anything unrecognised is appended rather than dropped.
+function groupSearchResults(results, orderKeys, stageOf, stages) {
+  const byList = new Map();
+  (results || []).forEach(r => {
+    const key = r.listName || '';
+    if (!byList.has(key)) byList.set(key, []);
+    byList.get(key).push(r);
+  });
+  const ordered = (orderKeys || []).filter(k => byList.has(k));
+  byList.forEach((_, k) => { if (!ordered.includes(k)) ordered.push(k); });
+  return ordered.map(listKey => {
+    const items = byList.get(listKey);
+    return {
+      listKey,
+      count: items.length,
+      stages: stages
+        .map(s => ({ key: s.key, label: s.label, items: items.filter(r => stageOf(r) === s.key) }))
+        .filter(s => s.items.length > 0)
+    };
+  });
+}
+
 function groupTasksByStatus(items, getTask) {
   return CALENDAR_STATUS_GROUPS
     .map(group => ({
@@ -2762,7 +2814,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-09-30 1620';
+const BUILD_STAMP = '2026-10-01 1540';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -3161,7 +3213,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists, groupSearchResults, searchTaskStage, searchRecordStage, SEARCH_TASK_STAGES, SEARCH_RECORD_STAGES };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -3475,6 +3527,7 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
   const {
     allLists,
     archiveTask,
+    unarchiveTask,
     assignTaskToProject,
     canReorderTogether,
     collapseGuardRef,
@@ -5008,7 +5061,6 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
       onMouseDownCapture={noteGestureStart}
       onTouchStartCapture={noteGestureStart}
       onClick={() => {
-        if (task.isArchived) return;
         // This gesture began with a dropdown or the date calendar open, so it
         // was a dismissal, not a tap on the card. One gesture, one effect: the
         // popup closed, and the task stays open until a later tap.
@@ -5032,12 +5084,19 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
         // collapse, and its unconditional updatedAt stamp is what would let
         // merely opening a task win sync conflicts. saveDetails no-ops when
         // unchanged; the collapse cleanup still saves as the backstop.
-        if (isExpanded) saveDetails(detailsRef.current);
-        
+        // Never write back from an archived task: it is open for reading only.
+        if (isExpanded && !task.isArchived) saveDetails(detailsRef.current);
+
         setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
       }}
       style={{
-        pointerEvents: task.isArchived ? 'none' : 'auto',
+        // Archived tasks used to be pointerEvents:none - fully inert, which
+        // also made their DETAILS unreachable. Reading is not editing: the
+        // card now opens, and each mutating affordance is disabled
+        // individually below (checkbox, title, drag, swipe, details editor).
+        // Search surfaces archived records, so "find it but never look
+        // inside it" was the worst of both.
+        pointerEvents: 'auto',
         // Swiped out: the card stays opaque and slides clear, so what you're
         // left looking at is the full green panel and its checkmark. Ticked:
         // it fades in place as before.
@@ -5152,12 +5211,12 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                     // Save details before toggling if expanded. Same reasoning
                     // as the collapse path above: saveDetails no-ops when
                     // unchanged, so opening a task is never a write.
-                    if (isExpanded) saveDetails(detailsRef.current);
-                    
-                    // Single click toggles task expanded/collapsed
-                    if (!task.isArchived) {
-                      setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
-                    }
+                    if (isExpanded && !task.isArchived) saveDetails(detailsRef.current);
+
+                    // Single click toggles expanded/collapsed for any task,
+                    // archived included - that is the read path. Renaming
+                    // (the double-click below) stays closed to archived.
+                    setExpandedTaskId(isExpanded ? null : `${listName}-${task.id}`);
                   }, 250); // 250ms delay
                 }
               }}
@@ -5258,6 +5317,10 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
           )}
 
           <label className="details-label">Details</label>
+          {/* Every toolbar button writes, so there is nothing for it to do on
+              a read-only card - and showing dead controls is worse than
+              showing none. */}
+          {!task.isArchived && (
           <div className="richtext-toolbar" onClick={(e) => e.stopPropagation()}>
             <button 
               className="toolbar-btn"
@@ -5847,9 +5910,10 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
               </button>
             )}
           </div>
+          )}
           <div 
             className="details-richtext"
-            contentEditable
+            contentEditable={!task.isArchived}
             suppressContentEditableWarning
             // A bare contenteditable is announced as an unnamed group. These
             // make it a named, multi-line text field to a screen reader.
@@ -6602,7 +6666,7 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 )}
               </>
             )}
-            {task.completed && (
+            {task.completed && !task.isArchived && (
               <button
                 className="edit-btn"
                 onClick={(e) => {
@@ -6613,7 +6677,22 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 Archive
               </button>
             )}
-            {canDeleteShared && (
+            {task.isArchived && (
+              // The way back out. Returns the task to its list still
+              // completed - it lands in Complete, which is where it was when
+              // it got archived, rather than reopening work that was done.
+              <button
+                className="edit-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpandedTaskId(null);
+                  unarchiveTask(listName, task.id);
+                }}
+              >
+                Unarchive
+              </button>
+            )}
+            {canDeleteShared && !task.isArchived && (
               <button
                 className="delete-btn"
                 onClick={(e) => {
@@ -11245,6 +11324,21 @@ function LittleFiresApp() {
 
   // Shared look for the button on every result type, so "go to" reads as one
   // action regardless of what kind of record you found.
+  // Group headings for search results. The list heading borrows the section
+  // header look used elsewhere; the stage heading is deliberately quieter -
+  // it is a subdivision, not a peer.
+  const searchListHeadingStyle = {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    fontFamily: 'var(--font-display)', fontSize: '1.05rem', fontWeight: 700,
+    color: 'var(--text)', marginBottom: '8px',
+    paddingBottom: '6px', borderBottom: '2px solid rgba(var(--accent-rgb), 0.25)'
+  };
+  const searchStageHeadingStyle = {
+    fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.5px',
+    fontWeight: 600, color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+    margin: '0 0 6px 2px'
+  };
+
   const goToButtonStyle = {
     padding: '8px 14px', borderRadius: '8px', cursor: 'pointer',
     background: 'rgba(var(--accent-rgb), 0.9)',
@@ -13985,6 +14079,7 @@ function LittleFiresApp() {
   const taskContextValue = React.useMemo(() => ({
     allLists,
     archiveTask,
+    unarchiveTask,
     assignTaskToProject,
     canReorderTogether,
     collapseGuardRef,
@@ -14011,7 +14106,7 @@ function LittleFiresApp() {
     updateTaskPriority
   }), [
     allLists, editingTaskName, expandedTaskId, settings, partnerDisplayName,
-    archiveTask, assignTaskToProject, canReorderTogether, cycleAssignment,
+    archiveTask, unarchiveTask, assignTaskToProject, canReorderTogether, cycleAssignment,
     deleteTask, findTask, getAllProjects, isFeatureOn, isSharedList,
     moveTaskToSection, parseLocalDateTime, renameTask, reorderTask,
     toggleTask, updateTaskDetails, updateTaskDueDate, updateTaskPriority
@@ -14291,6 +14386,17 @@ function LittleFiresApp() {
           left: 20px;
           cursor: pointer;
           z-index: 100;
+        }
+
+        /* The hamburger is absolutely positioned over the top-left of the
+           container, so anything rendered as the container's first child
+           gets sat on - which is exactly what happened to the archive
+           notice. This reserves the hamburger's own height (20px top +
+           41px of icon) plus air, and ONLY when a notice is actually
+           present: :empty means the reservation disappears the moment
+           both notices are dismissed, so there's no permanent gap. */
+        .top-notices:not(:empty) {
+          padding-top: 68px;
         }
 
         .hamburger-icon {
@@ -14868,11 +14974,21 @@ function LittleFiresApp() {
           filter: none;
         }
 
-        .list-section-header .badge {
+        /* Shape lives on .badge itself, not on a parent selector. It used to
+           be scoped to .list-section-header, so the SAME badge rendered as a
+           pill inside a task-list header and as a bare square block in the
+           archive and anywhere else - it kept its colours (those are on
+           .badge) and lost its padding and radius. Same reasoning as the
+           rule below: key off the element, and no caller can be missed. */
+        .badge {
           font-size: 0.75rem;
           padding: 4px 12px;
           border-radius: 12px;
           font-weight: 600;
+        }
+
+        .list-section-header .badge {
+          /* Only the bit that is genuinely about this layout. */
           margin-left: auto;
         }
 
@@ -18537,6 +18653,9 @@ function LittleFiresApp() {
       `}</style>
 
       <div className="container">
+        {/* Both notices live here so neither collides with the hamburger
+            (see .top-notices). An empty wrapper reserves nothing. */}
+        <div className="top-notices">
         {/* Storage failures used to be silent - this makes them impossible to miss */}
         {/* What the last archive sweep moved.
         
@@ -18617,6 +18736,7 @@ function LittleFiresApp() {
             </button>
           </div>
         )}
+        </div>
         {/* Hamburger Menu */}
         <div className="hamburger-menu">
           <div
@@ -25750,25 +25870,34 @@ function LittleFiresApp() {
                               <span>Tasks</span>
                               <span className="badge work">{searchResults.tasks.length}</span>
                             </div>
-                            {searchResults.tasks.map(result => (
-                              <div key={result.item.id} style={{marginBottom: '15px'}}>
-                                <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px', marginLeft: '10px'}}>
-                                  {result.label}
-                                  {result.isArchived ? (
-                                    <span style={{
-                                      marginLeft: '8px', fontSize: '0.75rem',
-                                      color: 'var(--text-muted)',
-                                      border: '1px solid var(--text-muted)',
-                                      borderRadius: '8px', padding: '1px 7px'
-                                    }}>Archived</span>
-                                  ) : null}
+                            {groupSearchResults(searchResults.tasks, TASK_LISTS,
+                              searchTaskStage, SEARCH_TASK_STAGES).map(group => (
+                              <div key={group.listKey} style={{ marginBottom: '22px' }}>
+                                <div style={searchListHeadingStyle}>
+                                  <span>{listLabel(group.listKey)}</span>
+                                  <span className="badge work">{group.count}</span>
                                 </div>
-                                <Task
-                                  task={result.item}
-                                  listName={result.listName}
-                                  showMoveButtons={true}
-                                  onGoTo={() => goToRecord('task', result)}
-                                />
+                                {group.stages.map(stage => (
+                                  <div key={stage.key} style={{ marginBottom: '12px' }}>
+                                    <div style={searchStageHeadingStyle}>
+                                      {stage.label}
+                                      <span style={{ marginLeft: '6px', opacity: 0.65 }}>
+                                        {stage.items.length}
+                                      </span>
+                                    </div>
+                                    {stage.items.map((result, i) => (
+                                      <div key={group.listKey + stage.key + (result.item.id || i)}
+                                        style={{ marginBottom: '10px' }}>
+                                        <Task
+                                          task={result.item}
+                                          listName={result.listName}
+                                          showMoveButtons={true}
+                                          onGoTo={() => goToRecord('task', result)}
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                ))}
                               </div>
                             ))}
                           </div>
@@ -25781,8 +25910,23 @@ function LittleFiresApp() {
                               <span>Projects</span>
                               <span className="badge work">{searchResults.projects.length}</span>
                             </div>
-                            {searchResults.projects.map(result => (
-                              <div key={result.item.id} 
+                            {groupSearchResults(searchResults.projects, TASK_LISTS,
+                              searchRecordStage, SEARCH_RECORD_STAGES).map(group => (
+                              <div key={group.listKey} style={{ marginBottom: '22px' }}>
+                                <div style={searchListHeadingStyle}>
+                                  <span>{listLabel(group.listKey)}</span>
+                                  <span className="badge work">{group.count}</span>
+                                </div>
+                                {group.stages.map(stage => (
+                                  <div key={stage.key} style={{ marginBottom: '12px' }}>
+                                    <div style={searchStageHeadingStyle}>
+                                      {stage.label}
+                                      <span style={{ marginLeft: '6px', opacity: 0.65 }}>
+                                        {stage.items.length}
+                                      </span>
+                                    </div>
+                                    {stage.items.map((result, i) => (
+                              <div key={group.listKey + stage.key + (result.item.id || i)}
                                 onClick={() => goToRecord('project', result)}
                                 style={{
                                   background: 'rgba(var(--surface-raised-rgb), 0.6)',
@@ -25796,17 +25940,6 @@ function LittleFiresApp() {
                                 onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.6)'}
                                 onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)'}
                               >
-                                <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
-                                  {result.label}
-                                  {result.isArchived ? (
-                                    <span style={{
-                                      marginLeft: '8px', fontSize: '0.75rem',
-                                      color: 'var(--text-muted)',
-                                      border: '1px solid var(--text-muted)',
-                                      borderRadius: '8px', padding: '1px 7px'
-                                    }}>Archived</span>
-                                  ) : null}
-                                </div>
                                 <div style={{fontSize: '1.1rem', fontWeight: '600', color: 'var(--text)', marginBottom: '5px'}}>
                                   {result.item.name}
                                 </div>
@@ -25822,6 +25955,10 @@ function LittleFiresApp() {
                                   Go to Project
                                 </button>
                               </div>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
                             ))}
                           </div>
                         )}
@@ -25833,8 +25970,23 @@ function LittleFiresApp() {
                               <span>Goals</span>
                               <span className="badge work">{searchResults.goals.length}</span>
                             </div>
-                            {searchResults.goals.map(result => (
-                              <div key={result.item.id}
+                            {groupSearchResults(searchResults.goals, TASK_LISTS,
+                              searchRecordStage, SEARCH_RECORD_STAGES).map(group => (
+                              <div key={group.listKey} style={{ marginBottom: '22px' }}>
+                                <div style={searchListHeadingStyle}>
+                                  <span>{listLabel(group.listKey)}</span>
+                                  <span className="badge work">{group.count}</span>
+                                </div>
+                                {group.stages.map(stage => (
+                                  <div key={stage.key} style={{ marginBottom: '12px' }}>
+                                    <div style={searchStageHeadingStyle}>
+                                      {stage.label}
+                                      <span style={{ marginLeft: '6px', opacity: 0.65 }}>
+                                        {stage.items.length}
+                                      </span>
+                                    </div>
+                                    {stage.items.map((result, i) => (
+                              <div key={group.listKey + stage.key + (result.item.id || i)}
                                 onClick={() => goToRecord('goal', result)}
                                 style={{
                                   background: 'rgba(var(--surface-raised-rgb), 0.6)',
@@ -25848,17 +26000,6 @@ function LittleFiresApp() {
                                 onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.6)'}
                                 onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(var(--accent-rgb), 0.3)'}
                               >
-                                <div style={{fontSize: '0.85rem', color: '#7fb069', marginBottom: '5px'}}>
-                                  {result.label}
-                                  {result.isArchived ? (
-                                    <span style={{
-                                      marginLeft: '8px', fontSize: '0.75rem',
-                                      color: 'var(--text-muted)',
-                                      border: '1px solid var(--text-muted)',
-                                      borderRadius: '8px', padding: '1px 7px'
-                                    }}>Archived</span>
-                                  ) : null}
-                                </div>
                                 <div style={{fontSize: '1.1rem', fontWeight: '600', color: 'var(--text)', marginBottom: '5px'}}>
                                   {result.item.name}
                                 </div>
@@ -25873,6 +26014,10 @@ function LittleFiresApp() {
                                 >
                                   Go to Goal
                                 </button>
+                              </div>
+                                    ))}
+                                  </div>
+                                ))}
                               </div>
                             ))}
                           </div>
@@ -26273,13 +26418,13 @@ function LittleFiresApp() {
                       <div className="archived-task-actions">
                         <button
                           className="edit-btn"
-                          onClick={() => unarchiveTask(currentList, idx)}
+                          onClick={() => unarchiveTask(currentList, task.id)}
                         >
                           Unarchive
                         </button>
                         <button
                           className="delete-btn"
-                          onClick={() => deleteArchivedTask(currentList, idx)}
+                          onClick={() => deleteArchivedTask(currentList, task.id)}
                         >
                           Delete
                         </button>
@@ -28248,6 +28393,10 @@ function LittleFiresApp() {
                         <option value={1800}>30 minutes</option>
                         <option value={2700}>45 minutes</option>
                         <option value={3000}>50 minutes</option>
+                        {/* 60 was the obvious missing one; 90 is a full
+                            ultradian cycle, the deep-work block. */}
+                        <option value={3600}>60 minutes</option>
+                        <option value={5400}>90 minutes</option>
                       </select>
                     </div>
 
@@ -28261,6 +28410,9 @@ function LittleFiresApp() {
                         <option value={180}>3 minutes</option>
                         <option value={300}>5 minutes</option>
                         <option value={600}>10 minutes</option>
+                        {/* Pairs with the 60/90 focus blocks - a 5 after 90
+                            minutes isn't a break. */}
+                        <option value={900}>15 minutes</option>
                       </select>
                     </div>
 
@@ -28273,6 +28425,7 @@ function LittleFiresApp() {
                       >
                         <option value={600}>10 minutes</option>
                         <option value={900}>15 minutes</option>
+                        <option value={1200}>20 minutes</option>
                         <option value={1800}>30 minutes</option>
                       </select>
                     </div>

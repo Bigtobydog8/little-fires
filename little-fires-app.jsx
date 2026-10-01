@@ -2814,7 +2814,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-01 1625';
+const BUILD_STAMP = '2026-10-01 1710';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -3528,6 +3528,7 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
     allLists,
     archiveTask,
     unarchiveTask,
+    deleteArchivedTask,
     assignTaskToProject,
     canReorderTogether,
     collapseGuardRef,
@@ -6698,6 +6699,24 @@ const Task = ({ task, listName, showMoveButtons, onGoTo }) => {
                 onClick={(e) => {
                   e.stopPropagation();
                   deleteTask(listName, task.id);
+                }}
+              >
+                Delete
+              </button>
+            )}
+            {canDeleteShared && task.isArchived && (
+              // Removing an archived task is as permanent as removing a live
+              // one (both tombstone), so it reads the same and sits in the
+              // same place - beside Unarchive, only once the card is open.
+              // It used to be a separate always-visible row below the card,
+              // which put the most destructive control on screen at all
+              // times in the one view made of finished work.
+              <button
+                className="delete-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpandedTaskId(null);
+                  deleteArchivedTask(listName, task.id);
                 }}
               >
                 Delete
@@ -14080,6 +14099,7 @@ function LittleFiresApp() {
     allLists,
     archiveTask,
     unarchiveTask,
+    deleteArchivedTask,
     assignTaskToProject,
     canReorderTogether,
     collapseGuardRef,
@@ -14106,7 +14126,7 @@ function LittleFiresApp() {
     updateTaskPriority
   }), [
     allLists, editingTaskName, expandedTaskId, settings, partnerDisplayName,
-    archiveTask, unarchiveTask, assignTaskToProject, canReorderTogether, cycleAssignment,
+    archiveTask, unarchiveTask, deleteArchivedTask, assignTaskToProject, canReorderTogether, cycleAssignment,
     deleteTask, findTask, getAllProjects, isFeatureOn, isSharedList,
     moveTaskToSection, parseLocalDateTime, renameTask, reorderTask,
     toggleTask, updateTaskDetails, updateTaskDueDate, updateTaskPriority
@@ -26378,14 +26398,6 @@ function LittleFiresApp() {
                               listName={listName}
                               showMoveButtons={false}
                             />
-                            <div className="archived-task-actions">
-                              <button
-                                className="delete-btn"
-                                onClick={() => deleteArchivedTask(listName, task.id)}
-                              >
-                                Delete Permanently
-                              </button>
-                            </div>
                           </div>
                         );
                       })}
@@ -26404,14 +26416,6 @@ function LittleFiresApp() {
                         listName={currentList}
                         showMoveButtons={false}
                       />
-                      <div className="archived-task-actions">
-                        <button
-                          className="delete-btn"
-                          onClick={() => deleteArchivedTask(currentList, task.id)}
-                        >
-                          Delete Permanently
-                        </button>
-                      </div>
                     </div>
                   ));
                 }

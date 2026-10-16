@@ -58,8 +58,38 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache()
 });
 
-export function startGoogleSignIn() {
-  return signInWithRedirect(auth, new GoogleAuthProvider());
+// The Gmail scope is RESTRICTED by Google: fine for the project owner and
+// named test users with no verification, but publishing it to strangers needs
+// full OAuth verification plus the annual CASA security assessment.
+export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+
+// Takes an options object so an ordinary sign-in never drags a mail-permission
+// screen in front of someone who only wanted their tasks to sync. The scope is
+// requested INCREMENTALLY - at the moment the email feature is switched on.
+export function startGoogleSignIn(options) {
+  const provider = new GoogleAuthProvider();
+  if (options && options.gmail) {
+    provider.addScope(GMAIL_READONLY_SCOPE);
+    // Without this, a user who already has a Google session is signed straight
+    // back in with the scopes they granted last time - no consent screen, and
+    // no Gmail access, with nothing to indicate why.
+    provider.setCustomParameters({ prompt: 'consent' });
+  }
+  return signInWithRedirect(auth, provider);
+}
+
+// The Google OAuth access token - NOT the Firebase ID token, and not on the
+// user object. It is the only credential the Gmail REST API accepts, it exists
+// solely on the redirect result, and it lasts about an hour with no refresh
+// token available to the browser. Hence: scanning is a button, never a
+// background job.
+export function googleAccessTokenFrom(result) {
+  try {
+    const cred = GoogleAuthProvider.credentialFromResult(result);
+    return (cred && cred.accessToken) || null;
+  } catch (err) {
+    return null;
+  }
 }
 
 export function endSignIn() {

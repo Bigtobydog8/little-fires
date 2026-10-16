@@ -1143,6 +1143,60 @@ const ARCHIVE_NOTICE_STORAGE = 'little_fires_archive_notice';
 // the browsing session on disk.
 const GMAIL_TOKEN_STORAGE = 'little_fires_gmail_token';
 
+// --- Email -> Tasks: the filter --------------------------------------------
+// Gmail does the narrowing server-side, so nothing outside the window is ever
+// downloaded. category:primary is Google's own automatic triage - applied to
+// every account with no setup - which removes Promotions, Social, Forums and
+// Updates before anything else runs. Deliberately NOT requiring a label the
+// user applies by hand: if you have to flag a message, you have already read
+// it, and not having to read it was the point.
+function gmailQuery(days) {
+  // Zero, NaN or missing means "use the default" rather than "look back no
+  // days", which would scan nothing and look like a broken feature. Valid
+  // numbers are clamped: Gmail accepts far wider windows than this UI offers,
+  // and a hand-edited setting should not turn one tap into a year of mail.
+  const raw = Number(days) || 14;
+  const n = Math.max(1, Math.min(90, raw));
+  return 'in:inbox category:primary newer_than:' + n + 'd';
+}
+
+// Bulk mail announces itself. List-Unsubscribe is the header newsletters,
+// receipts and notification mail carry, and it catches what slips into
+// Primary without relying on search operators. Dropped client-side, before
+// any AI call, so the junk costs nothing beyond its own metadata fetch.
+function isBulkMail(headers) {
+  if (!headers) return false;
+  return Object.keys(headers).some(k => k.toLowerCase() === 'list-unsubscribe');
+}
+
+function headerMap(list) {
+  const out = {};
+  (list || []).forEach(h => { if (h && h.name) out[h.name] = h.value; });
+  return out;
+}
+
+// IMPORTANT ranks, it does not gate. Gmail's importance model leans on who you
+// reply to, so a first message from a school or a new contractor arrives
+// Primary but NOT important - exactly the mail whose action items get
+// forgotten. Using it as a filter would drop those silently; using it to
+// order means a truncated scan still contains the likeliest items.
+function rankMessages(messages) {
+  const score = (m) => ((m.labelIds || []).includes('IMPORTANT') ? 1 : 0);
+  return (messages || []).slice().sort((a, b) => {
+    const d = score(b) - score(a);
+    if (d) return d;
+    return (Number(b.internalDate) || 0) - (Number(a.internalDate) || 0);
+  });
+}
+
+// A sender as a person rather than a mail header: "Mrs Dale <k@school.org>".
+function senderName(from) {
+  if (!from) return '';
+  const m = String(from).match(/^\s*"?([^"<]*?)"?\s*<.*>\s*$/);
+  return (m && m[1].trim()) || String(from).trim();
+}
+
+
 const AI_SUGGESTIONS_STORAGE = 'little_fires_ai_suggestions';
 const AI_REJECTED_STORAGE = 'little_fires_ai_rejected';
 // Project suggestions keep their own shelves and their own rejection memory.
@@ -2818,7 +2872,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-07 1120';
+const BUILD_STAMP = '2026-10-07 1430';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -3217,7 +3271,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists, groupSearchResults, searchTaskStage, searchRecordStage, SEARCH_TASK_STAGES, SEARCH_RECORD_STAGES };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists, groupSearchResults, searchTaskStage, searchRecordStage, SEARCH_TASK_STAGES, SEARCH_RECORD_STAGES, gmailQuery, isBulkMail, headerMap, rankMessages, senderName };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -6916,6 +6970,81 @@ function LittleFiresApp() {
     });
   };
 
+  // Scan state. Results are deliberately NOT persisted: this step shows what
+  // the filter found so the filter can be judged, and a stale list of last
+  // week's subjects sitting in settings would be noise.
+  const [gmailScanning, setGmailScanning] = useState(false);
+  const [gmailFound, setGmailFound] = useState(null);
+  const [gmailSkipped, setGmailSkipped] = useState(0);
+
+  const scanGmail = async () => {
+    if (!gmailToken || gmailScanning) return;
+    setGmailScanning(true);
+    setGmailStatus('');
+    setGmailFound(null);
+    try {
+      const days = settings.gmailLookbackDays || 14;
+      const cap = settings.gmailMaxMessages || 50;
+      const authHeader = { Authorization: 'Bearer ' + gmailToken };
+      const listUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages'
+        + '?maxResults=' + cap + '&q=' + encodeURIComponent(gmailQuery(days));
+      const listRes = await fetch(listUrl, { headers: authHeader });
+      if (listRes.status === 401) {
+        // The hour is up. Say so plainly and clear the dead token rather than
+        // leaving a Connected card that cannot do anything.
+        setGmailToken(null);
+        try { sessionStorage.removeItem(GMAIL_TOKEN_STORAGE); } catch (e) {}
+        setGmailStatus('That connection expired — connect Gmail again to scan.');
+        return;
+      }
+      if (!listRes.ok) {
+        setGmailStatus('Gmail refused the request (' + listRes.status + ').');
+        return;
+      }
+      const listJson = await listRes.json();
+      const ids = (listJson.messages || []).map(m => m.id);
+      if (!ids.length) {
+        setGmailFound([]);
+        setGmailSkipped(0);
+        return;
+      }
+      // Metadata only: subject, sender, date, and the bulk-mail header. No
+      // message bodies are fetched at this step - there is nothing to read
+      // them for yet, and not fetching them is the cheaper, more private
+      // default.
+      const details = [];
+      for (const id of ids) {
+        const url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + id
+          + '?format=metadata'
+          + '&metadataHeaders=Subject&metadataHeaders=From'
+          + '&metadataHeaders=Date&metadataHeaders=List-Unsubscribe';
+        const r = await fetch(url, { headers: authHeader });
+        if (!r.ok) continue;
+        details.push(await r.json());
+      }
+      const withHeaders = details.map(m => ({
+        id: m.id,
+        labelIds: m.labelIds || [],
+        internalDate: m.internalDate,
+        headers: headerMap(m.payload && m.payload.headers)
+      }));
+      const kept = withHeaders.filter(m => !isBulkMail(m.headers));
+      setGmailSkipped(withHeaders.length - kept.length);
+      setGmailFound(rankMessages(kept).map(m => ({
+        id: m.id,
+        subject: m.headers.Subject || '(no subject)',
+        from: senderName(m.headers.From),
+        important: (m.labelIds || []).includes('IMPORTANT'),
+        date: m.headers.Date || ''
+      })));
+    } catch (err) {
+      console.error('gmail scan failed:', err);
+      setGmailStatus('Could not reach Gmail. Check your connection and try again.');
+    } finally {
+      setGmailScanning(false);
+    }
+  };
+
   const disconnectGmail = () => {
     setGmailToken(null);
     setGmailStatus('');
@@ -7083,6 +7212,15 @@ function LittleFiresApp() {
     // medical things - so they are excluded unless asked for, separately from
     // the feature itself. Someone who never opens this card sends titles only.
     aiIncludeDetails: false,
+    // Email -> Tasks. The lookback mostly matters for the FIRST scan; after
+    // that, processed-message memory means later scans only cover new mail.
+    // It stays as the ceiling for the case where you have not scanned in a
+    // while - without one, coming back from a fortnight away would mean a
+    // scan over hundreds of messages.
+    gmailLookbackDays: 14,
+    // Time is bounded by the lookback; this bounds cost and waiting. A month
+    // of Primary mail can be hundreds of messages and each one is a request.
+    gmailMaxMessages: 50,
     // Exact model strings are retired over time, and a stale one fails the
     // whole feature - so this is a setting the user can change without a code
     // release, not a constant.
@@ -28281,8 +28419,77 @@ function LittleFiresApp() {
                       {gmailToken ? (
                         <>
                           <div style={{ ...sub, marginTop: '10px' }}>
-                            ✓ Connected. Scanning arrives in the next update.
+                            ✓ Connected.
                           </div>
+
+                          <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap',
+                                        alignItems: 'flex-end', marginTop: '12px' }}>
+                            <div>
+                              <div style={{ ...hint, marginBottom: '4px' }}>Look back</div>
+                              <select
+                                value={settings.gmailLookbackDays || 14}
+                                onChange={(e) => updateSetting('gmailLookbackDays', Number(e.target.value))}
+                              >
+                                <option value={3}>3 days</option>
+                                <option value={7}>7 days</option>
+                                <option value={14}>14 days</option>
+                                <option value={30}>30 days</option>
+                              </select>
+                            </div>
+                            <div>
+                              <div style={{ ...hint, marginBottom: '4px' }}>Most messages</div>
+                              <select
+                                value={settings.gmailMaxMessages || 50}
+                                onChange={(e) => updateSetting('gmailMaxMessages', Number(e.target.value))}
+                              >
+                                <option value={25}>25</option>
+                                <option value={50}>50</option>
+                                <option value={100}>100</option>
+                              </select>
+                            </div>
+                            <button
+                              onClick={scanGmail}
+                              disabled={gmailScanning}
+                              style={{
+                                padding: '10px 18px', borderRadius: '20px', border: 'none',
+                                background: gmailScanning
+                                  ? 'rgba(var(--surface-rgb), 0.8)'
+                                  : 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                                color: gmailScanning ? 'var(--text-muted)' : '#fff',
+                                cursor: gmailScanning ? 'default' : 'pointer',
+                                fontWeight: 600, fontFamily: 'var(--font-ui)'
+                              }}
+                            >
+                              {gmailScanning ? 'Scanning…' : 'Scan inbox'}
+                            </button>
+                          </div>
+
+                          {gmailFound ? (
+                            <div style={{ marginTop: '14px' }}>
+                              <div style={{ ...hint, marginBottom: '8px' }}>
+                                {gmailFound.length === 0
+                                  ? 'Nothing matched in that window.'
+                                  : 'Found ' + gmailFound.length + ' message'
+                                    + (gmailFound.length === 1 ? '' : 's')
+                                    + (gmailSkipped
+                                        ? ' · skipped ' + gmailSkipped + ' bulk/newsletter'
+                                        : '')
+                                    + '. Reading them for tasks comes next — nothing has been added anywhere.'}
+                              </div>
+                              {gmailFound.map(m => (
+                                <div key={m.id} style={{
+                                  padding: '8px 10px', borderRadius: '10px',
+                                  background: 'rgba(var(--surface-rgb), 0.5)',
+                                  marginBottom: '6px'
+                                }}>
+                                  <div style={{ fontSize: '0.9rem', color: 'var(--text)' }}>
+                                    {m.important ? '★ ' : ''}{m.subject}
+                                  </div>
+                                  <div style={{ ...hint, marginTop: '2px' }}>{m.from}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                           <button
                             onClick={disconnectGmail}
                             style={{

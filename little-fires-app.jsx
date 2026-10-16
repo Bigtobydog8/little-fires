@@ -10,6 +10,7 @@ import {
   endSignIn,
   onAuthStateChanged,
   getRedirectResult,
+  googleAccessTokenFrom,
   describeAuthError,
   pushDocs,
   getDoc,
@@ -1138,6 +1139,9 @@ function compactForSuggestions(sources, options) {
 //
 // Cleared when dismissed. Nothing reads it but the banner.
 const ARCHIVE_NOTICE_STORAGE = 'little_fires_archive_notice';
+// sessionStorage, deliberately: a live OAuth credential should not outlive
+// the browsing session on disk.
+const GMAIL_TOKEN_STORAGE = 'little_fires_gmail_token';
 
 const AI_SUGGESTIONS_STORAGE = 'little_fires_ai_suggestions';
 const AI_REJECTED_STORAGE = 'little_fires_ai_rejected';
@@ -2814,7 +2818,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-01 1710';
+const BUILD_STAMP = '2026-10-07 1120';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -6891,6 +6895,35 @@ function LittleFiresApp() {
   // local-first rule means every feature works identically without it.
   const [authUser, setAuthUser] = useState(null);
   const [authError, setAuthError] = useState(null);
+  // Email -> Tasks (Oct 2026). The Gmail OAuth access token: short-lived
+  // (~1 hour), no refresh token available in the browser, so it is session
+  // state rather than a stored setting. "Connected" means "we hold a usable
+  // token right now", which is why reconnecting is a normal part of using
+  // the feature rather than a failure.
+  const [gmailToken, setGmailToken] = useState(() => {
+    try { return sessionStorage.getItem(GMAIL_TOKEN_STORAGE) || null; }
+    catch (e) { return null; }
+  });
+  const [gmailStatus, setGmailStatus] = useState('');
+
+  const connectGmail = () => {
+    setGmailStatus('');
+    try { sessionStorage.setItem('little_fires_auth_attempt', '1'); } catch (e) {}
+    // Same redirect as signing in, with one more scope requested. The page
+    // leaves and comes back; the token is picked up in the redirect handler.
+    startGoogleSignIn({ gmail: true }).catch((err) => {
+      setGmailStatus(describeAuthError(err));
+    });
+  };
+
+  const disconnectGmail = () => {
+    setGmailToken(null);
+    setGmailStatus('');
+    try { sessionStorage.removeItem(GMAIL_TOKEN_STORAGE); } catch (e) {}
+    // Only drops the local token. Revoking the GRANT itself is done in the
+    // Google account's own permissions page, and the card says so rather
+    // than implying this button did more than it did.
+  };
   const [authBusy, setAuthBusy] = useState(false);
 
   useEffect(() => {
@@ -6906,7 +6939,19 @@ function LittleFiresApp() {
     // environment where getRedirectResult rejects on an ordinary load - and
     // there are such environments - shows a scary red failure to someone who
     // never touched the button.
-    getRedirectResult(auth).catch((err) => {
+    getRedirectResult(auth).then((result) => {
+      // The Gmail access token exists ONLY here, on the redirect result, and
+      // only when the sign-in that just completed requested the scope. Kept in
+      // sessionStorage rather than localStorage: it is a live credential that
+      // expires in about an hour, so it should die with the tab rather than
+      // linger on disk.
+      if (!result) return;
+      const token = googleAccessTokenFrom(result);
+      if (token) {
+        setGmailToken(token);
+        try { sessionStorage.setItem(GMAIL_TOKEN_STORAGE, token); } catch (e) {}
+      }
+    }).catch((err) => {
       let attempted = false;
       try {
         attempted = sessionStorage.getItem('little_fires_auth_attempt') === '1';
@@ -12117,18 +12162,30 @@ function LittleFiresApp() {
       grouped[year][month].push(note);
     });
     
-    // Sort years descending, months descending
+    // Sort years descending, months descending.
+    //
+    // The order CANNOT live in the object's key order: JavaScript returns
+    // integer-like keys ("2026", "11") from Object.keys in ascending numeric
+    // order no matter what order they were inserted in. This function used to
+    // sort carefully and then hand back an object, and the render's
+    // Object.keys silently re-sorted it oldest-first - the notes inside each
+    // month stayed newest-first, because arrays do keep their order, which is
+    // exactly why it looked like a partial bug rather than an obvious one.
+    // So the order is returned explicitly, as arrays.
     const sortedYears = Object.keys(grouped).sort((a, b) => b - a);
     const result = {};
+    const order = [];
     sortedYears.forEach(year => {
       result[year] = {};
       const sortedMonths = Object.keys(grouped[year]).sort((a, b) => b - a);
+      order.push({ year, months: sortedMonths });
       sortedMonths.forEach(month => {
         result[year][month] = grouped[year][month].sort((a, b) => 
           new Date(b.date) - new Date(a.date)
         );
       });
     });
+    Object.defineProperty(result, '__order', { value: order, enumerable: false });
     
     return result;
   };
@@ -19310,7 +19367,10 @@ function LittleFiresApp() {
                   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
                     'July', 'August', 'September', 'October', 'November', 'December'];
                   
-                  return Object.keys(groupedNotes).map(year => (
+                  // Follow the explicit order (see groupNotesByYearAndMonth);
+                  // Object.keys here is what reversed it.
+                  const noteOrder = groupedNotes.__order || [];
+                  return noteOrder.map(({ year, months }) => (
                     <div key={year} style={{marginBottom: '30px'}}>
                       {/* Year Header */}
                       <div 
@@ -19337,7 +19397,7 @@ function LittleFiresApp() {
                       
                       {!isJournalSectionCollapsed(`year-${year}`) && (
                         <div style={{marginLeft: '0'}}>
-                          {Object.keys(groupedNotes[year]).map(month => (
+                          {months.map(month => (
                             <div key={`${year}-${month}`} style={{marginBottom: '20px'}}>
                               {/* Month Header */}
                               <div 
@@ -28206,6 +28266,75 @@ function LittleFiresApp() {
                       {' '}Never sent: your notes, or anything from a shared list.
                     </div>
                   </div>
+
+                  {/* ---- Email -> Tasks (step 1: the connection only) ---- */}
+                  {authUser && (
+                    <div style={card}>
+                      <div style={heading}>Email → Tasks</div>
+                      <div style={sub}>
+                        Reads recent mail in your Gmail Primary tab and proposes
+                        tasks from it. Nothing is added to a list until you accept
+                        it. Off until you connect, and separate from signing in —
+                        syncing your tasks never needs access to your mail.
+                      </div>
+
+                      {gmailToken ? (
+                        <>
+                          <div style={{ ...sub, marginTop: '10px' }}>
+                            ✓ Connected. Scanning arrives in the next update.
+                          </div>
+                          <button
+                            onClick={disconnectGmail}
+                            style={{
+                              marginTop: '10px', padding: '10px 18px', borderRadius: '20px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                              background: 'rgba(var(--surface-rgb), 0.8)',
+                              color: 'var(--text)', cursor: 'pointer',
+                              fontFamily: 'var(--font-ui)', boxShadow: 'none', display: 'block'
+                            }}
+                          >
+                            Disconnect
+                          </button>
+                          <div style={{ ...hint, marginTop: '8px' }}>
+                            Disconnect forgets the access this device is holding.
+                            The permission itself stays on your Google account until
+                            you remove it there, under the apps that have access.
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={connectGmail}
+                            style={{
+                              marginTop: '10px', padding: '10px 18px', borderRadius: '20px',
+                              border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                              background: 'rgba(var(--surface-rgb), 0.8)',
+                              color: 'var(--text)', cursor: 'pointer',
+                              fontFamily: 'var(--font-ui)', boxShadow: 'none', display: 'block'
+                            }}
+                          >
+                            Connect Gmail
+                          </button>
+                          <div style={{ ...hint, marginTop: '8px' }}>
+                            Google will ask you to approve read access to your mail.
+                            You'll be signed out and back in as part of that.
+                          </div>
+                        </>
+                      )}
+
+                      <div style={{ ...hint, marginTop: '12px' }}>
+                        The connection lasts about an hour, then needs approving
+                        again — Google doesn't let a web app hold mail access any
+                        longer than that. So scanning is something you press, never
+                        something running in the background.
+                      </div>
+                      {gmailStatus ? (
+                        <div style={{ marginTop: '10px', color: '#b4232c', fontSize: '0.9rem' }}>
+                          {gmailStatus}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
 
                   {/* ---- Menu Sections ---- */}
                   <div style={card}>

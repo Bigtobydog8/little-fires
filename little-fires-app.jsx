@@ -2980,7 +2980,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-17 1545';
+const BUILD_STAMP = '2026-10-17 1630';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -7308,8 +7308,16 @@ function LittleFiresApp() {
     // lost and the status line above explains why.
     if (!key) return;
     const now = new Date().toISOString();
+    // Two things this URL has to get right:
+    //  - authuser, not /u/0. The zeroth account is whichever Google signed in
+    //    first in that browser, which is not necessarily the account this
+    //    mail belongs to; naming the address sends it to the right mailbox.
+    //  - #all rather than #inbox, so the thread still opens after it has been
+    //    archived - which is likely, since the task outlives the email.
     const link = proposal.threadId
-      ? 'https://mail.google.com/mail/u/0/#inbox/' + proposal.threadId
+      ? 'https://mail.google.com/mail/?authuser='
+        + encodeURIComponent((authUser && authUser.email) || '')
+        + '#all/' + encodeURIComponent(proposal.threadId)
       : '';
     const task = {
       id: makeId(),
@@ -7321,9 +7329,16 @@ function LittleFiresApp() {
       dueTime: null,
       // The deep link is what makes this feel native rather than transcribed:
       // the task remembers which conversation it came out of.
+      // class="task-link" is load-bearing, not decoration: the details editor
+      // is contentEditable, where clicking a plain anchor places the cursor
+      // instead of following it. A delegated handler opens anchors with that
+      // class in a new tab, and the loader marks them non-editable. Without
+      // the class the link renders perfectly and does nothing - which is
+      // exactly what happened.
       details: link
         ? '<div>From email: ' + escapeHtml(proposal.subject || '') + '</div>' +
-          '<div><a href="' + link + '" target="_blank" rel="noopener noreferrer">Open in Gmail</a></div>'
+          '<div>• <a class="task-link" href="' + escapeHtml(link) + '"' +
+          ' target="_blank" rel="noopener noreferrer">Open in Gmail</a></div>'
         : '',
       projectId: null,
       createdAt: now,

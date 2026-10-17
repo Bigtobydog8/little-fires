@@ -2980,7 +2980,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-17 1355';
+const BUILD_STAMP = '2026-10-17 1545';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -9289,6 +9289,63 @@ function LittleFiresApp() {
     }
   }, []);
 
+  // A singing bowl for the moment a timer you set runs out. What makes it a
+  // bowl rather than a gong is the mode structure: a bowl's modes sit at
+  // roughly 1 : 2.7 : 5.4 : 8.9, far closer to harmonic than a gong's, which
+  // is why a bowl sings where a gong clangs. There is no strike noise - a
+  // padded mallet on a bowl rim has almost no attack transient - and the
+  // tail is long and slow.
+  //
+  // Each mode is TWO oscillators a fraction of a hertz apart. The beating
+  // between them is the slow wah-wah every singing bowl has, and it comes
+  // from real bowls being slightly asymmetric: two modes that should be one
+  // frequency end up a little apart. Faithful to the deep-bowl preview.
+  //
+  // Synthesised rather than shipped as a file: nothing to load, works offline.
+  const playGong = React.useCallback(() => {
+    const ctx = audioCtxRef.current;
+    if (!ctx || ctx.state !== 'running') return;
+    try {
+      const now = ctx.currentTime;
+      const fundamental = 196;   // a large, heavy bowl
+      const beatHz = 1.1;        // the wobble
+      const attack = 0.06;       // soft: a padded mallet, not a hammer
+      const modes = [
+        { ratio: 1.00, gain: 0.34, decay: 10.0 },
+        { ratio: 2.70, gain: 0.13, decay: 5.0 },
+        { ratio: 5.40, gain: 0.05, decay: 2.6 },
+        { ratio: 8.90, gain: 0.02, decay: 1.4 }
+      ];
+
+      const master = ctx.createGain();
+      master.gain.value = 0.85;
+      master.connect(ctx.destination);
+
+      modes.forEach(m => {
+        // Higher modes beat proportionally faster, as they do on a real bowl.
+        const detune = beatHz * m.ratio * 0.5;
+        [-1, 1].forEach(sign => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = fundamental * m.ratio + sign * detune;
+          const peak = m.gain * 0.5;
+          // Linear attack then exponential decay: the ramp down is what the
+          // ear reads as a ringing tail rather than a fade-out.
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.linearRampToValueAtTime(peak, now + attack);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + m.decay);
+          osc.connect(gain);
+          gain.connect(master);
+          osc.start(now);
+          osc.stop(now + m.decay + 0.05);
+        });
+      });
+    } catch (err) {
+      // Sound is a nicety; never let it break the timer stopping.
+    }
+  }, []);
+
   const notify = React.useCallback((title, body) => {
     try {
       if (typeof Notification === 'undefined') return;
@@ -10040,9 +10097,9 @@ function LittleFiresApp() {
     if (!(target > 0) || loggedSeconds < target) return;
 
     setIsLogging(false);
-    playChime(880);
+    playGong();
     notify('Timer finished', `${Math.round(target / 60)} minute timer complete.`);
-  }, [loggedSeconds, isLogging, timerDuration, pomodoroOn, playChime, notify]);
+  }, [loggedSeconds, isLogging, timerDuration, pomodoroOn, playGong, notify]);
 
   // ---- Progress ring geometry ---------------------------------------------
   // The ring is fed by a once-a-second state update and a 1s linear transition,

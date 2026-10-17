@@ -2980,7 +2980,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-17 1050';
+const BUILD_STAMP = '2026-10-17 1355';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -7137,7 +7137,17 @@ function LittleFiresApp() {
         return;
       }
       if (!listRes.ok) {
-        setGmailStatus('Gmail refused the request (' + listRes.status + ').');
+        // Gmail's own message is far more useful than the status code: it
+        // distinguishes "the Gmail API is not enabled on this project" from
+        // "this token lacks the mail scope" from a quota problem, and each
+        // has a different fix. Throwing it away left a 403 that could mean
+        // any of them. (Same reasoning as the Anthropic error path.)
+        let detail = 'HTTP ' + listRes.status;
+        try {
+          const body = await listRes.json();
+          if (body && body.error && body.error.message) detail = body.error.message;
+        } catch (e) { /* keep the status */ }
+        setGmailStatus('Gmail refused the request: ' + detail);
         return;
       }
       const listJson = await listRes.json();
@@ -7247,26 +7257,56 @@ function LittleFiresApp() {
   // so someone who never uses the feature never sees an Email tab. (The spec
   // called for a dormant built-in; this reaches the same end with no schema
   // change, no migration, and a list that behaves like every other.)
+  // Remembered across accepts within a session. Without it, accepting a
+  // second proposal before React has re-rendered sees the OLD customLists,
+  // misses the list that was just made, asks for another "Email", is told
+  // the name is taken, and falls through to Personal - which is exactly the
+  // bug reported on 17 Oct: the Email list appeared, empty, while the task
+  // landed somewhere else.
+  const emailListKeyRef = React.useRef(null);
+
   const emailListKey = () => {
-    const existing = customLists.find(c => c && !c.shared && c.key === settings.gmailTargetList);
-    if (existing) return existing.key;
-    const byName = customLists.find(c => c && !c.shared && (c.label || '').toLowerCase() === 'email');
-    if (byName) {
-      updateSetting('gmailTargetList', byName.key);
-      return byName.key;
+    const isLive = (k) => !!k && TASK_LISTS.includes(k);
+    // 1. The list made earlier in this session, before any state has settled.
+    if (isLive(emailListKeyRef.current)) return emailListKeyRef.current;
+    // 2. The saved choice.
+    if (isLive(settings.gmailTargetList)) {
+      emailListKeyRef.current = settings.gmailTargetList;
+      return settings.gmailTargetList;
     }
+    // 3. Any personal list actually CALLED Email - matched on the effective
+    //    label (renames live in settings.listLabels, not on the entry), so a
+    //    list the user renamed to "Email" is found too.
+    const byName = TASK_LISTS.find(k =>
+      !isSharedList(k) && (listLabel(k) || '').trim().toLowerCase() === 'email');
+    if (byName) {
+      emailListKeyRef.current = byName;
+      updateSetting('gmailTargetList', byName);
+      return byName;
+    }
+    // 4. Make it.
     const made = addCustomList('Email', false);
     if (made && made.ok && made.key) {
+      emailListKeyRef.current = made.key;
       updateSetting('gmailTargetList', made.key);
       return made.key;
     }
-    // Cap reached, or the name is taken by something unexpected: put the task
-    // somewhere real rather than dropping it on the floor.
-    return 'personal';
+    // 5. Creation refused - the personal cap is full. Say so rather than
+    //    silently filing into Personal, which is how a task ends up somewhere
+    //    the user never chose.
+    setGmailStatus(
+      (made && made.message)
+        ? made.message + ' Accepted tasks need an Email list — free a list slot in Settings.'
+        : 'Could not create the Email list.'
+    );
+    return null;
   };
 
   const acceptEmailProposal = (proposal) => {
     const key = emailListKey();
+    // No list, no silent guess: the proposal stays on the shelf so nothing is
+    // lost and the status line above explains why.
+    if (!key) return;
     const now = new Date().toISOString();
     const link = proposal.threadId
       ? 'https://mail.google.com/mail/u/0/#inbox/' + proposal.threadId
@@ -8403,7 +8443,12 @@ function LittleFiresApp() {
   // excluded because a suggestion there would become a task another person
   // sees, and because their content never leaves the device to be reasoned
   // about in the first place.
-  const suggestionLists = () => visibleTaskLists.filter(k => !isSharedList(k));
+  const suggestionLists = () => visibleTaskLists.filter(k =>
+    // The Email list's section on this tab is the email proposals themselves,
+    // rendered above. A second generic shelf for the same list, offering to
+    // invent tasks about your inbox, is the confusing thing reported on
+    // 17 Oct - two "Email" headings meaning different things.
+    !isSharedList(k) && !(settings.gmailTargetList && k === settings.gmailTargetList));
 
   // Everything already written down in a list, so a suggestion can't repeat it.
   const existingTextsFor = (listName) => [
@@ -13843,6 +13888,100 @@ function LittleFiresApp() {
                 </div>
               )}
             </div>
+
+            {/* Email proposals live HERE, not in Settings. Settings is where
+                you connect the account and set the window; this tab is where
+                suggestions are reviewed - and these are suggestions in exactly
+                the same sense as the shelves below. */}
+            {/* Shown once the feature has been engaged with - not gated on the
+                token alone. An expiring token sets gmailToken to null, and
+                gating on it made the whole section disappear taking the
+                message explaining WHY with it: the one moment the user most
+                needs to be told something. */}
+            {(gmailToken || gmailStatus || gmailProposals) ? (
+              <div className="day-list-group" style={{ marginBottom: '22px' }}>
+                <div className="list-section-header day-list-header ai-shelf-header">
+                  <span>Email</span>
+                  {gmailToken ? (
+                    <button
+                      className="suggestion-action"
+                      onClick={(e) => { e.stopPropagation(); scanGmail(); }}
+                      disabled={gmailScanning}
+                      title="Scan recent mail for tasks"
+                    >
+                      {gmailScanning ? 'Scanning…' : 'Scan inbox'}
+                    </button>
+                  ) : null}
+                </div>
+                {!gmailToken ? (
+                  <div style={{ color: 'var(--text-soft)', fontSize: '0.85rem',
+                                fontFamily: 'var(--font-ui)', padding: '10px 2px' }}>
+                    Not connected. Connect Gmail in Settings → Email → Tasks to scan again.
+                  </div>
+                ) : null}
+
+                {gmailStatus ? (
+                  <div style={{ color: '#b4232c', fontSize: '0.85rem',
+                                fontFamily: 'var(--font-ui)', padding: '10px 2px' }}>
+                    {gmailStatus}
+                  </div>
+                ) : null}
+
+                {gmailProposals === null ? (
+                  <div style={{ color: 'var(--text-soft)', fontSize: '0.85rem',
+                                fontFamily: 'var(--font-ui)', padding: '10px 2px' }}>
+                    Nothing scanned yet. Tap Scan inbox to read recent mail for tasks.
+                  </div>
+                ) : gmailProposals.length === 0 ? (
+                  <div style={{ color: 'var(--text-soft)', fontSize: '0.85rem',
+                                fontFamily: 'var(--font-ui)', padding: '10px 2px' }}>
+                    Nothing in that mail needs you. That's the usual answer.
+                    {gmailFound && gmailFound.length
+                      ? ' Read ' + gmailFound.length + ' message'
+                        + (gmailFound.length === 1 ? '' : 's') + '.'
+                      : ''}
+                  </div>
+                ) : (
+                  [
+                    { key: 'confident', label: 'Looks like yours to do' },
+                    { key: 'maybe', label: 'Maybe — less sure about these' }
+                  ].map(group => {
+                    const items = gmailProposals.filter(p => p.confidence === group.key);
+                    if (!items.length) return null;
+                    return (
+                      <div key={group.key} style={{ marginBottom: '12px' }}>
+                        <div style={{
+                          fontSize: '0.72rem', textTransform: 'uppercase',
+                          letterSpacing: '0.5px', fontWeight: 600,
+                          color: 'var(--text-muted)', fontFamily: 'var(--font-ui)',
+                          margin: '6px 0 6px 2px'
+                        }}>
+                          {group.label}
+                        </div>
+                        {items.map(p => (
+                          <div key={p.messageId} className="calendar-item" style={{ marginBottom: '10px' }}>
+                            <div style={{ color: 'var(--text)', fontWeight: 600 }}>{p.text}</div>
+                            <div style={{
+                              color: 'var(--text-muted)', fontSize: '0.8rem',
+                              fontFamily: 'var(--font-ui)', marginTop: '2px'
+                            }}>
+                              {p.from}{p.subject ? ' · ' + p.subject : ''}
+                              {p.dueDate ? ' · due ' + p.dueDate : ''}
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                              <button className="suggestion-action"
+                                onClick={() => acceptEmailProposal(p)}>Add task</button>
+                              <button className="suggestion-action"
+                                onClick={() => dismissEmailProposal(p)}>Not a task</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : null}
 
             {suggestionLists().map(listName => {
               const shelf = aiShelves[listName];
@@ -28946,107 +29085,16 @@ function LittleFiresApp() {
                                 <option value={100}>100</option>
                               </select>
                             </div>
-                            <button
-                              onClick={scanGmail}
-                              disabled={gmailScanning}
-                              style={{
-                                padding: '10px 18px', borderRadius: '20px', border: 'none',
-                                background: gmailScanning
-                                  ? 'rgba(var(--surface-rgb), 0.8)'
-                                  : 'linear-gradient(135deg, var(--accent), var(--accent-light))',
-                                color: gmailScanning ? 'var(--text-muted)' : '#fff',
-                                cursor: gmailScanning ? 'default' : 'pointer',
-                                fontWeight: 600, fontFamily: 'var(--font-ui)'
-                              }}
-                            >
-                              {gmailScanning ? 'Scanning…' : 'Scan inbox'}
-                            </button>
                           </div>
 
-                          {gmailFound ? (
-                            <div style={{ ...hint, marginTop: '14px' }}>
-                              {gmailFound.length === 0
-                                ? 'No new mail matched in that window.'
-                                : 'Read ' + gmailFound.length + ' message'
-                                  + (gmailFound.length === 1 ? '' : 's')
-                                  + (gmailSkipped ? ' · skipped ' + gmailSkipped + ' bulk' : '')
-                                  + '.'}
-                            </div>
-                          ) : null}
 
-                          {gmailProposals ? (
-                            gmailProposals.length === 0 ? (
-                              <div style={{ ...sub, marginTop: '10px' }}>
-                                Nothing here needs you. That's the usual answer.
-                              </div>
-                            ) : (
-                              <div style={{ marginTop: '12px' }}>
-                                {[
-                                  { key: 'confident', label: 'Looks like yours to do' },
-                                  { key: 'maybe', label: 'Maybe — less sure about these' }
-                                ].map(group => {
-                                  const items = gmailProposals.filter(p => p.confidence === group.key);
-                                  if (!items.length) return null;
-                                  return (
-                                    <div key={group.key} style={{ marginBottom: '14px' }}>
-                                      <div style={{
-                                        fontSize: '0.72rem', textTransform: 'uppercase',
-                                        letterSpacing: '0.5px', fontWeight: 600,
-                                        color: 'var(--text-muted)', marginBottom: '6px'
-                                      }}>
-                                        {group.label}
-                                      </div>
-                                      {items.map(p => (
-                                        <div key={p.messageId} style={{
-                                          padding: '10px 12px', borderRadius: '12px',
-                                          background: 'rgba(var(--surface-rgb), 0.6)',
-                                          marginBottom: '8px'
-                                        }}>
-                                          <div style={{ color: 'var(--text)', fontWeight: 600 }}>
-                                            {p.text}
-                                          </div>
-                                          <div style={{ ...hint, marginTop: '2px' }}>
-                                            {p.from}{p.subject ? ' · ' + p.subject : ''}
-                                            {p.dueDate ? ' · due ' + p.dueDate : ''}
-                                          </div>
-                                          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                                            <button
-                                              onClick={() => acceptEmailProposal(p)}
-                                              style={{
-                                                padding: '7px 14px', borderRadius: '16px', border: 'none',
-                                                background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
-                                                color: '#fff', cursor: 'pointer', fontWeight: 600,
-                                                fontFamily: 'var(--font-ui)', fontSize: '0.85rem'
-                                              }}
-                                            >
-                                              Add task
-                                            </button>
-                                            <button
-                                              onClick={() => dismissEmailProposal(p)}
-                                              style={{
-                                                padding: '7px 14px', borderRadius: '16px',
-                                                border: '2px solid rgba(var(--accent-rgb), 0.25)',
-                                                background: 'transparent', color: 'var(--text-muted)',
-                                                cursor: 'pointer', fontFamily: 'var(--font-ui)',
-                                                fontSize: '0.85rem'
-                                              }}
-                                            >
-                                              Not a task
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  );
-                                })}
-                                <div style={hint}>
-                                  Accepted tasks go to your Email list, with a link back
-                                  to the conversation. Either choice is remembered, so the
-                                  same message won't come up again.
-                                </div>
-                              </div>
-                            )
-                          ) : null}
+                          <div style={{ ...hint, marginTop: '10px' }}>
+                            Scanning and reviewing happen on the AI Suggestions
+                            tab, under Email — the same place every other
+                            suggestion is reviewed. This card is just the
+                            connection and the window.
+                          </div>
+
                           <button
                             onClick={disconnectGmail}
                             style={{

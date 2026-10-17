@@ -869,7 +869,17 @@ function detailsToPlainText(html, doc) {
     // No DOM (a non-browser caller): strip tags crudely rather than send markup.
     return source.replace(/<[^>]*>/g, ' ');
   }
-  const holder = d.createElement('div');
+  // An INERT document, not d.createElement: this is handed raw stored
+  // details, which since shared lists can be whatever a partner's device
+  // sent. Parsing untrusted markup into an element of the LIVE document
+  // runs it - <img src=x onerror=...> fires on assignment, before a single
+  // line of this function's own logic gets to look at it, and before the
+  // sanitiser (which is applied at render, not here) is ever involved.
+  // createHTMLDocument parses without executing or fetching anything.
+  const inert = d.implementation
+    ? d.implementation.createHTMLDocument('')
+    : null;
+  const holder = inert ? inert.createElement('div') : d.createElement('div');
   holder.innerHTML = source;
   const parts = [];
   const blocks = holder.querySelectorAll('div, li, p');
@@ -1190,6 +1200,57 @@ function rankMessages(messages) {
 }
 
 // A sender as a person rather than a mail header: "Mrs Dale <k@school.org>".
+// Gmail returns bodies base64url-encoded, possibly nested in multipart parts.
+// Prefers text/plain; falls back to stripping the HTML part. Truncated hard -
+// the first part of a message carries the ask, and sending whole threads would
+// cost more and read no better.
+// An email subject is attacker-controlled text heading into an HTML field.
+// Anyone can send mail with markup in the subject line, so it is escaped at
+// the point it becomes HTML rather than trusted because it "came from Gmail".
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function decodeB64Url(s) {
+  try {
+    const norm = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+    if (typeof atob === 'function') return decodeURIComponent(escape(atob(norm)));
+    return Buffer.from(norm, 'base64').toString('utf8');
+  } catch (e) { return ''; }
+}
+
+function extractMessageBody(payload, limit) {
+  const cap = limit || 1500;
+  let plain = '';
+  let html = '';
+  const walk = (part) => {
+    if (!part) return;
+    const mime = part.mimeType || '';
+    const data = part.body && part.body.data;
+    if (data) {
+      if (mime === 'text/plain' && !plain) plain = decodeB64Url(data);
+      else if (mime === 'text/html' && !html) html = decodeB64Url(data);
+    }
+    (part.parts || []).forEach(walk);
+  };
+  walk(payload);
+  let text = plain;
+  if (!text && html) {
+    text = html.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+               .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+               .replace(/<[^>]+>/g, ' ');
+  }
+  // Quoted replies add length without adding the ask.
+  text = text.split(/^\s*On .*wrote:\s*$/m)[0];
+  text = text.replace(/\s+/g, ' ').trim();
+  return text.slice(0, cap);
+}
+
 function senderName(from) {
   if (!from) return '';
   const m = String(from).match(/^\s*"?([^"<]*?)"?\s*<.*>\s*$/);
@@ -1716,6 +1777,51 @@ function buildProjectSuggestionRequest(payload, count, model) {
   };
 }
 
+// Email -> Tasks. The calibration IS the feature: a shelf that proposes
+// fifteen tasks from forty emails gets abandoned in a week, while one that
+// proposes three real ones and stays quiet otherwise gets trusted. So the
+// prompt pushes hard toward precision - "no action here" is the expected
+// answer for most mail - and anything genuinely uncertain is marked "maybe"
+// rather than either dropped silently or mixed in with the confident ones.
+function buildEmailTaskRequest(payload, count, model) {
+  const data = {
+    messages: payload.messages,
+    // Sent so the model can skip what is already on a list. Titles only.
+    existingOpenTasks: payload.existingOpenTasks
+  };
+  return {
+    model: model || 'claude-haiku-4-5',
+    max_tokens: 1500,
+    system:
+      'You read a person\'s email and identify things THEY must do. ' +
+      'Most messages contain no task; saying so is the correct and common answer. ' +
+      'Propose a task ONLY when someone has specifically asked this person to do ' +
+      'something, or they committed to doing it, or a deadline applies to them. ' +
+      'Never propose a task for: newsletters, receipts, confirmations, ' +
+      'notifications, marketing, social pleasantries ("we should get dinner"), ' +
+      'or messages that are purely informational. ' +
+      'ONE proposal per thread at most - several messages about one request are ' +
+      'one task. ' +
+      'If an existingOpenTasks entry already covers it, skip it entirely. ' +
+      'Mark confidence "confident" when the ask is explicit and directed at this ' +
+      'person; "maybe" when it is implied, ambiguous, or might already be done. ' +
+      'Write each task as a short imperative the person would recognise later ' +
+      '("Send signed lease to landlord"), not a summary of the email. ' +
+      'Return ONLY a JSON array of at most ' + count + ' objects, no prose, no code ' +
+      'fences. Each object: {"messageId": string, "threadId": string, "text": string, ' +
+      '"confidence": "confident"|"maybe", "dueDate": string|null}. ' +
+      'messageId and threadId MUST be copied exactly from the input. ' +
+      'dueDate is YYYY-MM-DD only when the email states a date, otherwise null. ' +
+      'Return an empty array rather than padding with anything weak.',
+    messages: [{
+      role: 'user',
+      content: 'Today is ' + new Date().toISOString().slice(0, 10) + '.\n\n' +
+        'Here is recent mail. Identify only genuine actions for me.\n\n' +
+        JSON.stringify(data)
+    }]
+  };
+}
+
 // Resolves to { ok, items, error }. Never throws: a suggestion shelf failing is
 // not worth taking any other part of the app down for, and the caller keeps
 // whatever it was already showing.
@@ -1728,7 +1834,9 @@ async function requestSuggestions({ apiKey, model, payload, count, kind }) {
   if (!apiKey) return { ok: false, error: 'No API key saved.' };
   const buildBody = kind === 'project'
     ? buildProjectSuggestionRequest
-    : buildSuggestionRequest;
+    : kind === 'email'
+      ? buildEmailTaskRequest
+      : buildSuggestionRequest;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SUGGESTION_TIMEOUT_MS);
   try {
@@ -2872,7 +2980,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-07 1430';
+const BUILD_STAMP = '2026-10-17 1050';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -3271,7 +3379,7 @@ export { mergeSyncedRecords, unflattenByList, unionTombstones, newerStamp };
 // Exported for the regression suite (s3-regression.mjs) - the diff and the
 // flatten are the merge-adjacent logic most worth pinning, and testing the
 // real functions beats testing a copy.
-export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists, groupSearchResults, searchTaskStage, searchRecordStage, SEARCH_TASK_STAGES, SEARCH_RECORD_STAGES, gmailQuery, isBulkMail, headerMap, rankMessages, senderName };
+export { diffDirtyRecords, flattenForSync, stripUndefined, SYNC_COLLECTIONS, describeSyncError, sortByCreatedDesc, sortByOrderIndex, translateAssigneesOut, translateAssigneesIn, reconcileSharedLists, groupSearchResults, searchTaskStage, searchRecordStage, SEARCH_TASK_STAGES, SEARCH_RECORD_STAGES, gmailQuery, isBulkMail, headerMap, rankMessages, senderName, extractMessageBody, decodeB64Url, escapeHtml };
 
 const SYNC_COLLECTIONS = {
   tasks: 'tasks',          // live tasks, all lists, listKey carried on each
@@ -6976,6 +7084,37 @@ function LittleFiresApp() {
   const [gmailScanning, setGmailScanning] = useState(false);
   const [gmailFound, setGmailFound] = useState(null);
   const [gmailSkipped, setGmailSkipped] = useState(0);
+  const [gmailProposals, setGmailProposals] = useState(null);
+  // Messages already turned into a decision - accepted or dismissed - so a
+  // second scan proposes only what is new. Persisted, pruned to 90 days.
+  const [gmailSeen, setGmailSeen] = useState(() => {
+    // Read inline rather than via loadTombstones: that helper is declared
+    // much further down the component, and a useState initializer runs
+    // DURING render, which would be a temporal dead zone crash. Same prune
+    // rule, 90 days.
+    try {
+      const saved = localStorage.getItem('little_fires_gmail_seen');
+      const parsed = saved ? JSON.parse(saved) : {};
+      const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+      const pruned = {};
+      Object.entries(parsed).forEach(([id, at]) => {
+        const t = Date.parse(at);
+        if (!Number.isNaN(t) && t >= cutoff) pruned[id] = at;
+      });
+      return pruned;
+    } catch (e) { return {}; }
+  });
+  useEffect(() => {
+    queueSetItem('little_fires_gmail_seen', () => JSON.stringify(gmailSeen));
+  }, [gmailSeen, queueSetItem]);
+  const markSeen = (ids) => {
+    const now = new Date().toISOString();
+    setGmailSeen(prev => {
+      const next = { ...prev };
+      (Array.isArray(ids) ? ids : [ids]).forEach(id => { if (id) next[id] = now; });
+      return next;
+    });
+  };
 
   const scanGmail = async () => {
     if (!gmailToken || gmailScanning) return;
@@ -7030,12 +7169,70 @@ function LittleFiresApp() {
       }));
       const kept = withHeaders.filter(m => !isBulkMail(m.headers));
       setGmailSkipped(withHeaders.length - kept.length);
-      setGmailFound(rankMessages(kept).map(m => ({
+      // Already decided on: never proposed twice.
+      const fresh = rankMessages(kept).filter(m => !gmailSeen[m.id]);
+      setGmailFound(fresh.map(m => ({
         id: m.id,
         subject: m.headers.Subject || '(no subject)',
         from: senderName(m.headers.From),
         important: (m.labelIds || []).includes('IMPORTANT'),
         date: m.headers.Date || ''
+      })));
+      if (!fresh.length) { setGmailProposals([]); return; }
+
+      if (!aiKeySaved) {
+        setGmailStatus('Add your Anthropic API key above to read these for tasks.');
+        return;
+      }
+
+      // Bodies are fetched ONLY now, for mail that survived every cheap filter
+      // - the smallest set that still answers the question.
+      const bodies = [];
+      for (const m of fresh) {
+        const r = await fetch(
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + m.id + '?format=full',
+          { headers: authHeader });
+        if (!r.ok) continue;
+        const full = await r.json();
+        bodies.push({
+          messageId: full.id,
+          threadId: full.threadId,
+          subject: m.headers.Subject || '',
+          from: m.headers.From || '',
+          date: m.headers.Date || '',
+          body: extractMessageBody(full.payload)
+        });
+      }
+
+      const openTaskTitles = [];
+      Object.keys(allLists || {}).forEach(k => {
+        (allLists[k] || []).forEach(t => {
+          if (t && !t.completed && t.text) openTaskTitles.push(t.text);
+        });
+      });
+
+      const ai = await requestSuggestions({
+        apiKey: aiKeySaved,
+        model: settings.aiModel || SUGGESTION_MODELS[0].id,
+        kind: 'email',
+        count: 12,
+        payload: { messages: bodies, existingOpenTasks: openTaskTitles.slice(0, 120) }
+      });
+      if (!ai.ok) { setGmailStatus(ai.error || 'The suggestion request failed.'); return; }
+
+      // One per thread, whatever the model returned.
+      const byThread = new Map();
+      (ai.items || []).forEach(p => {
+        if (!p || !p.text || !p.messageId) return;
+        const key = p.threadId || p.messageId;
+        if (!byThread.has(key)) byThread.set(key, p);
+      });
+      const source = new Map(bodies.map(b => [b.messageId, b]));
+      setGmailProposals([...byThread.values()].map(p => ({
+        ...p,
+        confidence: p.confidence === 'maybe' ? 'maybe' : 'confident',
+        subject: (source.get(p.messageId) || {}).subject || '',
+        from: senderName((source.get(p.messageId) || {}).from || '')
       })));
     } catch (err) {
       console.error('gmail scan failed:', err);
@@ -7043,6 +7240,65 @@ function LittleFiresApp() {
     } finally {
       setGmailScanning(false);
     }
+  };
+
+  // Where accepted email tasks land. A real list the user can rename, reorder
+  // or delete - created on FIRST acceptance rather than shipped with the app,
+  // so someone who never uses the feature never sees an Email tab. (The spec
+  // called for a dormant built-in; this reaches the same end with no schema
+  // change, no migration, and a list that behaves like every other.)
+  const emailListKey = () => {
+    const existing = customLists.find(c => c && !c.shared && c.key === settings.gmailTargetList);
+    if (existing) return existing.key;
+    const byName = customLists.find(c => c && !c.shared && (c.label || '').toLowerCase() === 'email');
+    if (byName) {
+      updateSetting('gmailTargetList', byName.key);
+      return byName.key;
+    }
+    const made = addCustomList('Email', false);
+    if (made && made.ok && made.key) {
+      updateSetting('gmailTargetList', made.key);
+      return made.key;
+    }
+    // Cap reached, or the name is taken by something unexpected: put the task
+    // somewhere real rather than dropping it on the floor.
+    return 'personal';
+  };
+
+  const acceptEmailProposal = (proposal) => {
+    const key = emailListKey();
+    const now = new Date().toISOString();
+    const link = proposal.threadId
+      ? 'https://mail.google.com/mail/u/0/#inbox/' + proposal.threadId
+      : '';
+    const task = {
+      id: makeId(),
+      text: proposal.text,
+      completed: false,
+      priority: 'low',
+      section: 'todo',
+      dueDate: proposal.dueDate || null,
+      dueTime: null,
+      // The deep link is what makes this feel native rather than transcribed:
+      // the task remembers which conversation it came out of.
+      details: link
+        ? '<div>From email: ' + escapeHtml(proposal.subject || '') + '</div>' +
+          '<div><a href="' + link + '" target="_blank" rel="noopener noreferrer">Open in Gmail</a></div>'
+        : '',
+      projectId: null,
+      createdAt: now,
+      updatedAt: now
+    };
+    setAllLists(prev => ({ ...prev, [key]: [task, ...(prev[key] || [])] }));
+    markSeen(proposal.messageId);
+    setGmailProposals(prev => (prev || []).filter(p => p.messageId !== proposal.messageId));
+  };
+
+  const dismissEmailProposal = (proposal) => {
+    // Dismissal is remembered too - being asked twice about the same email is
+    // how a shelf like this wears out its welcome.
+    markSeen(proposal.messageId);
+    setGmailProposals(prev => (prev || []).filter(p => p.messageId !== proposal.messageId));
   };
 
   const disconnectGmail = () => {
@@ -8372,7 +8628,9 @@ function LittleFiresApp() {
       customLists: [...(prev.customLists || []), { key, label: name, color, shared }],
       listOrder: [...orderedTaskLists, key]
     }));
-    return { ok: true, message: `Added "${name}".` };
+    // The key comes back so a caller that just created a list can put
+    // something in it without re-deriving the name.
+    return { ok: true, key, message: `Added "${name}".` };
   };
 
   const deleteCustomList = async (key) => {
@@ -28124,6 +28382,247 @@ function LittleFiresApp() {
                     ) : null}
                   </div>
 
+                  {/* ---- Menu Sections ---- */}
+                  <div style={card}>
+                    <div style={heading}>Menu Sections</div>
+                    <div style={sub}>
+                      Switch off parts of the app you don't use. Hidden sections disappear
+                      from the menu, calendar, and search — nothing is deleted, and turning
+                      one back on restores it exactly as it was.
+                    </div>
+
+                    {FEATURES.map((f, i) => {
+                      const on = isFeatureOn(f.key);
+                      const counts = {
+                        time: (standaloneTimeLogs || []).length +
+                              Object.values(goals || {}).reduce((n, arr) =>
+                                n + (arr || []).reduce((m, g) => m + ((g.timeLogs || []).length), 0), 0),
+                        goals: countKeyed(goals),
+                        projects: countKeyed(projects),
+                        notes: (notes || []).length,
+                        search: null   // a lens, not a store - no count to show
+                      };
+                      return (
+                        <div
+                          key={f.key}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '12px',
+                            padding: '12px 0', flexWrap: 'wrap',
+                            borderBottom: i < FEATURES.length - 1 ? '1px solid rgba(var(--border-rgb), 0.18)' : 'none',
+                            opacity: on ? 1 : 0.55, transition: 'opacity 0.2s ease'
+                          }}
+                        >
+                          <div style={{ flex: 1, minWidth: '170px' }}>
+                            <div style={label}>{f.label}</div>
+                            <div style={hint}>{f.note}</div>
+                          </div>
+                          <span style={{
+                            color: 'var(--text-muted)', fontSize: '0.75rem',
+                            fontFamily: 'var(--font-ui)', minWidth: '58px'
+                          }}>
+                            {counts[f.key] === null ? '' : `${counts[f.key]} saved`}
+                          </span>
+                          <Toggle on={on} onChange={() => toggleFeature(f.key)} />
+                        </div>
+                      );
+                    })}
+
+                    <div style={{ ...hint, marginTop: '12px' }}>
+                      Turning Projects off also hides the Project field on tasks. Any task
+                      already assigned keeps its project, ready for if you switch it back on.
+                      With Goals off but Time on, time logged against goals stays visible
+                      under Time.
+                    </div>
+                  </div>
+
+                  {/* ---- Report Settings ---- */}
+                  <div style={card}>
+                    <div style={heading}>Report Settings</div>
+                    <div style={sub}>
+                      Goals and starting views for the Reports page.
+                    </div>
+
+                    <div style={subheading}>Fire Goal</div>
+                    <div style={sub}>
+                      How many completed tasks fully light the flame on the Reports page.
+                    </div>
+
+                    <div style={row}>
+                      <div>
+                        <div style={label}>Per week</div>
+                        <div style={hint}>Used by the This Week view</div>
+                      </div>
+                      <input
+                        type="number" min="1" max="500"
+                        value={settings.weeklyFireGoal}
+                        onChange={(e) => updateSetting('weeklyFireGoal', e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
+                        style={numInput}
+                      />
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div>
+                        <div style={label}>Per month</div>
+                        <div style={hint}>Longer ranges scale from this</div>
+                      </div>
+                      <input
+                        type="number" min="1" max="2000"
+                        value={settings.monthlyFireGoal}
+                        onChange={(e) => updateSetting('monthlyFireGoal', e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
+                        style={numInput}
+                      />
+                    </div>
+
+                    <div style={divider} />
+
+                    <div style={subheading}>Report Defaults</div>
+                    <div style={sub}>What the app starts on each time you open it.</div>
+
+                    <div style={row}>
+                      <div style={label}>Reports timeframe</div>
+                      <select
+                        value={settings.defaultReportTimeframe}
+                        onChange={(e) => updateSetting('defaultReportTimeframe', e.target.value)}
+                        style={{ ...numInput, width: 'auto', minWidth: '150px', textAlign: 'left' }}
+                      >
+                        <option value="thisWeek">This Week</option>
+                        <option value="thisMonth">This Month</option>
+                        <option value="lastMonth">Last Month</option>
+                        <option value="last3">Last 3 Months</option>
+                        <option value="last6">Last 6 Months</option>
+                        <option value="allTime">All Time</option>
+                      </select>
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={label}>Timer duration</div>
+                      <select
+                        value={settings.defaultTimerDuration}
+                        onChange={(e) => updateSetting('defaultTimerDuration', e.target.value === '' ? '' : parseInt(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '150px', textAlign: 'left' }}
+                      >
+                        <option value="">Timer (open-ended)</option>
+                        <option value="300">5 Minutes</option>
+                        <option value="420">7 Minutes</option>
+                        <option value="600">10 Minutes</option>
+                        <option value="900">15 Minutes</option>
+                        <option value="1800">30 Minutes</option>
+                        <option value="3600">60 Minutes</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* ---- Pomodoro ---- */}
+                  <div style={card}>
+                    <div style={heading}>Pomodoro</div>
+                    <div style={sub}>
+                      Splits Time into focus sessions with breaks between them. Work
+                      is logged as normal; breaks are not.
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Pomodoro mode</div>
+                        <div style={hint}>
+                          A chime and a notification mark the end of each session.
+                          Notifications only arrive while the app is open — iOS stops
+                          web apps running in the background.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.pomodoroEnabled}
+                        onChange={(v) => {
+                          updateSetting('pomodoroEnabled', v);
+                          // Permission must be asked for from a user gesture, and
+                          // this toggle is the only one guaranteed to be one.
+                          if (v && typeof Notification !== 'undefined'
+                              && Notification.permission === 'default') {
+                            Notification.requestPermission();
+                          }
+                        }}
+                      />
+                    </div>
+
+                    <div style={row}>
+                      <div style={label}>Focus length</div>
+                      <select
+                        value={settings.pomodoroWork}
+                        onChange={(e) => updateSetting('pomodoroWork', Number(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
+                      >
+                        <option value={900}>15 minutes</option>
+                        <option value={1500}>25 minutes</option>
+                        <option value={1800}>30 minutes</option>
+                        <option value={2700}>45 minutes</option>
+                        <option value={3000}>50 minutes</option>
+                        {/* 60 was the obvious missing one; 90 is a full
+                            ultradian cycle, the deep-work block. */}
+                        <option value={3600}>60 minutes</option>
+                        <option value={5400}>90 minutes</option>
+                      </select>
+                    </div>
+
+                    <div style={row}>
+                      <div style={label}>Short break</div>
+                      <select
+                        value={settings.pomodoroShortBreak}
+                        onChange={(e) => updateSetting('pomodoroShortBreak', Number(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
+                      >
+                        <option value={180}>3 minutes</option>
+                        <option value={300}>5 minutes</option>
+                        <option value={600}>10 minutes</option>
+                        {/* Pairs with the 60/90 focus blocks - a 5 after 90
+                            minutes isn't a break. */}
+                        <option value={900}>15 minutes</option>
+                      </select>
+                    </div>
+
+                    <div style={row}>
+                      <div style={label}>Long break</div>
+                      <select
+                        value={settings.pomodoroLongBreak}
+                        onChange={(e) => updateSetting('pomodoroLongBreak', Number(e.target.value))}
+                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
+                      >
+                        <option value={600}>10 minutes</option>
+                        <option value={900}>15 minutes</option>
+                        <option value={1200}>20 minutes</option>
+                        <option value={1800}>30 minutes</option>
+                      </select>
+                    </div>
+
+                    <div style={row}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Long break after</div>
+                        <div style={hint}>How many focus sessions before the long break.</div>
+                      </div>
+                      <input
+                        type="number"
+                        min="2"
+                        max="8"
+                        value={settings.pomodoroInterval}
+                        onChange={(e) => updateSetting('pomodoroInterval',
+                          Math.min(8, Math.max(2, parseInt(e.target.value) || 4)))}
+                        style={numInput}
+                      />
+                    </div>
+
+                    <div style={{ ...row, marginBottom: 0 }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={label}>Auto-start next session</div>
+                        <div style={hint}>
+                          Starts the next focus session as soon as a break ends. Off
+                          means the break simply finishes and waits for you.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={settings.pomodoroAutoStart}
+                        onChange={(v) => updateSetting('pomodoroAutoStart', v)}
+                      />
+                    </div>
+                  </div>
+
                   {/* ---- AI Suggestions ---- */}
                   <div style={card}>
                     <div style={heading}>AI Suggestions</div>
@@ -28405,7 +28904,7 @@ function LittleFiresApp() {
                     </div>
                   </div>
 
-                  {/* ---- Email -> Tasks (step 1: the connection only) ---- */}
+                  {/* ---- Email -> Tasks ---- */}
                   {authUser && (
                     <div style={card}>
                       <div style={heading}>Email → Tasks</div>
@@ -28465,30 +28964,88 @@ function LittleFiresApp() {
                           </div>
 
                           {gmailFound ? (
-                            <div style={{ marginTop: '14px' }}>
-                              <div style={{ ...hint, marginBottom: '8px' }}>
-                                {gmailFound.length === 0
-                                  ? 'Nothing matched in that window.'
-                                  : 'Found ' + gmailFound.length + ' message'
-                                    + (gmailFound.length === 1 ? '' : 's')
-                                    + (gmailSkipped
-                                        ? ' · skipped ' + gmailSkipped + ' bulk/newsletter'
-                                        : '')
-                                    + '. Reading them for tasks comes next — nothing has been added anywhere.'}
-                              </div>
-                              {gmailFound.map(m => (
-                                <div key={m.id} style={{
-                                  padding: '8px 10px', borderRadius: '10px',
-                                  background: 'rgba(var(--surface-rgb), 0.5)',
-                                  marginBottom: '6px'
-                                }}>
-                                  <div style={{ fontSize: '0.9rem', color: 'var(--text)' }}>
-                                    {m.important ? '★ ' : ''}{m.subject}
-                                  </div>
-                                  <div style={{ ...hint, marginTop: '2px' }}>{m.from}</div>
-                                </div>
-                              ))}
+                            <div style={{ ...hint, marginTop: '14px' }}>
+                              {gmailFound.length === 0
+                                ? 'No new mail matched in that window.'
+                                : 'Read ' + gmailFound.length + ' message'
+                                  + (gmailFound.length === 1 ? '' : 's')
+                                  + (gmailSkipped ? ' · skipped ' + gmailSkipped + ' bulk' : '')
+                                  + '.'}
                             </div>
+                          ) : null}
+
+                          {gmailProposals ? (
+                            gmailProposals.length === 0 ? (
+                              <div style={{ ...sub, marginTop: '10px' }}>
+                                Nothing here needs you. That's the usual answer.
+                              </div>
+                            ) : (
+                              <div style={{ marginTop: '12px' }}>
+                                {[
+                                  { key: 'confident', label: 'Looks like yours to do' },
+                                  { key: 'maybe', label: 'Maybe — less sure about these' }
+                                ].map(group => {
+                                  const items = gmailProposals.filter(p => p.confidence === group.key);
+                                  if (!items.length) return null;
+                                  return (
+                                    <div key={group.key} style={{ marginBottom: '14px' }}>
+                                      <div style={{
+                                        fontSize: '0.72rem', textTransform: 'uppercase',
+                                        letterSpacing: '0.5px', fontWeight: 600,
+                                        color: 'var(--text-muted)', marginBottom: '6px'
+                                      }}>
+                                        {group.label}
+                                      </div>
+                                      {items.map(p => (
+                                        <div key={p.messageId} style={{
+                                          padding: '10px 12px', borderRadius: '12px',
+                                          background: 'rgba(var(--surface-rgb), 0.6)',
+                                          marginBottom: '8px'
+                                        }}>
+                                          <div style={{ color: 'var(--text)', fontWeight: 600 }}>
+                                            {p.text}
+                                          </div>
+                                          <div style={{ ...hint, marginTop: '2px' }}>
+                                            {p.from}{p.subject ? ' · ' + p.subject : ''}
+                                            {p.dueDate ? ' · due ' + p.dueDate : ''}
+                                          </div>
+                                          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                                            <button
+                                              onClick={() => acceptEmailProposal(p)}
+                                              style={{
+                                                padding: '7px 14px', borderRadius: '16px', border: 'none',
+                                                background: 'linear-gradient(135deg, var(--accent), var(--accent-light))',
+                                                color: '#fff', cursor: 'pointer', fontWeight: 600,
+                                                fontFamily: 'var(--font-ui)', fontSize: '0.85rem'
+                                              }}
+                                            >
+                                              Add task
+                                            </button>
+                                            <button
+                                              onClick={() => dismissEmailProposal(p)}
+                                              style={{
+                                                padding: '7px 14px', borderRadius: '16px',
+                                                border: '2px solid rgba(var(--accent-rgb), 0.25)',
+                                                background: 'transparent', color: 'var(--text-muted)',
+                                                cursor: 'pointer', fontFamily: 'var(--font-ui)',
+                                                fontSize: '0.85rem'
+                                              }}
+                                            >
+                                              Not a task
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                })}
+                                <div style={hint}>
+                                  Accepted tasks go to your Email list, with a link back
+                                  to the conversation. Either choice is remembered, so the
+                                  same message won't come up again.
+                                </div>
+                              </div>
+                            )
                           ) : null}
                           <button
                             onClick={disconnectGmail}
@@ -28542,247 +29099,6 @@ function LittleFiresApp() {
                       ) : null}
                     </div>
                   )}
-
-                  {/* ---- Menu Sections ---- */}
-                  <div style={card}>
-                    <div style={heading}>Menu Sections</div>
-                    <div style={sub}>
-                      Switch off parts of the app you don't use. Hidden sections disappear
-                      from the menu, calendar, and search — nothing is deleted, and turning
-                      one back on restores it exactly as it was.
-                    </div>
-
-                    {FEATURES.map((f, i) => {
-                      const on = isFeatureOn(f.key);
-                      const counts = {
-                        time: (standaloneTimeLogs || []).length +
-                              Object.values(goals || {}).reduce((n, arr) =>
-                                n + (arr || []).reduce((m, g) => m + ((g.timeLogs || []).length), 0), 0),
-                        goals: countKeyed(goals),
-                        projects: countKeyed(projects),
-                        notes: (notes || []).length,
-                        search: null   // a lens, not a store - no count to show
-                      };
-                      return (
-                        <div
-                          key={f.key}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: '12px',
-                            padding: '12px 0', flexWrap: 'wrap',
-                            borderBottom: i < FEATURES.length - 1 ? '1px solid rgba(var(--border-rgb), 0.18)' : 'none',
-                            opacity: on ? 1 : 0.55, transition: 'opacity 0.2s ease'
-                          }}
-                        >
-                          <div style={{ flex: 1, minWidth: '170px' }}>
-                            <div style={label}>{f.label}</div>
-                            <div style={hint}>{f.note}</div>
-                          </div>
-                          <span style={{
-                            color: 'var(--text-muted)', fontSize: '0.75rem',
-                            fontFamily: 'var(--font-ui)', minWidth: '58px'
-                          }}>
-                            {counts[f.key] === null ? '' : `${counts[f.key]} saved`}
-                          </span>
-                          <Toggle on={on} onChange={() => toggleFeature(f.key)} />
-                        </div>
-                      );
-                    })}
-
-                    <div style={{ ...hint, marginTop: '12px' }}>
-                      Turning Projects off also hides the Project field on tasks. Any task
-                      already assigned keeps its project, ready for if you switch it back on.
-                      With Goals off but Time on, time logged against goals stays visible
-                      under Time.
-                    </div>
-                  </div>
-
-                  {/* ---- Report Settings ---- */}
-                  <div style={card}>
-                    <div style={heading}>Report Settings</div>
-                    <div style={sub}>
-                      Goals and starting views for the Reports page.
-                    </div>
-
-                    <div style={subheading}>Fire Goal</div>
-                    <div style={sub}>
-                      How many completed tasks fully light the flame on the Reports page.
-                    </div>
-
-                    <div style={row}>
-                      <div>
-                        <div style={label}>Per week</div>
-                        <div style={hint}>Used by the This Week view</div>
-                      </div>
-                      <input
-                        type="number" min="1" max="500"
-                        value={settings.weeklyFireGoal}
-                        onChange={(e) => updateSetting('weeklyFireGoal', e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
-                        style={numInput}
-                      />
-                    </div>
-
-                    <div style={{ ...row, marginBottom: 0 }}>
-                      <div>
-                        <div style={label}>Per month</div>
-                        <div style={hint}>Longer ranges scale from this</div>
-                      </div>
-                      <input
-                        type="number" min="1" max="2000"
-                        value={settings.monthlyFireGoal}
-                        onChange={(e) => updateSetting('monthlyFireGoal', e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
-                        style={numInput}
-                      />
-                    </div>
-
-                    <div style={divider} />
-
-                    <div style={subheading}>Report Defaults</div>
-                    <div style={sub}>What the app starts on each time you open it.</div>
-
-                    <div style={row}>
-                      <div style={label}>Reports timeframe</div>
-                      <select
-                        value={settings.defaultReportTimeframe}
-                        onChange={(e) => updateSetting('defaultReportTimeframe', e.target.value)}
-                        style={{ ...numInput, width: 'auto', minWidth: '150px', textAlign: 'left' }}
-                      >
-                        <option value="thisWeek">This Week</option>
-                        <option value="thisMonth">This Month</option>
-                        <option value="lastMonth">Last Month</option>
-                        <option value="last3">Last 3 Months</option>
-                        <option value="last6">Last 6 Months</option>
-                        <option value="allTime">All Time</option>
-                      </select>
-                    </div>
-
-                    <div style={{ ...row, marginBottom: 0 }}>
-                      <div style={label}>Timer duration</div>
-                      <select
-                        value={settings.defaultTimerDuration}
-                        onChange={(e) => updateSetting('defaultTimerDuration', e.target.value === '' ? '' : parseInt(e.target.value))}
-                        style={{ ...numInput, width: 'auto', minWidth: '150px', textAlign: 'left' }}
-                      >
-                        <option value="">Timer (open-ended)</option>
-                        <option value="300">5 Minutes</option>
-                        <option value="420">7 Minutes</option>
-                        <option value="600">10 Minutes</option>
-                        <option value="900">15 Minutes</option>
-                        <option value="1800">30 Minutes</option>
-                        <option value="3600">60 Minutes</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* ---- Pomodoro ---- */}
-                  <div style={card}>
-                    <div style={heading}>Pomodoro</div>
-                    <div style={sub}>
-                      Splits Time into focus sessions with breaks between them. Work
-                      is logged as normal; breaks are not.
-                    </div>
-
-                    <div style={row}>
-                      <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={label}>Pomodoro mode</div>
-                        <div style={hint}>
-                          A chime and a notification mark the end of each session.
-                          Notifications only arrive while the app is open — iOS stops
-                          web apps running in the background.
-                        </div>
-                      </div>
-                      <Toggle
-                        on={settings.pomodoroEnabled}
-                        onChange={(v) => {
-                          updateSetting('pomodoroEnabled', v);
-                          // Permission must be asked for from a user gesture, and
-                          // this toggle is the only one guaranteed to be one.
-                          if (v && typeof Notification !== 'undefined'
-                              && Notification.permission === 'default') {
-                            Notification.requestPermission();
-                          }
-                        }}
-                      />
-                    </div>
-
-                    <div style={row}>
-                      <div style={label}>Focus length</div>
-                      <select
-                        value={settings.pomodoroWork}
-                        onChange={(e) => updateSetting('pomodoroWork', Number(e.target.value))}
-                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
-                      >
-                        <option value={900}>15 minutes</option>
-                        <option value={1500}>25 minutes</option>
-                        <option value={1800}>30 minutes</option>
-                        <option value={2700}>45 minutes</option>
-                        <option value={3000}>50 minutes</option>
-                        {/* 60 was the obvious missing one; 90 is a full
-                            ultradian cycle, the deep-work block. */}
-                        <option value={3600}>60 minutes</option>
-                        <option value={5400}>90 minutes</option>
-                      </select>
-                    </div>
-
-                    <div style={row}>
-                      <div style={label}>Short break</div>
-                      <select
-                        value={settings.pomodoroShortBreak}
-                        onChange={(e) => updateSetting('pomodoroShortBreak', Number(e.target.value))}
-                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
-                      >
-                        <option value={180}>3 minutes</option>
-                        <option value={300}>5 minutes</option>
-                        <option value={600}>10 minutes</option>
-                        {/* Pairs with the 60/90 focus blocks - a 5 after 90
-                            minutes isn't a break. */}
-                        <option value={900}>15 minutes</option>
-                      </select>
-                    </div>
-
-                    <div style={row}>
-                      <div style={label}>Long break</div>
-                      <select
-                        value={settings.pomodoroLongBreak}
-                        onChange={(e) => updateSetting('pomodoroLongBreak', Number(e.target.value))}
-                        style={{ ...numInput, width: 'auto', minWidth: '130px', textAlign: 'left' }}
-                      >
-                        <option value={600}>10 minutes</option>
-                        <option value={900}>15 minutes</option>
-                        <option value={1200}>20 minutes</option>
-                        <option value={1800}>30 minutes</option>
-                      </select>
-                    </div>
-
-                    <div style={row}>
-                      <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={label}>Long break after</div>
-                        <div style={hint}>How many focus sessions before the long break.</div>
-                      </div>
-                      <input
-                        type="number"
-                        min="2"
-                        max="8"
-                        value={settings.pomodoroInterval}
-                        onChange={(e) => updateSetting('pomodoroInterval',
-                          Math.min(8, Math.max(2, parseInt(e.target.value) || 4)))}
-                        style={numInput}
-                      />
-                    </div>
-
-                    <div style={{ ...row, marginBottom: 0 }}>
-                      <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={label}>Auto-start next session</div>
-                        <div style={hint}>
-                          Starts the next focus session as soon as a break ends. Off
-                          means the break simply finishes and waits for you.
-                        </div>
-                      </div>
-                      <Toggle
-                        on={settings.pomodoroAutoStart}
-                        onChange={(v) => updateSetting('pomodoroAutoStart', v)}
-                      />
-                    </div>
-                  </div>
 
                   {/* ---- App Behavior ---- */}
                   <div style={card}>

@@ -2980,7 +2980,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-17 1630';
+const BUILD_STAMP = '2026-10-18 1015';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -27596,36 +27596,41 @@ function LittleFiresApp() {
               ⠿
             </span>
 
-            <input
-              type="text"
-              value={(settings.listLabels && settings.listLabels[key]) ?? DEFAULT_LIST_LABELS[key]}
-              onChange={(e) => updateSetting('listLabels', {
-                ...(settings.listLabels || {}),
-                [key]: e.target.value
-              })}
-              placeholder={DEFAULT_LIST_LABELS[key]}
-              maxLength={18}
-              // Dragging the row shouldn't start from the text field
-              draggable={false}
-              onMouseDown={(e) => e.stopPropagation()}
-              style={{
-                flex: 1, minWidth: '110px', padding: '9px 10px',
-                background: 'rgba(var(--surface-rgb), 1)',
-                border: '2px solid rgba(var(--accent-rgb), 0.3)',
-                borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
-                fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
-              }}
-            />
-
-            {/* This slot is fixed width whether or not it holds anything, so
-                the arrows and toggle line up down the column. The badge sat
-                after them before, which pushed every shared row's controls out
-                of alignment with the rest. */}
-            <span style={{
-              minWidth: '62px', display: 'flex', justifyContent: 'flex-start', flexShrink: 0
-            }}>
+            {/* The badge lives INSIDE the field rather than in a column of
+                its own. Given to its own slot it made every shared row's
+                input narrower than its neighbours', so no two rows lined up.
+                Inside, every input is the same width and the badge labels
+                the thing it describes. */}
+            <span style={{ position: 'relative', flex: 1, minWidth: '110px', display: 'flex' }}>
+              <input
+                type="text"
+                value={(settings.listLabels && settings.listLabels[key]) ?? DEFAULT_LIST_LABELS[key]}
+                onChange={(e) => updateSetting('listLabels', {
+                  ...(settings.listLabels || {}),
+                  [key]: e.target.value
+                })}
+                placeholder={DEFAULT_LIST_LABELS[key]}
+                maxLength={18}
+                // Dragging the row shouldn't start from the text field
+                draggable={false}
+                onMouseDown={(e) => e.stopPropagation()}
+                style={{
+                  width: '100%', padding: '9px 10px',
+                  // Room for the badge so a long name never runs under it.
+                  paddingRight: isSharedList(key) ? '74px' : '10px',
+                  background: 'rgba(var(--surface-rgb), 1)',
+                  border: '2px solid rgba(var(--accent-rgb), 0.3)',
+                  borderRadius: '8px', color: 'var(--text)', fontSize: '0.92rem',
+                  fontFamily: 'var(--font-ui)', boxSizing: 'border-box'
+                }}
+              />
               {isSharedList(key) && (
                 <span style={{
+                  position: 'absolute', right: '8px', top: '50%',
+                  transform: 'translateY(-50%)',
+                  // Clicks pass through to the field underneath - the badge
+                  // is a label, not a control.
+                  pointerEvents: 'none',
                   fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.5px',
                   textTransform: 'uppercase', padding: '3px 8px', borderRadius: '8px',
                   background: 'rgba(var(--partner-rgb), 0.18)',
@@ -27675,24 +27680,29 @@ function LittleFiresApp() {
 
             <Toggle on={!hidden} onChange={() => toggleListVisibility(key)} />
 
-            {/* Built-ins can be hidden but not deleted - removing
-                them would orphan the colour and label defaults. */}
-            {customLists.some(c => c && c.key === key) && (
-              <button
-                aria-label="Delete list"
-                onClick={() => deleteCustomList(key)}
-                title="Delete this list and its tasks"
-                style={{
-                  width: '30px', height: '30px', borderRadius: '7px',
-                  background: 'rgba(var(--surface-rgb), 1)',
-                  border: '2px solid rgba(255, 107, 107, 0.35)',
-                  color: '#ff8f8f', cursor: 'pointer',
-                  fontSize: '0.9rem', padding: 0, lineHeight: 1, flexShrink: 0
-                }}
-              >
-                ×
-              </button>
-            )}
+            {/* Built-ins can be hidden but not deleted - removing them would
+                orphan the colour and label defaults. The slot is reserved
+                either way: without it, rows WITH a delete button ended at a
+                different point from rows without, which was the other half
+                of the ragged look. */}
+            <span style={{ width: '30px', flexShrink: 0, display: 'flex' }}>
+              {customLists.some(c => c && c.key === key) && (
+                <button
+                  aria-label="Delete list"
+                  onClick={() => deleteCustomList(key)}
+                  title="Delete this list and its tasks"
+                  style={{
+                    width: '30px', height: '30px', borderRadius: '7px',
+                    background: 'rgba(var(--surface-rgb), 1)',
+                    border: '2px solid rgba(255, 107, 107, 0.35)',
+                    color: '#ff8f8f', cursor: 'pointer',
+                    fontSize: '0.9rem', padding: 0, lineHeight: 1, flexShrink: 0
+                  }}
+                >
+                  ×
+                </button>
+              )}
+            </span>
           </div>
         );
               };

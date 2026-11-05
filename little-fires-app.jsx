@@ -2441,8 +2441,23 @@ const SEARCH_TASK_STAGES = [
 ];
 const SEARCH_RECORD_STAGES = [
   { key: 'active', label: 'Active' },
+  { key: 'complete', label: 'Complete' },
   { key: 'archived', label: 'Archived' }
 ];
+
+// Goals and projects leave the live views once they are finished - archived
+// OR complete. A completed goal used to sit in a Complete group under the
+// active ones forever, so the page kept growing with work that was done.
+// They are still one search or one Archive tab away; nothing is moved or
+// rewritten, this is purely which view shows them (section and archived are
+// untouched, so sync, backups and old records need nothing).
+// Declarations, not consts, so every caller is safe from the TDZ.
+function isLivePlanRecord(r) {
+  return !!r && !r.archived && (r.section || 'active') !== 'complete';
+}
+function isShelvedPlanRecord(r) {
+  return !!r && (!!r.archived || r.section === 'complete');
+}
 
 function searchTaskStage(result) {
   if (result.isArchived) return 'archived';
@@ -2451,7 +2466,9 @@ function searchTaskStage(result) {
   return t.section === 'backlog' ? 'backlog' : 'todo';
 }
 function searchRecordStage(result) {
-  return result.isArchived ? 'archived' : 'active';
+  if (result.isArchived) return 'archived';
+  const r = result.item || {};
+  return r.section === 'complete' ? 'complete' : 'active';
 }
 
 // orderKeys fixes list order so search reads in the same sequence as the tabs;
@@ -2980,7 +2997,7 @@ function collectSelectedBlocks(area, range) {
 // running the build I just deployed, or a cached one?" - a question that has
 // cost real debugging time, because a stale service-worker cache and a broken
 // feature look identical from the outside. Bumped on every delivery.
-const BUILD_STAMP = '2026-10-18 1015';
+const BUILD_STAMP = '2026-10-26 1900';
 
 const SUGGESTED_LISTS = ['Travel', 'Groceries', 'Health'];
 
@@ -13416,51 +13433,91 @@ function LittleFiresApp() {
   };
 
   // Touch handlers for mobile drag and drop
+  // Touch reordering for goal and project cards.
+  //
+  // The cards used to be touch-action:none and start a drag on touchstart,
+  // so on a phone a finger that landed on a card could never scroll the page.
+  // With a list long enough to fill the screen there was nowhere left to put
+  // a finger, and the page looked frozen. (React's touchmove is passive, so
+  // the preventDefault that was meant to stop scrolling only during a drag
+  // never did anything either - touch-action:none was doing all of it.)
+  //
+  // Now the cards are pan-y and a drag needs a press-and-hold: a finger that
+  // moves before the hold fires is a scroll, and the browser has it. Once the
+  // hold fires, a non-passive document listener (the effect below) stops the
+  // page moving under the drag.
+  const TOUCH_DRAG_HOLD_MS = 350;
+  const TOUCH_DRAG_SLOP_PX = 8;
+  const touchHold = React.useRef(null); // { timer, x, y }
+
+  const clearTouchHold = () => {
+    if (touchHold.current) clearTimeout(touchHold.current.timer);
+    touchHold.current = null;
+  };
+
   const handleTouchStart = (e, item, index, listName, type) => {
+    clearTouchHold();
     if (e.touches.length !== 1) return;
-    setTouchStartY(e.touches[0].clientY);
-    setIsTouchDragging(true);
-    if (type === 'goal') {
-      setDraggedGoal({ ...item, index, listName });
-    } else if (type === 'project') {
-      setDraggedProject({ ...item, index, listName });
-    }
+    const { clientX: x, clientY: y } = e.touches[0];
+    const timer = setTimeout(() => {
+      touchHold.current = null;
+      setTouchStartY(y);
+      setIsTouchDragging(true);
+      if (type === 'goal') {
+        setDraggedGoal({ ...item, index, listName });
+      } else if (type === 'project') {
+        setDraggedProject({ ...item, index, listName });
+      }
+      try { navigator.vibrate && navigator.vibrate(10); } catch (err) {}
+    }, TOUCH_DRAG_HOLD_MS);
+    touchHold.current = { timer, x, y };
   };
 
   const handleTouchMove = (e, items, type) => {
-    if (!isTouchDragging || e.touches.length !== 1) return;
-    e.preventDefault();
-    
+    if (e.touches.length !== 1) { clearTouchHold(); return; }
     const touch = e.touches[0];
+    if (!isTouchDragging) {
+      // Moved before the hold fired: this is a scroll, not a drag.
+      const h = touchHold.current;
+      if (h && (Math.abs(touch.clientX - h.x) > TOUCH_DRAG_SLOP_PX ||
+                Math.abs(touch.clientY - h.y) > TOUCH_DRAG_SLOP_PX)) {
+        clearTouchHold();
+      }
+      return;
+    }
+
     const elementAtTouch = document.elementFromPoint(touch.clientX, touch.clientY);
-    
     if (!elementAtTouch) return;
-    
     const cardElement = elementAtTouch.closest(type === 'goal' ? '.goal-card' : '.project-card');
     if (!cardElement) return;
-    
-    // Find which item this card represents
-    const cards = Array.from(document.querySelectorAll(type === 'goal' ? '.goal-card' : '.project-card'));
-    const targetIndex = cards.indexOf(cardElement);
-    
-    if (targetIndex >= 0 && targetIndex < items.length) {
-      if (type === 'goal') {
-        setDragOverGoal({ ...items[targetIndex], index: targetIndex });
-      } else if (type === 'project') {
-        setDragOverProject({ ...items[targetIndex], index: targetIndex });
-      }
+
+    // By id, not DOM position. The cards are grouped Active / Backlog on
+    // screen while items is the ungrouped list, so the old "nth card is the
+    // nth item" lookup pointed at the wrong record once groups existed.
+    const id = cardElement.getAttribute('data-plan-id');
+    const targetIndex = items.findIndex(r => String(r.id) === id);
+    if (targetIndex < 0) return;
+    if (type === 'goal') {
+      setDragOverGoal({ ...items[targetIndex], index: targetIndex });
+    } else if (type === 'project') {
+      setDragOverProject({ ...items[targetIndex], index: targetIndex });
     }
   };
 
   const handleTouchEnd = (e, listName, type) => {
+    clearTouchHold();
     if (!isTouchDragging) return;
-    
-    if (type === 'goal' && draggedGoal && dragOverGoal && draggedGoal.id !== dragOverGoal.id) {
+
+    // Same rule as mouse drag: only reorder within one group.
+    const sameSection = (a, b) => (a.section || 'active') === (b.section || 'active');
+    if (type === 'goal' && draggedGoal && dragOverGoal && draggedGoal.id !== dragOverGoal.id &&
+        sameSection(draggedGoal, dragOverGoal)) {
       reorderGoals(listName, draggedGoal.id, dragOverGoal.id);
-    } else if (type === 'project' && draggedProject && dragOverProject && draggedProject.id !== dragOverProject.id) {
+    } else if (type === 'project' && draggedProject && dragOverProject && draggedProject.id !== dragOverProject.id &&
+        sameSection(draggedProject, dragOverProject)) {
       reorderProjects(listName, draggedProject.id, dragOverProject.id);
     }
-    
+
     setDraggedGoal(null);
     setDragOverGoal(null);
     setDraggedProject(null);
@@ -13469,12 +13526,35 @@ function LittleFiresApp() {
     setTouchStartY(null);
   };
 
+  // A gesture the browser takes away (or a card that unmounts mid-press)
+  // must not leave a drag armed.
+  const handleTouchCancel = () => {
+    clearTouchHold();
+    if (!isTouchDragging) return;
+    setDraggedGoal(null);
+    setDragOverGoal(null);
+    setDraggedProject(null);
+    setDragOverProject(null);
+    setIsTouchDragging(false);
+    setTouchStartY(null);
+  };
+
+  // While a touch drag is live, hold the page still. Non-passive and on the
+  // document because React's own touchmove listener is passive.
+  React.useEffect(() => {
+    if (!isTouchDragging) return;
+    const stop = (e) => { if (e.cancelable) e.preventDefault(); };
+    document.addEventListener('touchmove', stop, { passive: false });
+    return () => document.removeEventListener('touchmove', stop, { passive: false });
+  }, [isTouchDragging]);
+  React.useEffect(() => () => clearTouchHold(), []);
+
   const getCurrentGoals = () => {
     if (currentGoalList === 'master') {
       const masterGoals = [];
       visiblePlanLists.forEach(listName => {
         (goals[listName] || []).forEach(goal => {
-          if (!goal.archived) {  // Filter out archived goals
+          if (isLivePlanRecord(goal)) {  // Archived and completed live in Archive
             masterGoals.push({
               ...goal,
               listName
@@ -13484,7 +13564,7 @@ function LittleFiresApp() {
       });
       return masterGoals;
     }
-    return (goals[currentGoalList] || []).filter(g => !g.archived);  // Filter out archived
+    return (goals[currentGoalList] || []).filter(isLivePlanRecord);  // Archived and completed live in Archive
   };
 
   const addTaskToProject = (projectId, listName) => {
@@ -13522,7 +13602,7 @@ function LittleFiresApp() {
       visiblePlanLists.forEach(listName => {
         if (projects[listName]) {
           projects[listName].forEach(project => {
-            if (!project.archived) {  // Filter out archived projects
+            if (isLivePlanRecord(project)) {  // Archived and completed live in Archive
               masterProjects.push({
                 ...project,
                 sourceList: listName
@@ -13533,7 +13613,7 @@ function LittleFiresApp() {
       });
       return masterProjects;
     }
-    return (projects[currentProjectList] || []).filter(p => !p.archived);  // Filter out archived
+    return (projects[currentProjectList] || []).filter(isLivePlanRecord);  // Archived and completed live in Archive
   };
 
   const getAllTimeLogs = () => {
@@ -16901,7 +16981,10 @@ function LittleFiresApp() {
           -webkit-user-select: none;
           -moz-user-select: none;
           -ms-user-select: none;
-          touch-action: none;
+          -webkit-touch-callout: none;
+          /* pan-y, not none: none meant a finger on a card could never
+             scroll the page. Drag now starts on press-and-hold instead. */
+          touch-action: pan-y;
         }
 
         .goal-card:hover {
@@ -17067,7 +17150,9 @@ function LittleFiresApp() {
           -webkit-user-select: none;
           -moz-user-select: none;
           -ms-user-select: none;
-          touch-action: none;
+          -webkit-touch-callout: none;
+          /* pan-y, not none - see .goal-card. */
+          touch-action: pan-y;
         }
 
         .project-card:hover {
@@ -21602,7 +21687,9 @@ function LittleFiresApp() {
                     // from settings - the same rules the tabs follow.
                     (() => {
                       return visiblePlanLists.map(listName => {
-                        const listProjects = projects[listName] || [];
+                        // Live records only. This read the raw list, so
+                        // All Projects showed archived projects as well.
+                        const listProjects = (projects[listName] || []).filter(isLivePlanRecord);
                         if (listProjects.length === 0) return null;
                         const open = !closedProjectSections[listName];
                         return (
@@ -21678,9 +21765,8 @@ function LittleFiresApp() {
                         { key: 'active', label: 'Active', icon: <CleanFlame />, iconClass: 'campfire-icon',
                           badge: 'work', open: projectsActiveOpen, setOpen: setProjectsActiveOpen },
                         { key: 'backlog', label: 'Backlog', icon: <CutLog />, iconClass: 'logs-icon',
-                          badge: 'personal', open: projectsBacklogOpen, setOpen: setProjectsBacklogOpen },
-                        { key: 'complete', label: 'Complete', icon: <CheckedBox />, iconClass: 'checkbox-icon',
-                          badge: 'home', open: projectsCompleteOpen, setOpen: setProjectsCompleteOpen }
+                          badge: 'personal', open: projectsBacklogOpen, setOpen: setProjectsBacklogOpen }
+                        // No Complete group: completed ones are in Archive.
                       ];
 
                       const renderCard = ({ project, index }, groupKey) => {
@@ -21694,7 +21780,7 @@ function LittleFiresApp() {
                           <div
                             key={project.id}
                             className="project-card"
-                            draggable={canReorder}
+                            draggable={canReorder && !IS_TOUCH_DEVICE}
                             onDragStart={(e) => {
                               if (!canReorder) return;
                               setDraggedProject({ ...project, index, listName: currentProjectList, groupKey });
@@ -21736,6 +21822,8 @@ function LittleFiresApp() {
                               if (!canReorder) return;
                               handleTouchEnd(e, currentProjectList, 'project');
                             }}
+                            onTouchCancel={handleTouchCancel}
+                            data-plan-id={project.id}
                             style={{
                               opacity: isDragging ? 0.5 : 1,
                               cursor: canReorder ? 'move' : 'default',
@@ -23560,7 +23648,8 @@ function LittleFiresApp() {
                     // same visibility the tabs follow), labels from settings.
                     (() => {
                       return visiblePlanLists.map(listName => {
-                        const listGoals = goals[listName] || [];
+                        // Live records only - same fix as All Projects.
+                        const listGoals = (goals[listName] || []).filter(isLivePlanRecord);
                         if (listGoals.length === 0) return null;
                         const open = !closedGoalSections[listName];
                         return (
@@ -23584,7 +23673,7 @@ function LittleFiresApp() {
                                     <div 
                                       key={goal.id} 
                                       className="goal-card"
-                                      draggable={true}
+                                      draggable={!IS_TOUCH_DEVICE}
                                       onDragStart={(e) => {
                                         setDraggedGoal({ ...goal, index, listName });
                                         e.dataTransfer.effectAllowed = 'move';
@@ -23665,9 +23754,8 @@ function LittleFiresApp() {
                         { key: 'active', label: 'Active', icon: <CleanFlame />, iconClass: 'campfire-icon',
                           badge: 'work', open: goalsActiveOpen, setOpen: setGoalsActiveOpen },
                         { key: 'backlog', label: 'Backlog', icon: <CutLog />, iconClass: 'logs-icon',
-                          badge: 'personal', open: goalsBacklogOpen, setOpen: setGoalsBacklogOpen },
-                        { key: 'complete', label: 'Complete', icon: <CheckedBox />, iconClass: 'checkbox-icon',
-                          badge: 'home', open: goalsCompleteOpen, setOpen: setGoalsCompleteOpen }
+                          badge: 'personal', open: goalsBacklogOpen, setOpen: setGoalsBacklogOpen }
+                        // No Complete group: completed ones are in Archive.
                       ];
 
                       const listName = currentGoalList;
@@ -23681,7 +23769,7 @@ function LittleFiresApp() {
                           <div 
                             key={goal.id} 
                             className="goal-card"
-                            draggable={currentGoalList !== 'master'}
+                            draggable={currentGoalList !== 'master' && !IS_TOUCH_DEVICE}
                             onDragStart={(e) => {
                               if (currentGoalList === 'master') return;
                               setDraggedGoal({ ...goal, index, listName, groupKey });
@@ -23723,6 +23811,8 @@ function LittleFiresApp() {
                               if (currentGoalList === 'master') return;
                               handleTouchEnd(e, listName, 'goal');
                             }}
+                            onTouchCancel={handleTouchCancel}
+                            data-plan-id={goal.id}
                             style={{
                               opacity: isDragging ? 0.5 : 1,
                               cursor: currentGoalList !== 'master' ? 'move' : 'default',
@@ -27092,9 +27182,9 @@ function LittleFiresApp() {
                 else if (archiveType === 'goals') {
                   const goalsToShow = currentList === 'master'
                     ? Object.entries(goals).flatMap(([listName, goalList]) =>
-                        (Array.isArray(goalList) ? goalList : []).filter(g => g.archived).map(goal => ({ ...goal, listName }))
+                        (Array.isArray(goalList) ? goalList : []).filter(isShelvedPlanRecord).map(goal => ({ ...goal, listName }))
                       )
-                    : (goals[currentList] || []).filter(g => g.archived);
+                    : (goals[currentList] || []).filter(isShelvedPlanRecord);
 
                   if (goalsToShow.length === 0) {
                     return (
@@ -27213,6 +27303,11 @@ function LittleFiresApp() {
                                   {new Date(goal.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(goal.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                 </span>
                               )}
+                              {goal.section === 'complete' && goal.completedAt && (
+                                <span className="archived-date" style={{marginRight: '15px'}}>
+                                  Completed {new Date(goal.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
                               {goal.archivedAt && (
                                 <span className="archived-date">
                                   Archived {new Date(goal.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -27223,15 +27318,17 @@ function LittleFiresApp() {
                               <button
                                 className="edit-btn"
                                 onClick={() => {
-                                  setGoals(prev => ({
-                                    ...prev,
-                                    [listName]: prev[listName].map(g =>
-                                      g.id === goal.id ? { ...g, archived: false, archivedAt: null } : g
-                                    )
-                                  }));
+                                  // Back to the live list: un-archive, and reopen if it
+                                  // was complete (otherwise it would stay hidden). Through
+                                  // the stamped updater - the old inline setter skipped
+                                  // updatedAt, so another device could undo the restore.
+                                  updateGoal(listName, goal.id, {
+                                    archived: false, archivedAt: null,
+                                    ...(goal.section === 'complete' ? { section: 'active', completedAt: null } : {})
+                                  });
                                 }}
                               >
-                                Unarchive
+                                {goal.archived ? 'Unarchive' : 'Reopen'}
                               </button>
                               <button
                                 className="delete-btn"
@@ -27266,6 +27363,11 @@ function LittleFiresApp() {
                               {new Date(goal.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(goal.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                             </span>
                           )}
+                          {goal.section === 'complete' && goal.completedAt && (
+                            <span className="archived-date" style={{marginRight: '15px'}}>
+                              Completed {new Date(goal.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
                           {goal.archivedAt && (
                             <span className="archived-date">
                               Archived {new Date(goal.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -27276,15 +27378,17 @@ function LittleFiresApp() {
                           <button
                             className="edit-btn"
                             onClick={() => {
-                              setGoals(prev => ({
-                                ...prev,
-                                [currentList]: prev[currentList].map(g =>
-                                  g.id === goal.id ? { ...g, archived: false, archivedAt: null } : g
-                                )
-                              }));
+                              // Back to the live list: un-archive, and reopen if it
+                              // was complete (otherwise it would stay hidden). Through
+                              // the stamped updater - the old inline setter skipped
+                              // updatedAt, so another device could undo the restore.
+                              updateGoal(currentList, goal.id, {
+                                archived: false, archivedAt: null,
+                                ...(goal.section === 'complete' ? { section: 'active', completedAt: null } : {})
+                              });
                             }}
                           >
-                            Unarchive
+                            {goal.archived ? 'Unarchive' : 'Reopen'}
                           </button>
                           <button
                             className="delete-btn"
@@ -27306,9 +27410,9 @@ function LittleFiresApp() {
                 else if (archiveType === 'projects') {
                   const projectsToShow = currentList === 'master'
                     ? Object.entries(projects).flatMap(([listName, projectList]) =>
-                        (Array.isArray(projectList) ? projectList : []).filter(p => p.archived).map(project => ({ ...project, listName }))
+                        (Array.isArray(projectList) ? projectList : []).filter(isShelvedPlanRecord).map(project => ({ ...project, listName }))
                       )
-                    : (projects[currentList] || []).filter(p => p.archived);
+                    : (projects[currentList] || []).filter(isShelvedPlanRecord);
 
                   if (projectsToShow.length === 0) {
                     return (
@@ -27427,6 +27531,11 @@ function LittleFiresApp() {
                                   {new Date(project.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(project.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                 </span>
                               )}
+                              {project.section === 'complete' && project.completedAt && (
+                                <span className="archived-date" style={{marginRight: '15px'}}>
+                                  Completed {new Date(project.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                </span>
+                              )}
                               {project.archivedAt && (
                                 <span className="archived-date">
                                   Archived {new Date(project.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -27437,15 +27546,17 @@ function LittleFiresApp() {
                               <button
                                 className="edit-btn"
                                 onClick={() => {
-                                  setProjects(prev => ({
-                                    ...prev,
-                                    [listName]: prev[listName].map(p =>
-                                      p.id === project.id ? { ...p, archived: false, archivedAt: null } : p
-                                    )
-                                  }));
+                                  // Back to the live list: un-archive, and reopen if it
+                                  // was complete (otherwise it would stay hidden). Through
+                                  // the stamped updater - the old inline setter skipped
+                                  // updatedAt, so another device could undo the restore.
+                                  updateProject(listName, project.id, {
+                                    archived: false, archivedAt: null,
+                                    ...(project.section === 'complete' ? { section: 'active', completedAt: null } : {})
+                                  });
                                 }}
                               >
-                                Unarchive
+                                {project.archived ? 'Unarchive' : 'Reopen'}
                               </button>
                               <button
                                 className="delete-btn"
@@ -27480,6 +27591,11 @@ function LittleFiresApp() {
                               {new Date(project.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(project.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                             </span>
                           )}
+                          {project.section === 'complete' && project.completedAt && (
+                            <span className="archived-date" style={{marginRight: '15px'}}>
+                              Completed {new Date(project.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </span>
+                          )}
                           {project.archivedAt && (
                             <span className="archived-date">
                               Archived {new Date(project.archivedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -27490,15 +27606,17 @@ function LittleFiresApp() {
                           <button
                             className="edit-btn"
                             onClick={() => {
-                              setProjects(prev => ({
-                                ...prev,
-                                [currentList]: prev[currentList].map(p =>
-                                  p.id === project.id ? { ...p, archived: false, archivedAt: null } : p
-                                )
-                              }));
+                              // Back to the live list: un-archive, and reopen if it
+                              // was complete (otherwise it would stay hidden). Through
+                              // the stamped updater - the old inline setter skipped
+                              // updatedAt, so another device could undo the restore.
+                              updateProject(currentList, project.id, {
+                                archived: false, archivedAt: null,
+                                ...(project.section === 'complete' ? { section: 'active', completedAt: null } : {})
+                              });
                             }}
                           >
-                            Unarchive
+                            {project.archived ? 'Unarchive' : 'Reopen'}
                           </button>
                           <button
                             className="delete-btn"
